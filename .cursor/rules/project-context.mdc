@@ -1,0 +1,40 @@
+---
+description: Runebook — local markdown vault and GPUI app
+alwaysApply: true
+---
+
+# Runebook
+
+Local markdown notes at `projects/runebook.sh/`.
+
+## Crates
+
+- `crates/runebook` owns the vault, note ids, wiki links, and the in-memory index.
+- `crates/runebook-app` owns the GPUI window. Do not put file rules in the app crate.
+
+## Vault
+
+- A vault root contains `runebook.toml` (`schema_version = 1`).
+- A note is a `*.md` file. `NoteId` is the relative path without `.md`, with `/` separators.
+- A media file beside a note uses a video, audio, or image extension: `mp4`, `webm`, `mkv`, `mov`, `mp3`, `wav`, `ogg`, `m4a`, `flac`, `png`, `jpg`, `jpeg`, `gif`, `webp`.
+- Folder delete removes those files. Any other non-note file still blocks folder delete.
+- A preview link to a media file opens that file. The path must stay inside the vault.
+- Skip hidden paths and symlinks. Do not follow a symlink out of the vault.
+- There is no sidecar database. The index is rebuilt from the files.
+- User config is `$XDG_CONFIG_HOME/runebook/config.toml`. It stores `last_vault`, `microphone`, `theme`, and `note_view`.
+
+## Links
+
+Resolve `[[target]]` in this order:
+
+1. Exact `NoteId`
+2. Unique file stem, only when `target` has no `/`
+
+`[[target|alias]]` shows `alias` and still resolves `target`.
+
+## App
+
+- Call `gpui_kit::init` before any GPUI Kit control.
+- The source pane is the Kit `Editor`. The preview pane is Kit markdown.
+- The window shows the preview until the user flips to the source.
+- Autosave is debounced. Also flush on note switch and window close.
