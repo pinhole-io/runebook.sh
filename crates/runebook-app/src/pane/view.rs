@@ -250,12 +250,16 @@ fn main_surface(
     if pane.settings_open {
         return settings_panel(pane, cx).into_any_element();
     }
-    note_surface(pane, view)
+    note_surface(pane, view, cx)
 }
 
-fn note_surface(pane: &EditorPane, view: gpui_kit::WeakEntity<Root>) -> gpui_kit::AnyElement {
+fn note_surface(
+    pane: &EditorPane,
+    view: gpui_kit::WeakEntity<Root>,
+    cx: &mut Context<Root>,
+) -> gpui_kit::AnyElement {
     match pane.note_view {
-        NoteView::Preview => preview_surface(pane, view).into_any_element(),
+        NoteView::Preview => super::preview::surface(pane, view, cx).into_any_element(),
         NoteView::Source => source_surface(pane).into_any_element(),
     }
 }
@@ -277,27 +281,6 @@ fn source_surface(pane: &EditorPane) -> impl IntoElement {
                 .size_full()
                 .flex_1(),
         )
-}
-
-fn preview_surface(pane: &EditorPane, view: gpui_kit::WeakEntity<Root>) -> impl IntoElement {
-    let preview = pane.preview.clone();
-    div()
-        .id("preview")
-        .flex_1()
-        .h_full()
-        .min_w(px(0.0))
-        .min_h(px(0.0))
-        .overflow_y_scroll()
-        .p_4()
-        .child(crate::mermaid::view("note-preview", preview).on_link_click(
-            move |url, _, window, cx| {
-                let url = url.to_string();
-                view.update(cx, |this, cx| {
-                    this.follow_link(&url, window, cx);
-                })
-                .ok();
-            },
-        ))
 }
 
 fn brand(pane: &EditorPane) -> impl IntoElement {

@@ -48,6 +48,12 @@ fn operations() -> &'static [Operation] {
             call: read_note,
         },
         Operation {
+            name: "open_note",
+            description: "Show one note in the preview. The id is a relative path without .md.",
+            schema: || id_schema("id", "Note id to show, such as journal/2026-10-23"),
+            call: open_note,
+        },
+        Operation {
             name: "search_notes",
             description: "Find notes whose text contains the query. Each hit includes a short excerpt.",
             schema: || {
@@ -182,6 +188,15 @@ fn read_note(vault: &Vault, args: &Value) -> Result<ToolOutcome, String> {
     Ok(ToolOutcome {
         value: json!({ "id": id.as_str(), "content": content, "truncated": truncated }),
         changes: Vec::new(),
+    })
+}
+
+fn open_note(vault: &Vault, args: &Value) -> Result<ToolOutcome, String> {
+    let id = note_id(args, "id")?;
+    vault.read(&id).map_err(tool_error)?;
+    Ok(ToolOutcome {
+        value: json!({ "ok": true, "id": id.as_str() }),
+        changes: vec![VaultChange::Opened(id)],
     })
 }
 
@@ -529,6 +544,29 @@ mod tests {
         delete_note(vault, &json!({ "id": "journal/day" })).unwrap();
         let missing = read_note(vault, &json!({ "id": "journal/day" })).unwrap_err();
         assert!(missing.contains("note not found"), "{missing}");
+        assert!(!missing.contains(temp.path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn open_note_selects_an_existing_note() {
+        let temp = TempVault::new();
+        let vault = &temp.vault;
+        create_note(
+            vault,
+            &json!({ "id": "journal/day", "contents": "The blue lantern." }),
+        )
+        .unwrap();
+        let opened = open_note(vault, &json!({ "id": "journal/day" })).unwrap();
+        let text = opened.value.to_string();
+        assert_eq!(opened.value["ok"], true);
+        assert_eq!(opened.value["id"], "journal/day");
+        assert_eq!(
+            opened.changes,
+            vec![VaultChange::Opened(NoteId::parse("journal/day").unwrap())]
+        );
+        assert!(!text.contains(temp.path.to_string_lossy().as_ref()));
+
+        let missing = open_note(vault, &json!({ "id": "missing" })).unwrap_err();
         assert!(!missing.contains(temp.path.to_string_lossy().as_ref()));
     }
 }

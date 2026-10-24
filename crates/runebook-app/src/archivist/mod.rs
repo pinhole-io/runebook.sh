@@ -28,6 +28,7 @@ pub(crate) enum VaultChange {
     Wrote(NoteId),
     RenamedNote { from: NoteId, to: NoteId },
     DeletedNote(NoteId),
+    Opened(NoteId),
     Folder(FolderId),
     RenamedFolder { from: FolderId, to: FolderId },
     DeletedFolder(FolderId),
@@ -91,6 +92,14 @@ pub(crate) struct Panel {
     draft: Entity<InputState>,
     session: Option<Session>,
     turn: u64,
+    /// Rows parked by Add to chat. The next send includes them.
+    held: Vec<HeldRows>,
+}
+
+/// Rows the user added to the chat and has not sent yet.
+struct HeldRows {
+    note_id: String,
+    source: String,
 }
 
 impl Panel {
@@ -105,6 +114,7 @@ impl Panel {
             draft,
             session: None,
             turn: 0,
+            held: Vec::new(),
         }
     }
 
@@ -114,6 +124,50 @@ impl Panel {
 
     pub(crate) fn toggle(&mut self) {
         self.open = !self.open;
+    }
+
+    /// Open the column. Add to chat and Rewrite use this.
+    pub(crate) fn show(&mut self) {
+        self.open = true;
+    }
+
+    pub(crate) fn has_held(&self) -> bool {
+        !self.held.is_empty()
+    }
+
+    /// Remember rows until the next send. An empty body is ignored.
+    pub(crate) fn hold_rows(&mut self, note_id: String, source: String) {
+        let source = source.trim_matches(['\n', '\r']).to_string();
+        if source.trim().is_empty() {
+            return;
+        }
+        if self
+            .held
+            .iter()
+            .any(|row| row.note_id == note_id && row.source == source)
+        {
+            return;
+        }
+        self.held.push(HeldRows { note_id, source });
+        self.open = true;
+    }
+
+    pub(crate) fn dismiss_held(&mut self, index: usize) {
+        if index < self.held.len() {
+            self.held.remove(index);
+        }
+    }
+
+    /// Drop parked rows for one note after a rewrite of that note.
+    pub(crate) fn drop_held_note(&mut self, note_id: &str) {
+        self.held.retain(|row| row.note_id != note_id);
+    }
+
+    pub(crate) fn take_held(&mut self) -> Vec<(String, String)> {
+        self.held
+            .drain(..)
+            .map(|row| (row.note_id, row.source))
+            .collect()
     }
 
     pub(crate) fn is_busy(&self) -> bool {
@@ -361,6 +415,10 @@ fn archivist_prompt() -> (String, u32) {
             "Read a note before you replace it. write_note replaces the whole file. \
              Note ids are vault-relative paths without the .md suffix. \
              Example: journal/2026-10-23.",
+        )
+        .with_instructions(
+            "Call open_note to show a note in the preview when the user asks to open or look at \
+             that note. Do not invent the id.",
         )
         .with_instructions(
             "Write every reply in Markdown. Use paragraphs, lists, and inline code for note ids \

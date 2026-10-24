@@ -44,6 +44,9 @@ pub(crate) fn column(panel: &Panel, cx: &mut Context<Root>) -> impl IntoElement 
                 .child("Archivist"),
         )
         .child(transcript(panel, muted, danger, busy))
+        .when(!panel.held.is_empty(), |column| {
+            column.child(held_rows(panel, cx))
+        })
         .child(composer(panel, ready, busy, danger, cx))
 }
 
@@ -206,6 +209,94 @@ fn plain_block(
                 .text_color(body_color)
                 .child(body.to_string()),
         )
+}
+
+fn held_rows(panel: &Panel, cx: &mut Context<Root>) -> impl IntoElement {
+    let muted = cx.theme().muted_foreground;
+    let border = cx.theme().border;
+    let cards: Vec<AnyElement> = panel
+        .held
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            held_card(index, &row.note_id, &row.source, muted, cx).into_any_element()
+        })
+        .collect();
+    div()
+        .flex_shrink_0()
+        .border_t_1()
+        .border_color(border)
+        .px_3()
+        .py_2()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .children(cards)
+        .child(
+            div()
+                .text_xs()
+                .text_color(muted)
+                .child("Send includes these rows."),
+        )
+}
+
+fn held_card(
+    index: usize,
+    note_id: &str,
+    source: &str,
+    muted: Hsla,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .items_start()
+        .gap_2()
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(format!("Selected rows · {note_id}")),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .w_full()
+                        .whitespace_normal()
+                        .child(held_excerpt(source)),
+                ),
+        )
+        .child(
+            Button::new(SharedString::from(format!("held-remove-{index}")))
+                .ghost()
+                .small()
+                .compact()
+                .cursor_pointer()
+                .label("Remove")
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    if let Some(pane) = this.pane.as_mut() {
+                        pane.dismiss_held_rows(index);
+                    }
+                    cx.notify();
+                })),
+        )
+}
+
+fn held_excerpt(source: &str) -> String {
+    let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = flat.chars();
+    let short: String = chars.by_ref().take(120).collect();
+    if chars.next().is_some() {
+        format!("{short}…")
+    } else {
+        short
+    }
 }
 
 fn composer(

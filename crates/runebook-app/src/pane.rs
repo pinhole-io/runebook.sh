@@ -1,6 +1,10 @@
-//! Vault workspace: file tree, source editor, and markdown preview.
+//! Vault workspace: file tree, source editor, markdown preview, and row selection.
 
+mod preview;
+mod rows;
 mod view;
+
+use rows::{context_message, rewrite_message, selected_source};
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -14,12 +18,9 @@ use gpui_kit::component::input::{EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectState};
 use gpui_kit::component::{ActiveTheme, IndexPath, WindowExt};
 use gpui_kit::prelude::*;
-use gpui_kit::{
-    AppContext, ClickEvent, Context, Entity, Focusable, SharedString, Subscription, Window, div, px,
-};
+use gpui_kit::{AppContext, ClickEvent, Context, Entity, Focusable, Subscription, Window, div, px};
 use runebook::{
     AppConfig, Error, FolderId, NoteId, NoteViewChoice, ThemeChoice, Vault, VaultIndex, VaultTree,
-    preview_markdown,
 };
 
 use crate::Root;
@@ -84,7 +85,8 @@ pub(super) struct EditorPane {
     editor: Entity<EditorState>,
     saved_text: String,
     latest: String,
-    preview: SharedString,
+    row_gesture: Option<rows::RowGesture>,
+    row_rewrite: Option<Entity<InputState>>,
     dirty: bool,
     notice: Option<String>,
     capture: Capture,
@@ -136,7 +138,8 @@ impl EditorPane {
                 .map(TreeSelection::Note)
                 .unwrap_or(TreeSelection::None),
             collapsed: HashSet::new(),
-            preview: SharedString::from(preview_markdown(&text)),
+            row_gesture: None,
+            row_rewrite: None,
             saved_text: text.clone(),
             latest: text,
             open_note,
@@ -527,8 +530,8 @@ impl EditorPane {
 
     fn insert_block(&mut self, block: &str, window: &mut Window, cx: &mut Context<Root>) {
         let next = append_block(&self.latest, block);
+        self.clear_note_rows();
         self.latest = next.clone();
-        self.preview = SharedString::from(preview_markdown(&next));
         self.dirty = self.open_note.is_some() && next != self.saved_text;
         self.notice = None;
         self.editor
@@ -571,8 +574,10 @@ impl EditorPane {
     /// Copy the editor buffer into the preview. Returns true when a save should wait.
     pub(super) fn capture_edit(&mut self, cx: &mut Context<Root>) -> bool {
         let value = self.editor.read(cx).value().to_string();
+        if value != self.latest {
+            self.clear_note_rows();
+        }
         self.latest = value.clone();
-        self.preview = SharedString::from(preview_markdown(&value));
         self.dirty = self.open_note.is_some() && value != self.saved_text;
         self.dirty
     }
@@ -586,6 +591,9 @@ impl EditorPane {
             return true;
         };
         let value = self.editor.read(cx).value().to_string();
+        if value != self.latest {
+            self.clear_note_rows();
+        }
         self.latest = value.clone();
         if value == self.saved_text {
             self.dirty = false;
@@ -616,12 +624,12 @@ impl EditorPane {
     ) -> Result<(), String> {
         self.require_idle()?;
         let text = self.vault.read(&id).map_err(|err| err.to_string())?;
+        self.clear_note_rows();
         self.reveal(&id.parent());
         self.open_note = Some(id.clone());
         self.tree_selection = TreeSelection::Note(id);
         self.saved_text = text.clone();
         self.latest = text.clone();
-        self.preview = SharedString::from(preview_markdown(&text));
         self.dirty = false;
         self.notice = None;
         self.settings_open = false;
@@ -851,9 +859,9 @@ impl EditorPane {
     fn clear_editor(&mut self, window: &mut Window, cx: &mut Context<Root>) {
         self.open_note = None;
         self.tree_selection = TreeSelection::None;
+        self.clear_note_rows();
         self.saved_text.clear();
         self.latest.clear();
-        self.preview = SharedString::default();
         self.dirty = false;
         self.editor
             .update(cx, |state, cx| state.set_value("", window, cx));
@@ -928,6 +936,8 @@ impl EditorPane {
     }
 
     /// Send the draft to the Archivist. A busy turn or a missing key does nothing.
+    ///
+    /// Held rows are included even when the draft is empty.
     pub(crate) fn send_archivist(&mut self, window: &mut Window, cx: &mut Context<Root>) {
         if !self.archivist.is_open() || self.archivist.is_busy() || !groq_key_is_set() {
             return;
@@ -936,17 +946,129 @@ impl EditorPane {
             self.notice = Some(err);
             return;
         }
-        let text = self.archivist.draft_text(cx);
-        if text.is_empty() {
+        let draft = self.archivist.draft_text(cx);
+        if draft.is_empty() && !self.archivist.has_held() {
             return;
         }
         if !self.flush_edits(cx) {
             return;
         }
+        let held = self.archivist.take_held();
+        let pairs: Vec<(&str, &str)> = held
+            .iter()
+            .map(|(note_id, source)| (note_id.as_str(), source.as_str()))
+            .collect();
+        let Some(text) = context_message(pairs, &draft) else {
+            for (note_id, source) in held {
+                self.archivist.hold_rows(note_id, source);
+            }
+            return;
+        };
         self.archivist.clear_draft(window, cx);
         let vault = self.vault.clone();
         let epoch = self.epoch;
         self.archivist.launch(text, vault, epoch, cx);
+    }
+
+    fn press_note_row(&mut self, index: usize, shift: bool) {
+        self.row_rewrite = None;
+        self.row_gesture = Some(rows::RowGesture::press(
+            self.row_gesture.take(),
+            index,
+            shift,
+        ));
+    }
+
+    fn drag_note_row(&mut self, index: usize) -> bool {
+        self.row_gesture
+            .as_mut()
+            .is_some_and(|gesture| gesture.drag_over(index))
+    }
+
+    fn release_note_row(&mut self) {
+        if let Some(gesture) = self.row_gesture.as_mut() {
+            gesture.release();
+        }
+    }
+
+    fn clear_note_rows(&mut self) {
+        self.row_gesture = None;
+        self.row_rewrite = None;
+    }
+
+    fn selected_note_text(&self) -> Option<(String, String)> {
+        let note_id = self.open_note.as_ref()?.as_str().to_string();
+        let gesture = self.row_gesture.as_ref()?;
+        let source = selected_source(&self.latest, gesture)?;
+        Some((note_id, source))
+    }
+
+    /// Park the selection in the Archivist column. Send delivers it.
+    fn add_selected_rows_to_chat(&mut self) {
+        let Some((note_id, source)) = self.selected_note_text() else {
+            return;
+        };
+        self.archivist.show();
+        self.archivist.hold_rows(note_id, source);
+        self.clear_note_rows();
+    }
+
+    /// Open the rewrite prompt under the row menu.
+    fn begin_row_rewrite(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+        if self.selected_note_text().is_none() {
+            return;
+        }
+        if self.row_rewrite.is_none() {
+            let input = cx
+                .new(|cx| InputState::new(window, cx).placeholder("How should these rows change?"));
+            input.focus_handle(cx).focus(window, cx);
+            self.row_rewrite = Some(input);
+        } else if let Some(input) = &self.row_rewrite {
+            input.focus_handle(cx).focus(window, cx);
+        }
+    }
+
+    pub(crate) fn dismiss_held_rows(&mut self, index: usize) {
+        self.archivist.dismiss_held(index);
+    }
+
+    /// Ask the Archivist to rewrite the selected rows.
+    fn apply_row_rewrite(&mut self, _window: &mut Window, cx: &mut Context<Root>) {
+        let Some(input) = self.row_rewrite.clone() else {
+            return;
+        };
+        let change = input.read(cx).value().trim().to_string();
+        if change.is_empty() {
+            return;
+        }
+        let Some((note_id, source)) = self.selected_note_text() else {
+            return;
+        };
+        if !groq_key_is_set() {
+            self.archivist.show();
+            self.notice = Some(crate::archivist::MISSING_KEY.to_string());
+            return;
+        }
+        if self.archivist.is_busy() {
+            self.notice = Some("The Archivist is still working.".to_string());
+            return;
+        }
+        if let Err(err) = self.require_idle() {
+            self.notice = Some(err);
+            return;
+        }
+        if !self.flush_edits(cx) {
+            return;
+        }
+        let Some(message) = rewrite_message(&note_id, &source, &change) else {
+            return;
+        };
+        self.archivist.drop_held_note(&note_id);
+        self.clear_note_rows();
+        self.archivist.show();
+        let vault = self.vault.clone();
+        let epoch = self.epoch;
+        self.archivist.launch(message, vault, epoch, cx);
     }
 
     pub(crate) fn same_epoch(&self, epoch: u64) -> bool {
@@ -990,7 +1112,7 @@ impl EditorPane {
                         self.reveal(&parent);
                     }
                 }
-                VaultChange::DeletedNote(_) => {}
+                VaultChange::DeletedNote(_) | VaultChange::Opened(_) => {}
             }
         }
         self.tree_selection = match &self.tree_selection {
@@ -1004,6 +1126,7 @@ impl EditorPane {
             },
             TreeSelection::None => TreeSelection::None,
         };
+        let opened = last_opened(changes);
         let (open, refresh) = follow_open(self.open_note.clone(), changes);
         if let Err(err) = self.reload() {
             self.open_note = open;
@@ -1011,6 +1134,19 @@ impl EditorPane {
                 self.dirty = false;
             }
             self.notice = Some(err.to_string());
+            return;
+        }
+        if let Some(id) = opened {
+            if self.capture_status().is_some() {
+                self.notice = Some("Stop the recording before you change notes".to_string());
+                return;
+            }
+            if !self.flush_edits(cx) {
+                return;
+            }
+            if let Err(err) = self.load_note(id, window, cx) {
+                self.notice = Some(err);
+            }
             return;
         }
         if self.open_note.is_some() && open.is_none() {
@@ -1047,6 +1183,7 @@ impl EditorPane {
         cx: &mut Context<Root>,
     ) -> Result<(), String> {
         let text = self.vault.read(&id).map_err(|err| err.to_string())?;
+        self.clear_note_rows();
         self.reveal(&id.parent());
         self.open_note = Some(id.clone());
         if matches!(
@@ -1057,7 +1194,6 @@ impl EditorPane {
         }
         self.saved_text = text.clone();
         self.latest = text.clone();
-        self.preview = SharedString::from(preview_markdown(&text));
         self.dirty = false;
         self.editor
             .update(cx, |state, cx| state.set_value(text, window, cx));
@@ -1318,6 +1454,15 @@ fn follow_open(
 
 fn follow_note(id: NoteId, changes: &[crate::archivist::VaultChange]) -> Option<NoteId> {
     follow_open(Some(id), changes).0
+}
+
+fn last_opened(changes: &[crate::archivist::VaultChange]) -> Option<NoteId> {
+    use crate::archivist::VaultChange;
+    let id = changes.iter().rev().find_map(|change| match change {
+        VaultChange::Opened(id) => Some(id.clone()),
+        _ => None,
+    })?;
+    follow_note(id, changes)
 }
 
 fn follow_folder(mut id: FolderId, changes: &[crate::archivist::VaultChange]) -> Option<FolderId> {
