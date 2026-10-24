@@ -4,13 +4,15 @@ mod preview;
 mod rows;
 mod view;
 
-use rows::{context_message, rewrite_message, selected_source};
+use rows::{context_message, rewrite_message, selected_source, split_rows};
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::dialog::{Cancel, Confirm, DialogFooter};
@@ -18,16 +20,22 @@ use gpui_kit::component::input::{EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectState};
 use gpui_kit::component::{ActiveTheme, IndexPath, WindowExt};
 use gpui_kit::prelude::*;
-use gpui_kit::{AppContext, ClickEvent, Context, Entity, Focusable, Subscription, Window, div, px};
+use gpui_kit::{
+    AppContext, ClickEvent, Context, Entity, Focusable, Image, ImageFormat, SharedString,
+    Subscription, Window, div, px,
+};
 use runebook::{
-    AppConfig, Error, FolderId, NoteId, NoteViewChoice, ThemeChoice, Vault, VaultIndex, VaultTree,
+    AppConfig, Error, FolderId, NoteId, NoteKind, NoteViewChoice, ThemeChoice, Vault, VaultIndex,
+    VaultTree, decode_note, encode_note, toggle_task_line,
 };
 
 use crate::Root;
 use crate::capture::{
     MISSING_GROQ_KEY, ScreenCapture, ScreenTarget, VoiceCapture, WINDOW_LIST_ERROR, append_block,
-    groq_key_is_set, list_input_devices, markdown_link, utc_stamp_now, voice_to_text,
+    groq_key_is_set, list_input_devices, list_record_sources, markdown_link, utc_stamp_now,
+    voice_to_text,
 };
+use crate::playback::{self, ClipKind};
 use crate::save_setting;
 
 pub(super) use view::screen;
@@ -55,7 +63,7 @@ enum Prompt {
 
 #[derive(Clone)]
 enum NameAction {
-    CreateNote,
+    CreateNote(NoteKind),
     CreateFolder,
     RenameNote(NoteId),
     RenameFolder(FolderId),
@@ -72,6 +80,7 @@ pub(super) struct EditorPane {
     tree: VaultTree,
     index: VaultIndex,
     open_note: Option<NoteId>,
+    open_kind: NoteKind,
     tree_selection: TreeSelection,
     collapsed: HashSet<FolderId>,
     note_view: NoteView,
@@ -89,6 +98,16 @@ pub(super) struct EditorPane {
     row_rewrite: Option<Entity<InputState>>,
     dirty: bool,
     notice: Option<String>,
+    playback: Option<playback::Playback>,
+    playback_watch: u64,
+    hold: Option<ClipHold>,
+    media_muted: bool,
+    seek_drag: bool,
+    seek_preview: Option<(String, Duration)>,
+    timings: HashMap<String, TimingState>,
+    posters: HashMap<String, PosterState>,
+    poster_epoch: u64,
+    picture_width: u32,
     capture: Capture,
     prompt: Option<Prompt>,
     rename_blur: Option<Subscription>,
@@ -105,6 +124,38 @@ enum Capture {
     SavingScreen,
 }
 
+enum PosterState {
+    Pending,
+    Ready(Arc<Image>),
+    Missing,
+}
+
+struct ClipHold {
+    href: String,
+    position: Duration,
+    duration: Duration,
+}
+
+/// Note width in device pixels, minus the sidebar, capped for the atlas.
+fn note_frame_width(window: &Window) -> u32 {
+    let note = (window.viewport_size().width.as_f32() - 260.0).max(0.0);
+    let device = (note * window.scale_factor()).round().max(0.0) as u32;
+    playback::frame_width(device)
+}
+
+fn resume_point(hold: &ClipHold) -> Duration {
+    if !hold.duration.is_zero() && hold.position + Duration::from_millis(250) >= hold.duration {
+        Duration::ZERO
+    } else {
+        hold.position
+    }
+}
+
+enum TimingState {
+    Pending,
+    Ready(playback::ClipTiming),
+}
+
 impl EditorPane {
     pub(super) fn open(
         vault: Vault,
@@ -116,9 +167,10 @@ impl EditorPane {
         let prefs = AppConfig::load().unwrap_or_default();
         let default_note_view = note_view_from(prefs.note_view);
         let open_note = first_note(&index);
-        let text = match &open_note {
-            Some(id) => vault.read(id)?,
-            None => String::new(),
+        let show_archivist = open_note.is_none();
+        let (open_kind, text) = match &open_note {
+            Some(id) => note_body(&vault.read(id)?),
+            None => (NoteKind::Book, String::new()),
         };
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
@@ -143,6 +195,7 @@ impl EditorPane {
             saved_text: text.clone(),
             latest: text,
             open_note,
+            open_kind,
             vault,
             tree,
             index,
@@ -157,11 +210,21 @@ impl EditorPane {
             editor,
             dirty: false,
             notice: None,
+            playback: None,
+            playback_watch: 0,
+            hold: None,
+            media_muted: false,
+            seek_drag: false,
+            seek_preview: None,
+            timings: HashMap::new(),
+            posters: HashMap::new(),
+            poster_epoch: 0,
+            picture_width: note_frame_width(window),
             capture: Capture::Idle,
             prompt: None,
             rename_blur: None,
             _subscription: subscription,
-            archivist: crate::archivist::Panel::new(window, cx),
+            archivist: crate::archivist::Panel::new(show_archivist, window, cx),
             epoch: next_epoch(),
         };
         if pane.note_view == NoteView::Source {
@@ -303,6 +366,459 @@ impl EditorPane {
         self.vault.root()
     }
 
+    /// The still preview for `href`.
+    pub(super) fn picture(&self, href: &str) -> Option<Arc<Image>> {
+        match self.posters.get(href) {
+            Some(PosterState::Ready(image)) => Some(Arc::clone(image)),
+            _ => None,
+        }
+    }
+
+    /// True when a still preview was already requested for `href`.
+    pub(super) fn poster_started(&self, href: &str) -> bool {
+        self.posters.contains_key(href)
+    }
+
+    /// Load the first frame of `href` so the preview can show it before play.
+    pub(super) fn request_poster(&mut self, href: &str, cx: &mut Context<Root>) {
+        if self.posters.contains_key(href) {
+            return;
+        }
+        let Some(id) = self.open_note.clone() else {
+            return;
+        };
+        let path = match self.vault.media_file(&id, href) {
+            Ok(path) => path,
+            Err(_) => {
+                self.posters.insert(href.to_string(), PosterState::Missing);
+                return;
+            }
+        };
+        self.posters.insert(href.to_string(), PosterState::Pending);
+        let href = href.to_string();
+        let epoch = self.poster_epoch;
+        let width = self.picture_width;
+        cx.spawn(async move |this, cx| {
+            let bytes = cx
+                .background_executor()
+                .spawn(async move { playback::poster_jpeg(&path, Duration::ZERO, width) })
+                .await;
+            this.update(cx, |root, cx| {
+                let Some(pane) = root.pane.as_mut() else {
+                    return;
+                };
+                pane.store_poster(epoch, href, bytes);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn store_poster(&mut self, epoch: u64, href: String, bytes: Option<Vec<u8>>) {
+        if self.poster_epoch != epoch {
+            return;
+        }
+        if matches!(self.posters.get(&href), Some(PosterState::Ready(_))) {
+            return;
+        }
+        let Some(bytes) = bytes else {
+            self.posters.insert(href, PosterState::Missing);
+            return;
+        };
+        self.posters.insert(
+            href,
+            PosterState::Ready(Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes))),
+        );
+    }
+
+    /// Remember the note width so a later still uses the same scale.
+    pub(super) fn sync_picture_width(&mut self, window: &Window) {
+        self.picture_width = note_frame_width(window);
+    }
+
+    /// Stop the clip and keep its last frame as the still preview.
+    fn end_playback(&mut self, window: &mut Window) {
+        self.playback_watch = self.playback_watch.wrapping_add(1);
+        let Some(mut play) = self.playback.take() else {
+            return;
+        };
+        for picture in play.take_shown().into_iter().flatten() {
+            let _ = window.drop_image(picture);
+        }
+        let href = play.href().to_string();
+        if let Some(bytes) = play.take_still() {
+            self.posters.insert(
+                href,
+                PosterState::Ready(Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes))),
+            );
+        }
+    }
+
+    fn pause_playback(&mut self, window: &mut Window) {
+        let Some(play) = self.playback.as_ref() else {
+            return;
+        };
+        let hold = ClipHold {
+            href: play.href().to_string(),
+            position: play.position(),
+            duration: play.duration(),
+        };
+        self.end_playback(window);
+        self.hold = Some(hold);
+    }
+
+    fn dismiss_media(&mut self, window: &mut Window) {
+        self.end_playback(window);
+        self.hold = None;
+        self.seek_drag = false;
+        self.seek_preview = None;
+        self.timings.clear();
+        self.posters.clear();
+        self.poster_epoch = self.poster_epoch.wrapping_add(1);
+    }
+
+    /// The href of the clip that is playing, when one is playing.
+    pub(super) fn playing_href(&self) -> Option<&str> {
+        self.playback.as_ref().map(playback::Playback::href)
+    }
+
+    /// The decoded picture for `href`, when that clip is playing.
+    pub(super) fn live_frame(&self, href: &str) -> Option<Arc<gpui_kit::RenderImage>> {
+        let play = self.playback.as_ref()?;
+        if play.href() != href {
+            return None;
+        }
+        play.frame()
+    }
+
+    /// Play, pause, or resume `href`. Pause holds the place.
+    pub(super) fn toggle_playback(
+        &mut self,
+        href: &str,
+        kind: ClipKind,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) {
+        self.sync_picture_width(window);
+        if self.playing_href() == Some(href) {
+            self.pause_playback(window);
+            return;
+        }
+        if self.hold.as_ref().is_some_and(|hold| hold.href == href) {
+            let hold = self.hold.take().expect("hold");
+            let at = resume_point(&hold);
+            self.start_clip(href, kind, at, cx);
+            return;
+        }
+        self.hold = None;
+        self.end_playback(window);
+        self.start_clip(href, kind, Duration::ZERO, cx);
+    }
+
+    pub(super) fn media_muted(&self) -> bool {
+        self.media_muted
+    }
+
+    pub(super) fn toggle_mute(&mut self) {
+        self.media_muted = !self.media_muted;
+        if let Some(play) = &self.playback {
+            play.set_muted(self.media_muted);
+        }
+    }
+
+    pub(super) fn clip_position(&self, href: &str) -> Duration {
+        if let Some((seek_href, at)) = &self.seek_preview
+            && seek_href == href
+        {
+            return *at;
+        }
+        if let Some(play) = &self.playback
+            && play.href() == href
+        {
+            return play.position();
+        }
+        if let Some(hold) = &self.hold
+            && hold.href == href
+        {
+            return hold.position;
+        }
+        Duration::ZERO
+    }
+
+    pub(super) fn clip_duration(&self, href: &str) -> Duration {
+        if let Some(play) = &self.playback
+            && play.href() == href
+            && !play.duration().is_zero()
+        {
+            return play.duration();
+        }
+        if let Some(hold) = &self.hold
+            && hold.href == href
+            && !hold.duration.is_zero()
+        {
+            return hold.duration;
+        }
+        match self.timings.get(href) {
+            Some(TimingState::Ready(timing)) => timing.duration,
+            _ => Duration::ZERO,
+        }
+    }
+
+    pub(super) fn has_timing(&self, href: &str) -> bool {
+        self.timings.contains_key(href)
+    }
+
+    pub(super) fn ensure_timing(&mut self, href: &str, cx: &mut Context<Root>) {
+        if self.timings.contains_key(href) {
+            return;
+        }
+        let Some(id) = self.open_note.clone() else {
+            return;
+        };
+        let path = match self.vault.media_file(&id, href) {
+            Ok(path) => path,
+            Err(_) => {
+                self.timings.insert(
+                    href.to_string(),
+                    TimingState::Ready(playback::ClipTiming::default()),
+                );
+                return;
+            }
+        };
+        self.timings.insert(href.to_string(), TimingState::Pending);
+        let href = href.to_string();
+        let epoch = self.poster_epoch;
+        cx.spawn(async move |this, cx| {
+            let timing = cx
+                .background_executor()
+                .spawn(async move { playback::probe_timing(&path) })
+                .await;
+            this.update(cx, |root, cx| {
+                let Some(pane) = root.pane.as_mut() else {
+                    return;
+                };
+                if pane.poster_epoch != epoch {
+                    return;
+                }
+                pane.timings.insert(href, TimingState::Ready(timing));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(super) fn begin_seek(&mut self, href: &str, ratio: f32) {
+        self.place_seek(href, ratio, true);
+    }
+
+    pub(super) fn move_seek(&mut self, href: &str, ratio: f32) {
+        if self.seek_drag {
+            self.place_seek(href, ratio, true);
+        }
+    }
+
+    pub(super) fn finish_seek(
+        &mut self,
+        href: &str,
+        kind: ClipKind,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) {
+        if !self.seek_drag {
+            return;
+        }
+        let Some((seek_href, at)) = self.seek_preview.clone() else {
+            self.seek_drag = false;
+            return;
+        };
+        if seek_href != href {
+            self.seek_drag = false;
+            self.seek_preview = None;
+            return;
+        }
+        self.sync_picture_width(window);
+        self.seek_clip(href, kind, at, window, cx);
+    }
+
+    fn place_seek(&mut self, href: &str, ratio: f32, drag: bool) {
+        let duration = self.clip_duration(href);
+        if duration.is_zero() {
+            return;
+        }
+        let at = duration.mul_f32(ratio.clamp(0.0, 1.0));
+        self.seek_drag = drag;
+        self.seek_preview = Some((href.to_string(), at));
+    }
+
+    fn seek_clip(
+        &mut self,
+        href: &str,
+        kind: ClipKind,
+        at: Duration,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) {
+        let playing = self.playing_href() == Some(href);
+        self.seek_drag = false;
+        self.seek_preview = None;
+        let duration = self.clip_duration(href);
+        let at = if duration.is_zero() {
+            at
+        } else {
+            at.min(duration)
+        };
+        if playing {
+            self.end_playback(window);
+            self.start_clip(href, kind, at, cx);
+            return;
+        }
+        self.hold = Some(ClipHold {
+            href: href.to_string(),
+            position: at,
+            duration,
+        });
+        self.grab_still(href, at, cx);
+    }
+
+    fn grab_still(&mut self, href: &str, at: Duration, cx: &mut Context<Root>) {
+        let Some(id) = self.open_note.clone() else {
+            return;
+        };
+        let path = match self.vault.media_file(&id, href) {
+            Ok(path) => path,
+            Err(_) => return,
+        };
+        let href = href.to_string();
+        let epoch = self.poster_epoch;
+        let width = self.picture_width;
+        cx.spawn(async move |this, cx| {
+            let bytes = cx
+                .background_executor()
+                .spawn(async move { playback::poster_jpeg(&path, at, width) })
+                .await;
+            this.update(cx, |root, cx| {
+                let Some(pane) = root.pane.as_mut() else {
+                    return;
+                };
+                if pane.poster_epoch != epoch {
+                    return;
+                }
+                let Some(bytes) = bytes else {
+                    return;
+                };
+                pane.posters.insert(
+                    href,
+                    PosterState::Ready(Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes))),
+                );
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn start_clip(&mut self, href: &str, kind: ClipKind, at: Duration, cx: &mut Context<Root>) {
+        self.hold = None;
+        self.playback_watch = self.playback_watch.wrapping_add(1);
+        let watch = self.playback_watch;
+        let Some(id) = self.open_note.clone() else {
+            self.notice = Some("Open a note first".to_string());
+            return;
+        };
+        let path = match self.vault.media_file(&id, href) {
+            Ok(path) => path,
+            Err(_) => {
+                self.notice = Some("Could not open the media file".to_string());
+                return;
+            }
+        };
+        match playback::start(
+            &path,
+            href.to_string(),
+            kind,
+            at,
+            self.picture_width,
+            self.media_muted,
+            cx.svg_renderer(),
+        ) {
+            Ok(started) => {
+                let href = started.playback.href().to_string();
+                self.timings
+                    .insert(href.clone(), TimingState::Ready(started.playback.timing()));
+                self.notice = started.notice;
+                self.playback = Some(started.playback);
+                self.watch_playback(href, watch, cx);
+            }
+            Err(err) => self.notice = Some(err),
+        }
+    }
+
+    fn watch_playback(&self, href: String, watch: u64, cx: &mut Context<Root>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                let keep = this
+                    .update_in(cx, |root, window, cx| {
+                        let Some(pane) = root.pane.as_mut() else {
+                            return false;
+                        };
+                        let keep = pane.poll_playback(&href, watch, window, cx);
+                        cx.notify();
+                        keep
+                    })
+                    .unwrap_or(false);
+                if !keep {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(8))
+                    .await;
+            }
+        })
+        .detach();
+    }
+
+    fn poll_playback(
+        &mut self,
+        href: &str,
+        watch: u64,
+        window: &mut Window,
+        _cx: &mut Context<Root>,
+    ) -> bool {
+        let finished = {
+            let Some(play) = self.playback.as_mut() else {
+                return false;
+            };
+            if self.playback_watch != watch || play.href() != href {
+                return false;
+            }
+            if let Some(picture) = play.take_decoded() {
+                if let Some(old) = play.show_frame(picture) {
+                    let _ = window.drop_image(old);
+                }
+                play.mark_presented();
+            }
+            if play.frame_due()
+                && !play.is_decoding()
+                && let Some(bytes) = play.take_jpeg()
+            {
+                play.decode_next(bytes);
+            }
+            play.finished()
+        };
+        if finished {
+            self.pause_playback(window);
+            if let Some(hold) = &mut self.hold
+                && !hold.duration.is_zero()
+            {
+                hold.position = hold.duration;
+            }
+            return false;
+        }
+        true
+    }
+
     /// Resolve a media link in the open note.
     pub(super) fn media_path(&self, href: &str) -> Result<std::path::PathBuf, String> {
         let Some(id) = self.open_note.as_ref() else {
@@ -337,6 +853,21 @@ impl EditorPane {
         matches!(self.capture, Capture::Screen(_))
     }
 
+    /// Kind of the open note. An empty editor is Book.
+    pub(super) fn note_kind(&self) -> NoteKind {
+        self.open_kind
+    }
+
+    /// The mic control records only into a Speech note.
+    pub(super) fn voice_allowed(&self) -> bool {
+        self.open_note.is_some() && self.open_kind == NoteKind::Speech
+    }
+
+    /// The video control records only into a Sight note.
+    pub(super) fn sight_allowed(&self) -> bool {
+        self.open_note.is_some() && self.open_kind == NoteKind::Sight
+    }
+
     /// Start or stop voice capture for the open note.
     pub(super) fn toggle_voice(&mut self, cx: &mut Context<Root>) {
         if self.voice_recording() {
@@ -367,8 +898,8 @@ impl EditorPane {
     }
 
     fn start_voice(&mut self) {
-        if self.open_note.is_none() {
-            self.notice = Some("Open a note first".to_string());
+        if !self.voice_allowed() {
+            self.notice = Some("Open a Speech note to record voice".to_string());
             return;
         }
         if !groq_key_is_set() {
@@ -418,8 +949,12 @@ impl EditorPane {
         if self.capture_status().is_some() {
             return;
         }
+        if !self.sight_allowed() {
+            self.notice = Some("Open a Sight note to record the screen".to_string());
+            return;
+        }
         let Some(id) = self.open_note.clone() else {
-            self.notice = Some("Open a note first".to_string());
+            self.notice = Some("Open a Sight note to record the screen".to_string());
             return;
         };
         let (path, file_name) = match self.next_recording(&id) {
@@ -599,7 +1134,8 @@ impl EditorPane {
             self.dirty = false;
             return true;
         }
-        match self.vault.write(&id, &value) {
+        let file = encode_note(self.open_kind, &value);
+        match self.vault.write(&id, &file) {
             Ok(()) => {
                 self.saved_text = value;
                 self.dirty = false;
@@ -628,13 +1164,9 @@ impl EditorPane {
         self.reveal(&id.parent());
         self.open_note = Some(id.clone());
         self.tree_selection = TreeSelection::Note(id);
-        self.saved_text = text.clone();
-        self.latest = text.clone();
-        self.dirty = false;
+        self.apply_file(&text, window, cx);
         self.notice = None;
         self.settings_open = false;
-        self.editor
-            .update(cx, |state, cx| state.set_value(text, window, cx));
         self.show_note_view(self.default_note_view, window, cx);
         Ok(())
     }
@@ -655,8 +1187,30 @@ impl EditorPane {
     }
 
     pub(super) fn begin_create_note(&mut self, window: &mut Window, cx: &mut Context<Root>) {
-        let seed = child_name(&self.parent_folder(), "untitled");
-        open_create_dialog("New note", seed, NameAction::CreateNote, window, cx);
+        self.prompt_new_note(NoteKind::Book, window, cx);
+    }
+
+    /// Ask for a name, then create a note of `kind`.
+    pub(super) fn prompt_new_note(
+        &mut self,
+        kind: NoteKind,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) {
+        let seed_name = match kind {
+            NoteKind::Book => "untitled",
+            NoteKind::Speech => "speech",
+            NoteKind::Sight => "sight",
+            NoteKind::Deed => "deed",
+        };
+        let seed = child_name(&self.parent_folder(), seed_name);
+        open_create_dialog(
+            kind_title(kind),
+            seed,
+            NameAction::CreateNote(kind),
+            window,
+            cx,
+        );
     }
 
     fn begin_create_folder(&mut self, window: &mut Window, cx: &mut Context<Root>) {
@@ -755,14 +1309,23 @@ impl EditorPane {
     ) -> Result<(), String> {
         self.require_idle()?;
         match action {
-            NameAction::CreateNote => {
+            NameAction::CreateNote(kind) => {
                 let id = NoteId::parse(text.trim()).map_err(|err| err.to_string())?;
-                let body = format!("# {}\n", id.name());
+                let body = seed_body(kind, id.name());
+                let file = encode_note(kind, &body);
                 self.vault
-                    .create_note(&id, &body)
+                    .create_note(&id, &file)
                     .map_err(|err| err.to_string())?;
                 self.reload().map_err(|err| err.to_string())?;
                 self.load_note(id, window, cx)?;
+                if kind == NoteKind::Speech {
+                    self.start_voice();
+                }
+                if kind == NoteKind::Sight {
+                    cx.defer_in(window, |root, window, cx| {
+                        prompt_record_source(root, window, cx);
+                    });
+                }
             }
             NameAction::CreateFolder => {
                 let id = FolderId::parse(text.trim()).map_err(|err| err.to_string())?;
@@ -831,7 +1394,7 @@ impl EditorPane {
                 self.vault.delete_note(&id).map_err(|err| err.to_string())?;
                 self.reload().map_err(|err| err.to_string())?;
                 if self.open_note.as_ref() == Some(&id) {
-                    self.clear_editor(window, cx);
+                    self.settle_after_delete(window, cx)?;
                 } else {
                     self.tree_selection = TreeSelection::None;
                 }
@@ -847,7 +1410,7 @@ impl EditorPane {
                 self.forget_collapsed(&id);
                 self.reload().map_err(|err| err.to_string())?;
                 if inside {
-                    self.clear_editor(window, cx);
+                    self.settle_after_delete(window, cx)?;
                 } else {
                     self.tree_selection = TreeSelection::None;
                 }
@@ -856,8 +1419,41 @@ impl EditorPane {
         Ok(())
     }
 
+    /// Load another note after the active one is gone. An empty vault opens the Archivist.
+    fn settle_after_delete(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) -> Result<(), String> {
+        if self.take_next_note(&[], window, cx) {
+            return Ok(());
+        }
+        self.clear_editor(window, cx);
+        self.archivist.show();
+        Ok(())
+    }
+
+    /// Load the note `next_open_note` chooses. `false` when no note remains.
+    fn take_next_note(
+        &mut self,
+        changes: &[crate::archivist::VaultChange],
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) -> bool {
+        let Some(id) = next_open_note(None, changes, first_note(&self.index)) else {
+            return false;
+        };
+        if let Err(err) = self.load_note(id, window, cx) {
+            self.notice = Some(err);
+            self.clear_editor(window, cx);
+        }
+        true
+    }
+
     fn clear_editor(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+        self.dismiss_media(window);
         self.open_note = None;
+        self.open_kind = NoteKind::Book;
         self.tree_selection = TreeSelection::None;
         self.clear_note_rows();
         self.saved_text.clear();
@@ -935,6 +1531,11 @@ impl EditorPane {
         Ok(())
     }
 
+    /// Show or hide the Archivist column.
+    pub(crate) fn toggle_archivist(&mut self) {
+        self.archivist.toggle();
+    }
+
     /// Send the draft to the Archivist. A busy turn or a missing key does nothing.
     ///
     /// Held rows are included even when the draft is empty.
@@ -972,11 +1573,7 @@ impl EditorPane {
 
     fn press_note_row(&mut self, index: usize, shift: bool) {
         self.row_rewrite = None;
-        self.row_gesture = Some(rows::RowGesture::press(
-            self.row_gesture.take(),
-            index,
-            shift,
-        ));
+        self.row_gesture = rows::RowGesture::press(self.row_gesture.take(), index, shift);
     }
 
     fn drag_note_row(&mut self, index: usize) -> bool {
@@ -1149,16 +1746,16 @@ impl EditorPane {
             }
             return;
         }
-        if self.open_note.is_some() && open.is_none() {
-            if self.capture_status().is_some() {
+        let Some(id) = open else {
+            if self.open_note.is_some() && self.capture_status().is_some() {
                 self.notice =
                     Some("Stop the recording. The Archivist deleted this note.".to_string());
-            } else {
-                self.clear_editor(window, cx);
+                return;
             }
-            return;
-        }
-        let Some(id) = open else {
+            if !self.take_next_note(changes, window, cx) && self.open_note.is_some() {
+                self.clear_editor(window, cx);
+                self.archivist.show();
+            }
             return;
         };
         if !refresh {
@@ -1192,12 +1789,42 @@ impl EditorPane {
         ) {
             self.tree_selection = TreeSelection::Note(id);
         }
-        self.saved_text = text.clone();
-        self.latest = text.clone();
+        self.apply_file(&text, window, cx);
+        Ok(())
+    }
+
+    /// Flip the checkbox on preview row `index` of a Deed note.
+    ///
+    /// Returns true when the body changed and a save should wait.
+    pub(super) fn toggle_deed_task(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) -> bool {
+        if self.open_kind != NoteKind::Deed {
+            return false;
+        }
+        let Some(next) = toggled_task_body(&self.latest, index) else {
+            return false;
+        };
+        self.clear_note_rows();
+        self.latest = next.clone();
+        self.dirty = self.open_note.is_some() && next != self.saved_text;
+        self.editor
+            .update(cx, |state, cx| state.set_value(next, window, cx));
+        self.dirty
+    }
+
+    fn apply_file(&mut self, text: &str, window: &mut Window, cx: &mut Context<Root>) {
+        self.dismiss_media(window);
+        let (kind, body) = note_body(text);
+        self.open_kind = kind;
+        self.saved_text = body.clone();
+        self.latest = body.clone();
         self.dirty = false;
         self.editor
-            .update(cx, |state, cx| state.set_value(text, window, cx));
-        Ok(())
+            .update(cx, |state, cx| state.set_value(body, window, cx));
     }
 
     fn parent_folder(&self) -> FolderId {
@@ -1219,11 +1846,13 @@ impl EditorPane {
 
 impl Drop for EditorPane {
     fn drop(&mut self) {
+        self.playback = None;
         if !self.dirty {
             return;
         }
         if let Some(id) = self.open_note.clone() {
-            let _ = self.vault.write(&id, &self.latest);
+            let file = encode_note(self.open_kind, &self.latest);
+            let _ = self.vault.write(&id, &file);
         }
     }
 }
@@ -1255,6 +1884,78 @@ fn first_note(index: &VaultIndex) -> Option<NoteId> {
     } else {
         index.ids().next().cloned()
     }
+}
+
+/// Ask which display or window a new Sight note should record.
+fn prompt_record_source(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
+    let mut rows = vec![("Full display".to_string(), ScreenTarget::Display)];
+    let list_failed = match list_record_sources() {
+        Ok(sources) => {
+            for source in sources {
+                rows.push((source.title, source.target));
+            }
+            false
+        }
+        Err(_) => true,
+    };
+    if list_failed && let Some(pane) = root.pane.as_mut() {
+        pane.notice = Some(WINDOW_LIST_ERROR.to_string());
+    }
+    let view = cx.weak_entity();
+    window.open_dialog(cx, move |dialog, _, dialog_cx| {
+        let danger = dialog_cx.theme().danger;
+        let mut column = div()
+            .id("record-sources")
+            .w_full()
+            .max_h(px(320.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_1();
+        if list_failed {
+            column = column.child(div().text_sm().text_color(danger).child(WINDOW_LIST_ERROR));
+        }
+        for (index, (label, target)) in rows.iter().cloned().enumerate() {
+            column = column.child(record_source_button(view.clone(), index, label, target));
+        }
+        dialog
+            .title("Choose a screen")
+            .w(px(420.))
+            .child(column)
+            .footer(
+                Button::new("record-cancel")
+                    .label("Cancel")
+                    .cursor_pointer()
+                    .on_click(|_: &ClickEvent, window, cx| {
+                        window.close_dialog(cx);
+                    }),
+            )
+    });
+}
+
+fn record_source_button(
+    view: gpui_kit::WeakEntity<Root>,
+    index: usize,
+    label: String,
+    target: ScreenTarget,
+) -> impl IntoElement {
+    Button::new(SharedString::from(format!("record-source-{index}")))
+        .ghost()
+        .w_full()
+        .justify_start()
+        .cursor_pointer()
+        .label(label)
+        .on_click(move |_: &ClickEvent, window, cx| {
+            let target = target.clone();
+            view.update(cx, |root, cx| {
+                if let Some(pane) = root.pane.as_mut() {
+                    pane.start_screen(target);
+                }
+                cx.notify();
+            })
+            .ok();
+            window.close_dialog(cx);
+        })
 }
 
 /// Opens the create dialog.
@@ -1305,9 +2006,13 @@ fn open_create_dialog(
                         return true;
                     };
                     match pane.apply_name(action.clone(), &text, window, cx) {
-                        Ok(()) => true,
+                        Ok(()) => {
+                            cx.notify();
+                            true
+                        }
                         Err(err) => {
                             *error_for_ok.borrow_mut() = Some(err);
+                            cx.notify();
                             false
                         }
                     }
@@ -1372,6 +2077,42 @@ fn dialog_footer(
                     window.dispatch_action(Box::new(Confirm { secondary: false }), cx);
                 }),
         )
+}
+
+fn note_body(text: &str) -> (NoteKind, String) {
+    let (kind, body) = decode_note(text);
+    (kind, body.to_string())
+}
+
+fn seed_body(kind: NoteKind, name: &str) -> String {
+    match kind {
+        NoteKind::Book | NoteKind::Speech | NoteKind::Sight => format!("# {name}\n"),
+        NoteKind::Deed => "- [ ] \n".to_string(),
+    }
+}
+
+pub(super) fn kind_title(kind: NoteKind) -> &'static str {
+    match kind {
+        NoteKind::Book => "Book Runes (Bókrunar)",
+        NoteKind::Speech => "Speech Runes (Málrunar)",
+        NoteKind::Sight => "Sight Runes (Sjónrunar)",
+        NoteKind::Deed => "Deed Runes (Verkrunar)",
+    }
+}
+
+fn toggled_task_body(source: &str, index: usize) -> Option<String> {
+    let rows = split_rows(source);
+    let row = rows.get(index)?;
+    let slice = source.get(row.start..row.end)?;
+    let line_end = slice.find('\n').unwrap_or(slice.len());
+    let raw = &slice[..line_end];
+    let logical = raw.strip_suffix('\r').unwrap_or(raw);
+    let toggled = toggle_task_line(logical)?;
+    let mut next = String::with_capacity(source.len());
+    next.push_str(&source[..row.start]);
+    next.push_str(&toggled);
+    next.push_str(&source[row.start + raw.len()..]);
+    Some(next)
 }
 
 fn child_name(parent: &FolderId, name: &str) -> String {
@@ -1465,6 +2206,33 @@ fn last_opened(changes: &[crate::archivist::VaultChange]) -> Option<NoteId> {
     follow_note(id, changes)
 }
 
+fn last_wrote(changes: &[crate::archivist::VaultChange]) -> Option<NoteId> {
+    use crate::archivist::VaultChange;
+    let id = changes.iter().rev().find_map(|change| match change {
+        VaultChange::Wrote(id) => Some(id.clone()),
+        _ => None,
+    })?;
+    follow_note(id, changes)
+}
+
+/// The note that should be active after `changes`.
+///
+/// An open request wins. The current note stays when the changes still track
+/// it. A write is next. `fallback` covers a delete that leaves other notes.
+fn next_open_note(
+    open: Option<NoteId>,
+    changes: &[crate::archivist::VaultChange],
+    fallback: Option<NoteId>,
+) -> Option<NoteId> {
+    if let Some(id) = last_opened(changes) {
+        return Some(id);
+    }
+    follow_open(open, changes)
+        .0
+        .or_else(|| last_wrote(changes))
+        .or(fallback)
+}
+
 fn follow_folder(mut id: FolderId, changes: &[crate::archivist::VaultChange]) -> Option<FolderId> {
     use crate::archivist::VaultChange;
     for change in changes {
@@ -1481,4 +2249,73 @@ fn follow_folder(mut id: FolderId, changes: &[crate::archivist::VaultChange]) ->
         }
     }
     Some(id)
+}
+
+#[cfg(test)]
+mod next_open_tests {
+    use super::next_open_note;
+    use crate::archivist::VaultChange;
+    use runebook::NoteId;
+
+    fn note(id: &str) -> NoteId {
+        NoteId::parse(id).expect("test note id")
+    }
+
+    #[test]
+    fn next_open_note_keeps_the_current_note() {
+        let current = note("alpha");
+        assert_eq!(
+            next_open_note(Some(current.clone()), &[], Some(note("welcome"))),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn next_open_note_switches_on_opened() {
+        let opened = note("beta");
+        assert_eq!(
+            next_open_note(
+                Some(note("alpha")),
+                &[VaultChange::Opened(opened.clone())],
+                Some(note("welcome")),
+            ),
+            Some(opened)
+        );
+    }
+
+    #[test]
+    fn next_open_note_adopts_a_write_when_nothing_is_open() {
+        let wrote = note("beta");
+        assert_eq!(
+            next_open_note(None, &[VaultChange::Wrote(wrote.clone())], None),
+            Some(wrote)
+        );
+    }
+
+    #[test]
+    fn next_open_note_falls_back_after_a_delete() {
+        let current = note("alpha");
+        let fallback = note("beta");
+        assert_eq!(
+            next_open_note(
+                Some(current.clone()),
+                &[VaultChange::DeletedNote(current)],
+                Some(fallback.clone()),
+            ),
+            Some(fallback)
+        );
+    }
+
+    #[test]
+    fn next_open_note_is_none_when_the_index_is_empty() {
+        let current = note("alpha");
+        assert_eq!(
+            next_open_note(
+                Some(current.clone()),
+                &[VaultChange::DeletedNote(current)],
+                None,
+            ),
+            None
+        );
+    }
 }

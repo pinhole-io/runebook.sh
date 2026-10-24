@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -7,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::fsutil::atomic_write;
 use crate::index::VaultIndex;
+use crate::kind::{self, NoteKind};
 use crate::links::{WikiTarget, parse_wiki_links};
 use crate::media::{self, is_media_path};
 use crate::note::{FolderId, NoteId, validate_relative, vault_join};
@@ -46,6 +48,8 @@ pub enum TreeEntry {
         id: NoteId,
         /// File stem.
         name: String,
+        /// Kind read from the file header. A missing header is Book.
+        kind: NoteKind,
     },
 }
 
@@ -171,7 +175,8 @@ impl Vault {
         let mut notes = BTreeMap::new();
         for id in ids {
             let text = self.read(&id)?;
-            let targets = parse_wiki_links(&text)
+            let (_, body) = kind::decode_note(&text);
+            let targets = parse_wiki_links(body)
                 .into_iter()
                 .map(|link| link.target)
                 .collect::<Vec<WikiTarget>>();
@@ -413,6 +418,19 @@ fn require_folder(path: &Path, id: &FolderId) -> Result<()> {
     }
 }
 
+fn read_note_kind(path: &Path) -> Result<NoteKind> {
+    let mut file = fs::File::open(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut buf = [0u8; 256];
+    let read = file.read(&mut buf).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(kind::kind_from_prefix(&buf[..read]))
+}
+
 fn collect_ids(entries: &[TreeEntry], ids: &mut Vec<NoteId>) {
     for entry in entries {
         match entry {
@@ -456,9 +474,11 @@ fn read_children(root: &Path, folder: &FolderId) -> Result<Vec<TreeEntry>> {
                 continue;
             };
             let id = folder.join_note(stem)?;
+            let kind = read_note_kind(&item.path())?;
             entries.push(TreeEntry::Note {
                 id,
                 name: stem.to_string(),
+                kind,
             });
         }
     }

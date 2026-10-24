@@ -2,11 +2,14 @@
 //!
 //! The core crate owns files and wiki links. This binary only draws them.
 
+mod anchors;
 mod archivist;
 mod capture;
 mod chrome;
+mod markdown_view;
 mod mermaid;
 mod pane;
+mod playback;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -445,6 +448,9 @@ impl Render for Root {
             });
         }
 
+        if let Some(pane) = self.pane.as_mut() {
+            pane.sync_picture_width(window);
+        }
         let body = if self.pane.is_some() {
             pane::screen(self, window, cx).into_any_element()
         } else {

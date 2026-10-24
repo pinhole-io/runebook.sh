@@ -1,11 +1,29 @@
-//! Minimize, maximize, and exit controls for the window.
+//! Window controls and the shared height of the panel headers.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::*;
-use gpui_kit::{ClickEvent, Context, SharedString, Window, div, px, svg};
+use gpui_kit::{ClickEvent, Context, Pixels, SharedString, Styled, Window, div, px, svg};
 
 use crate::Root;
+
+/// Height of the file tree, note, and Archivist headers.
+///
+/// Change this value to change every panel header.
+pub(crate) const PANEL_HEADER_HEIGHT: Pixels = px(40.);
+
+/// Apply the shared panel header size to `header`.
+pub(crate) fn panel_header<E: Styled>(header: E, border: gpui_kit::Hsla) -> E {
+    header
+        .w_full()
+        .h(PANEL_HEADER_HEIGHT)
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .overflow_hidden()
+        .border_b_1()
+        .border_color(border)
+}
 
 struct WinButton {
     id: &'static str,

@@ -16,9 +16,26 @@ Local markdown notes at `projects/runebook.sh/`.
 
 - A vault root contains `runebook.toml` (`schema_version = 1`).
 - A note is a `*.md` file. `NoteId` is the relative path without `.md`, with `/` separators.
+- A note has one kind: Book, Speech, Sight, or Deed.
+- Book is a markdown file with no header. A file with no header is a Book note.
+- Speech, Sight, and Deed start with this header. `kind` is `speech`, `sight`, or `deed`.
+
+```markdown
+---
+kind: speech
+---
+```
+
+- The header must be the first lines, inside the first 256 bytes. Any other header stays in the body, and the note is Book.
+- The editor shows the body. Save writes the header back from the open note's kind.
+- Speech stores a transcript. The app does not save the audio file.
+- Sight stores a markdown link. The mp4 sits beside that note.
+- Deed is a markdown checklist. The preview toggles `- [ ]` and `- [x]`.
 - A media file beside a note uses a video, audio, or image extension: `mp4`, `webm`, `mkv`, `mov`, `mp3`, `wav`, `ogg`, `m4a`, `flac`, `png`, `jpg`, `jpeg`, `gif`, `webp`.
 - Folder delete removes those files. Any other non-note file still blocks folder delete.
-- A preview link to a media file opens that file. The path must stay inside the vault.
+- A preview row that is only a video or audio link plays in the note. The picture follows the file frame rate. Pause holds the place. The bar seeks. Mute silences the sound.
+- A preview image shows in the row. A click opens a vault file. A remote image loads from its URL.
+- The alt text shows when that image does not load. The path must stay inside the vault.
 - Skip hidden paths and symlinks. Do not follow a symlink out of the vault.
 - There is no sidecar database. The index is rebuilt from the files.
 - User config is `$XDG_CONFIG_HOME/runebook/config.toml`. It stores `last_vault`, `microphone`, `theme`, and `note_view`.

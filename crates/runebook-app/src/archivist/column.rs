@@ -1,5 +1,6 @@
 //! Right-hand Archivist column.
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Enter, Input};
 use gpui_kit::component::scroll::ScrollableElement;
@@ -10,6 +11,7 @@ use gpui_kit::{AnyElement, ClickEvent, Context, Hsla, SharedString, div, px};
 use super::{MISSING_KEY, Panel};
 use crate::Root;
 use crate::capture::groq_key_is_set;
+use crate::chrome::panel_header;
 
 pub(crate) fn column(panel: &Panel, cx: &mut Context<Root>) -> impl IntoElement {
     let border = cx.theme().sidebar_border;
@@ -35,19 +37,32 @@ pub(crate) fn column(panel: &Panel, cx: &mut Context<Root>) -> impl IntoElement 
         .bg(sidebar)
         .text_color(foreground)
         .child(
-            div()
-                .px_3()
-                .py_2()
-                .text_sm()
-                .border_b_1()
-                .border_color(border)
-                .child("Archivist"),
+            panel_header(div().id("archivist-header").px_2().text_sm(), border)
+                .child("Archivist")
+                .child(div().flex_1())
+                .child(hide_button(cx)),
         )
         .child(transcript(panel, muted, danger, busy))
         .when(!panel.held.is_empty(), |column| {
             column.child(held_rows(panel, cx))
         })
         .child(composer(panel, ready, busy, danger, cx))
+}
+
+fn hide_button(cx: &mut Context<Root>) -> impl IntoElement {
+    Button::new("hide-archivist")
+        .ghost()
+        .small()
+        .cursor_pointer()
+        .icon(IconName::PanelRightClose)
+        .tooltip("Hide the Archivist")
+        .accessibility_label("Hide the Archivist")
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+            if let Some(pane) = this.pane.as_mut() {
+                pane.toggle_archivist();
+            }
+            cx.notify();
+        }))
 }
 
 fn transcript(

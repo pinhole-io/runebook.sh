@@ -36,12 +36,13 @@ pub(crate) fn view(
     id: impl Into<gpui_kit::ElementId>,
     source: impl Into<SharedString>,
 ) -> TextView {
-    TextView::markdown(id, source)
-        .markdown_block_parser(parse_block)
-        .markdown_block_renderer("mermaid", render_block)
+    crate::markdown_view::view(id, source, None, false)
 }
 
-fn parse_block(node: &markdown_ast::Node, _: &MarkdownParseContext) -> Option<MarkdownNode> {
+pub(crate) fn parse_block(
+    node: &markdown_ast::Node,
+    _: &MarkdownParseContext,
+) -> Option<MarkdownNode> {
     let source = diagram_source(node)?;
     Some(
         MarkdownNode::new("mermaid", source.to_string())
@@ -61,7 +62,7 @@ fn diagram_source(node: &markdown_ast::Node) -> Option<&str> {
     Some(code.value.as_str())
 }
 
-fn render_block(node: &MarkdownNode, _: &mut Window, cx: &mut App) -> AnyElement {
+pub(crate) fn render_block(node: &MarkdownNode, _: &mut Window, cx: &mut App) -> AnyElement {
     let Some(source) = node.data::<String>() else {
         return note("Could not render the diagram.");
     };

@@ -241,7 +241,9 @@ fn create_note(vault: &Vault, args: &Value) -> Result<ToolOutcome, String> {
 fn write_note(vault: &Vault, args: &Value) -> Result<ToolOutcome, String> {
     let id = note_id(args, "id")?;
     let contents = arg_str(args, "contents")?;
-    vault.write(&id, contents).map_err(tool_error)?;
+    let previous = vault.read(&id).map_err(tool_error)?;
+    let contents = runebook::preserve_kind(&previous, contents);
+    vault.write(&id, &contents).map_err(tool_error)?;
     Ok(ToolOutcome {
         value: json!({ "ok": true, "id": id.as_str() }),
         changes: vec![VaultChange::Wrote(id)],
@@ -318,7 +320,7 @@ fn push_entries(entries: &[TreeEntry], left: &mut usize, out: &mut Vec<Value>) -
             return true;
         }
         match entry {
-            TreeEntry::Note { id, name } => {
+            TreeEntry::Note { id, name, .. } => {
                 *left -= 1;
                 out.push(json!({ "kind": "note", "id": id.as_str(), "name": name }));
             }
@@ -545,6 +547,20 @@ mod tests {
         let missing = read_note(vault, &json!({ "id": "journal/day" })).unwrap_err();
         assert!(missing.contains("note not found"), "{missing}");
         assert!(!missing.contains(temp.path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn write_note_keeps_a_kind_header() {
+        let temp = TempVault::new();
+        let vault = &temp.vault;
+        let original = runebook::encode_note(runebook::NoteKind::Speech, "Hello.\n");
+        create_note(vault, &json!({ "id": "talk", "contents": original })).unwrap();
+        write_note(vault, &json!({ "id": "talk", "contents": "Goodbye.\n" })).unwrap();
+        let text = vault.read(&NoteId::parse("talk").unwrap()).unwrap();
+        assert_eq!(
+            runebook::decode_note(&text),
+            (runebook::NoteKind::Speech, "Goodbye.\n")
+        );
     }
 
     #[test]

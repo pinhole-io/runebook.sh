@@ -103,10 +103,10 @@ struct HeldRows {
 }
 
 impl Panel {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Root>) -> Self {
+    pub(crate) fn new(open: bool, window: &mut Window, cx: &mut Context<Root>) -> Self {
         let draft = cx.new(|cx| InputState::new(window, cx).placeholder("Ask the Archivist"));
         Self {
-            open: true,
+            open,
             busy: false,
             lines: Vec::new(),
             live: LiveText::default(),

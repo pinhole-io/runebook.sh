@@ -1,4 +1,6 @@
-use runebook::{Error, FolderId, NoteId, ResolveResult, Vault, WikiTarget};
+use runebook::{
+    Error, FolderId, NoteId, NoteKind, ResolveResult, TreeEntry, Vault, WikiTarget, encode_note,
+};
 
 fn note(raw: &str) -> NoteId {
     NoteId::parse(raw).unwrap()
@@ -258,8 +260,46 @@ fn index_lists_nested_notes_and_skips_hidden_paths() {
     let tree = vault.tree().unwrap();
     assert!(tree.children.iter().any(|entry| matches!(
         entry,
-        runebook::TreeEntry::Note { name, .. } if name == "inbox"
+        TreeEntry::Note { name, kind: NoteKind::Book, .. } if name == "inbox"
     )));
+}
+
+#[test]
+fn tree_reads_kind_and_the_index_uses_the_body() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = Vault::create(dir.path(), "Notes").unwrap();
+    vault
+        .create_note(
+            &note("talk"),
+            &encode_note(NoteKind::Speech, "See [[inbox]].\n"),
+        )
+        .unwrap();
+    vault.create_note(&note("inbox"), "hi").unwrap();
+
+    let index = vault.notes().unwrap();
+    assert_eq!(index.outgoing(&note("talk")), &[WikiTarget::new("inbox")]);
+    let tree = vault.tree().unwrap();
+    assert_eq!(
+        note_kind(&tree.children, &note("talk")),
+        Some(NoteKind::Speech)
+    );
+}
+
+fn note_kind(entries: &[TreeEntry], id: &NoteId) -> Option<NoteKind> {
+    for entry in entries {
+        match entry {
+            TreeEntry::Note {
+                id: note_id, kind, ..
+            } if note_id == id => return Some(*kind),
+            TreeEntry::Folder { children, .. } => {
+                if let Some(kind) = note_kind(children, id) {
+                    return Some(kind);
+                }
+            }
+            TreeEntry::Note { .. } => {}
+        }
+    }
+    None
 }
 
 #[test]

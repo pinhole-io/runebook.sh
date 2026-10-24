@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_kit::component::input::{Editor, Enter, Escape, Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::radio::{Radio, RadioGroup};
@@ -12,7 +12,7 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::select::Select;
 use gpui_kit::component::toolbar::Toolbar;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme, Sizable, Theme};
+use gpui_kit::component::{ActiveTheme, Selectable, Sizable, Theme};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AppContext, ClickEvent, Context, Image, ImageFormat, Render, SharedString, Window, black, div,
@@ -20,8 +20,8 @@ use gpui_kit::{
 };
 
 use super::{EditorPane, NameAction, NoteView, Prompt, TreeSelection};
-use crate::chrome::window_controls;
-use runebook::ThemeChoice;
+use crate::chrome::{panel_header, window_controls};
+use runebook::{NoteKind, ThemeChoice};
 
 use crate::capture::{ScreenTarget, list_record_sources};
 use crate::{NewNote, OpenVault, Root, ToggleNoteView, theme_mode};
@@ -82,9 +82,7 @@ fn toolbar(pane: &EditorPane, window: &Window, cx: &mut Context<Root>) -> impl I
                 })),
         )
         .content(div().flex_1())
-        .content(archivist_button(pane, cx))
         .content(capture_buttons(pane, cx))
-        .content(toggle_note_view(pane, cx))
         .content(window_controls(window, cx))
 }
 
@@ -96,8 +94,11 @@ fn archivist_button(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoEleme
     };
     Button::new("toggle-archivist")
         .ghost()
+        .small()
         .cursor_pointer()
+        .selected(pane.archivist.is_open())
         .icon(IconName::Bot)
+        .label("Archivist")
         .tooltip(label)
         .accessibility_label(label)
         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -114,38 +115,60 @@ fn capture_buttons(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoElemen
     let busy = pane.capture_status().is_some();
     let voice_label = if voice_on {
         "Stop voice"
-    } else {
+    } else if pane.voice_allowed() {
         "Record voice"
+    } else {
+        "Open a Speech note to record voice"
     };
     let screen_label = if screen_on {
         "Stop screen"
-    } else {
+    } else if pane.sight_allowed() {
         "Record screen"
+    } else {
+        "Open a Sight note to record the screen"
     };
+    let voice = Button::new("record-voice")
+        .cursor_pointer()
+        .disabled(!voice_on && (busy || !pane.voice_allowed()))
+        .icon(if voice_on {
+            IconName::CircleDot
+        } else {
+            IconName::Mic
+        })
+        .tooltip(voice_label)
+        .accessibility_label(voice_label)
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+            if let Some(pane) = this.pane.as_mut() {
+                pane.toggle_voice(cx);
+            }
+            cx.notify();
+        }));
     div()
         .flex()
         .items_center()
         .gap_1()
-        .child(
-            Button::new("record-voice")
-                .ghost()
-                .cursor_pointer()
-                .disabled(busy && !voice_on)
-                .icon(if voice_on {
-                    IconName::Square
-                } else {
-                    IconName::Mic
-                })
-                .tooltip(voice_label)
-                .accessibility_label(voice_label)
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    if let Some(pane) = this.pane.as_mut() {
-                        pane.toggle_voice(cx);
-                    }
-                    cx.notify();
-                })),
-        )
-        .child(screen_button(screen_on, busy, screen_label, cx))
+        .child(recording_style(voice, voice_on, cx))
+        .child(screen_button(
+            screen_on,
+            busy || !pane.sight_allowed(),
+            screen_label,
+            cx,
+        ))
+}
+
+/// A live capture stays the size of the other toolbar icons and uses a red record mark.
+fn recording_style(button: Button, live: bool, cx: &mut Context<Root>) -> Button {
+    if !live {
+        return button.ghost();
+    }
+    let danger = cx.theme().danger;
+    let hover = cx.theme().secondary_hover;
+    button.custom(
+        ButtonCustomVariant::new(cx)
+            .foreground(danger)
+            .hover(hover)
+            .active(hover),
+    )
 }
 
 fn screen_button(
@@ -155,17 +178,16 @@ fn screen_button(
     cx: &mut Context<Root>,
 ) -> gpui_kit::AnyElement {
     let button = Button::new("record-screen")
-        .ghost()
         .cursor_pointer()
         .icon(if screen_on {
-            IconName::Square
+            IconName::CircleDot
         } else {
             IconName::Video
         })
         .tooltip(screen_label.to_string())
         .accessibility_label(screen_label.to_string());
     if screen_on {
-        return button
+        return recording_style(button, true, cx)
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 if let Some(pane) = this.pane.as_mut() {
                     pane.toggle_screen(cx);
@@ -175,7 +197,7 @@ fn screen_button(
             .into_any_element();
     }
     let view = cx.weak_entity();
-    button
+    recording_style(button, false, cx)
         .disabled(busy)
         .dropdown_menu(move |menu, _, menu_cx| {
             let windows = list_record_sources();
@@ -258,10 +280,33 @@ fn note_surface(
     view: gpui_kit::WeakEntity<Root>,
     cx: &mut Context<Root>,
 ) -> gpui_kit::AnyElement {
-    match pane.note_view {
+    let body = match pane.note_view {
         NoteView::Preview => super::preview::surface(pane, view, cx).into_any_element(),
         NoteView::Source => source_surface(pane).into_any_element(),
-    }
+    };
+    let border = cx.theme().border;
+    div()
+        .flex_1()
+        .h_full()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(note_header(pane, border, cx))
+        .child(body)
+        .into_any_element()
+}
+
+fn note_header(
+    pane: &EditorPane,
+    border: gpui_kit::Hsla,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
+    panel_header(div().id("note-header").px_2(), border)
+        .child(archivist_button(pane, cx))
+        .child(div().flex_1())
+        .child(toggle_note_view(pane, cx))
 }
 
 fn source_surface(pane: &EditorPane) -> impl IntoElement {
@@ -570,15 +615,8 @@ fn note_view_group(pane: &EditorPane, cx: &mut Context<Root>) -> RadioGroup {
 
 fn create_actions(cx: &mut Context<Root>) -> impl IntoElement {
     let border = cx.theme().sidebar_border;
-    div()
-        .w_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .border_b_1()
-        .border_color(border)
-        .px_1()
-        .py_1()
+    let view = cx.weak_entity();
+    panel_header(div().id("tree-header").justify_center().px_1(), border)
         .child(
             Button::new("new-note")
                 .ghost()
@@ -587,12 +625,12 @@ fn create_actions(cx: &mut Context<Root>) -> impl IntoElement {
                 .icon(IconName::FilePlus)
                 .label("New note")
                 .tooltip_with_action("New note", &NewNote, None)
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    if let Some(pane) = this.pane.as_mut() {
-                        pane.begin_create_note(window, cx);
-                    }
-                    cx.notify();
-                })),
+                .dropdown_menu(move |menu, _, _| {
+                    menu.item(new_kind_item(view.clone(), NoteKind::Book))
+                        .item(new_kind_item(view.clone(), NoteKind::Speech))
+                        .item(new_kind_item(view.clone(), NoteKind::Sight))
+                        .item(new_kind_item(view.clone(), NoteKind::Deed))
+                }),
         )
         .child(div().mx_2().h(px(16.)).w(px(1.)).flex_shrink_0().bg(border))
         .child(
@@ -610,6 +648,27 @@ fn create_actions(cx: &mut Context<Root>) -> impl IntoElement {
                     cx.notify();
                 })),
         )
+}
+
+fn new_kind_item(view: gpui_kit::WeakEntity<Root>, kind: NoteKind) -> PopupMenuItem {
+    PopupMenuItem::new(super::kind_title(kind)).on_click(move |_, window, app| {
+        view.update(app, |root, cx| {
+            if let Some(pane) = root.pane.as_mut() {
+                pane.prompt_new_note(kind, window, cx);
+            }
+            cx.notify();
+        })
+        .ok();
+    })
+}
+
+fn note_icon(kind: NoteKind) -> IconName {
+    match kind {
+        NoteKind::Book => IconName::FileText,
+        NoteKind::Speech => IconName::Mic,
+        NoteKind::Sight => IconName::Video,
+        NoteKind::Deed => IconName::ListTodo,
+    }
 }
 
 fn render_entry(
@@ -694,7 +753,7 @@ fn render_entry(
                 })
                 .into_any_element()
         }
-        runebook::TreeEntry::Note { id, name } => {
+        runebook::TreeEntry::Note { id, name, kind } => {
             let open = matches!(selected, TreeSelection::Note(current) if current == &id);
             let key = format!("note-{}", id.as_str());
             let note_id = id.clone();
@@ -712,7 +771,7 @@ fn render_entry(
                 .bg(if open { accent } else { sidebar })
                 .text_color(if open { accent_foreground } else { foreground })
                 .cursor_pointer()
-                .child(IconName::FileText)
+                .child(note_icon(kind))
                 .child(row_label(&key, name, renaming))
                 .when(renaming.is_none(), |row| {
                     row.child(row_actions(&key, open, TreeSelection::Note(id), cx))
