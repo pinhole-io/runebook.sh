@@ -31,7 +31,7 @@ kind: speech
 - Speech stores a transcript. The app does not save the audio file.
 - Sight stores a markdown link. The mp4 sits beside that note.
 - Deed is a markdown checklist.
-- Research stores a question. Charlotte writes a plan, gathers any missing context, then investigates and appends the findings.
+- Research stores a question. Charlotte writes a plan, gathers any missing context, then investigates. The note keeps the plan and the findings.
 - A preview checkbox toggles that task line in the note.
 - A media file beside a note uses a video, audio, or image extension: `mp4`, `webm`, `mkv`, `mov`, `mp3`, `wav`, `ogg`, `m4a`, `flac`, `png`, `jpg`, `jpeg`, `gif`, `webp`.
 - Folder delete removes those files. Any other non-note file still blocks folder delete.

@@ -939,7 +939,10 @@ fn has_close(line: &str, name: &str) -> bool {
 
 fn starts_tag(text: &str, name: &str) -> bool {
     let tag = format!("<{name}");
-    if text.len() < tag.len() || !text[..tag.len()].eq_ignore_ascii_case(&tag) {
+    let Some(head) = text.get(..tag.len()) else {
+        return false;
+    };
+    if !head.eq_ignore_ascii_case(&tag) {
         return false;
     }
     let boundary = text.as_bytes().get(tag.len()).copied().unwrap_or(b' ');
@@ -1028,6 +1031,12 @@ mod tests {
     fn entities_in_pre_become_characters() {
         let source = "<pre>&lt;tag&gt;</pre>\n";
         assert_eq!(style_html(source), "```\n<tag>\n```\n");
+    }
+
+    #[test]
+    fn an_em_dash_stays_prose() {
+        let source = "The—dash stays prose.\n";
+        assert_eq!(style_html(source), source);
     }
 
     #[test]

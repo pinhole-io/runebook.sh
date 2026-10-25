@@ -30,6 +30,7 @@ pub(crate) fn toolbar(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> im
     let muted = cx.theme().muted_foreground;
     Toolbar::new("vault-toolbar")
         .w_full()
+        .pl_0()
         .content(brand(pane))
         .content(div().px_1().text_color(muted).child("-"))
         .child(
@@ -238,6 +239,9 @@ pub(crate) fn note(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_
 
 fn note_surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_kit::AnyElement {
     let body = match pane.note_view {
+        NoteView::Preview if pane.open_note.is_some() && pane.open_kind == NoteKind::Research => {
+            super::research::report(pane, view.clone(), cx).into_any_element()
+        }
         NoteView::Preview => super::preview::surface(pane, view.clone(), cx).into_any_element(),
         NoteView::Source => source_surface(pane).into_any_element(),
     };
@@ -291,7 +295,7 @@ fn brand(pane: &EditorPane) -> impl IntoElement {
         .flex()
         .items_center()
         .gap_2()
-        .px_2()
+        .pr_2()
         .child(img(mark()).h(px(20.)).w(px(14.)).flex_shrink_0())
         .child(pane.vault.name().to_string())
 }

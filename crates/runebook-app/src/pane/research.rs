@@ -34,6 +34,7 @@ struct Job {
     query: String,
     answers: Vec<(String, String)>,
     phase: Arc<Mutex<ResearchNode>>,
+    plan: Arc<Mutex<String>>,
     started: Option<Instant>,
     cancel: CancellationToken,
     running: bool,
@@ -232,6 +233,7 @@ impl EditorPane {
             query,
             answers,
             phase: Arc::new(Mutex::new(ResearchNode::Plan)),
+            plan: Arc::new(Mutex::new(String::new())),
             started: None,
             cancel: CancellationToken::new(),
             running: false,
@@ -254,15 +256,27 @@ impl EditorPane {
         let answers = job.answers.clone();
         let cancel = job.cancel.clone();
         let phase = Arc::clone(&job.phase);
+        let plan = Arc::clone(&job.plan);
         let vault_epoch = self.epoch;
         cx.spawn(async move |this, cx| {
             let task = runtime().spawn(async move {
-                let end = run_research_graph(&query, &answers, cancel.clone(), {
-                    let phase = Arc::clone(&phase);
-                    move |node| {
-                        *phase.lock().unwrap_or_else(|err| err.into_inner()) = node;
-                    }
-                })
+                let end = run_research_graph(
+                    &query,
+                    &answers,
+                    cancel.clone(),
+                    {
+                        let phase = Arc::clone(&phase);
+                        move |node| {
+                            *phase.lock().unwrap_or_else(|err| err.into_inner()) = node;
+                        }
+                    },
+                    {
+                        let plan = Arc::clone(&plan);
+                        move |text| {
+                            *plan.lock().unwrap_or_else(|err| err.into_inner()) = text.to_string();
+                        }
+                    },
+                )
                 .await;
                 match end {
                     Ok(_) if cancel.is_cancelled() => RunEnd::Stopped,
@@ -276,10 +290,11 @@ impl EditorPane {
                     break;
                 }
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                this.update(cx, |root, cx| {
+                this.update_in(cx, |root, window, cx| {
                     if let Some(pane) = root.pane.as_mut()
                         && pane.same_epoch(vault_epoch)
                     {
+                        pane.publish_research_plan(&note, window, cx);
                         cx.notify();
                     }
                 })
@@ -309,6 +324,7 @@ impl EditorPane {
         window: &mut Window,
         cx: &mut Context<Root>,
     ) {
+        self.publish_research_plan(id, window, cx);
         self.research.jobs.retain(|job| &job.note != id);
         match end {
             RunEnd::Findings(text) => {
@@ -350,6 +366,66 @@ impl EditorPane {
         body.push_str(block.trim());
         body.push('\n');
         let file = encode_note(kind, &body);
+        if self.vault.write(id, &file).is_err() {
+            return;
+        }
+        if self.open_note.as_ref() == Some(id) {
+            self.apply_file(&file, window, cx);
+        }
+    }
+
+    fn publish_research_plan(&mut self, id: &NoteId, window: &mut Window, cx: &mut Context<Root>) {
+        let Some(plan) = self
+            .research
+            .jobs
+            .iter()
+            .find(|job| &job.note == id)
+            .map(|job| {
+                job.plan
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .clone()
+            })
+        else {
+            return;
+        };
+        let plan = plan.trim();
+        if plan.is_empty() {
+            return;
+        }
+        let body = self.research_body(id);
+        if parse_research_body(&body).plan == plan {
+            return;
+        }
+        self.replace_research_body(id, &upsert_plan(&body, plan), window, cx);
+    }
+
+    fn research_body(&self, id: &NoteId) -> String {
+        if self.open_note.as_ref() == Some(id) {
+            return self.latest.clone();
+        }
+        self.vault
+            .read(id)
+            .map(|file| decode_note(&file).1.to_string())
+            .unwrap_or_default()
+    }
+
+    fn replace_research_body(
+        &mut self,
+        id: &NoteId,
+        body: &str,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) {
+        let kind = if self.open_note.as_ref() == Some(id) {
+            self.open_kind
+        } else {
+            let Ok(file) = self.vault.read(id) else {
+                return;
+            };
+            decode_note(&file).0
+        };
+        let file = encode_note(kind, body);
         if self.vault.write(id, &file).is_err() {
             return;
         }
@@ -467,6 +543,238 @@ fn question_field(index: usize, question: &QuestionField) -> impl IntoElement {
         )
 }
 
+pub(super) fn report(
+    pane: &EditorPane,
+    view: gpui_kit::WeakEntity<Root>,
+    cx: &App,
+) -> impl IntoElement {
+    let parsed = parse_research_body(&pane.latest);
+    let border = cx.theme().border;
+    let muted = cx.theme().muted_foreground;
+    let danger = cx.theme().danger;
+    let fill = cx.theme().sidebar_accent;
+    let fill_text = cx.theme().sidebar_accent_foreground;
+    let job = pane
+        .research
+        .jobs
+        .iter()
+        .find(|job| pane.open_note.as_ref() == Some(&job.note));
+    let images = pane
+        .open_note
+        .as_ref()
+        .map(|note| crate::markdown_view::ImageRoots {
+            vault: pane.vault.clone(),
+            note: note.clone(),
+        });
+    let plan_images = images.clone();
+    let plan_view = view.clone();
+    let show_query = !parsed.query.is_empty();
+    let query = parsed.query;
+    let show_answers = !parsed.answers.is_empty();
+    let answers = parsed.answers;
+    let show_plan = !parsed.plan.is_empty();
+    let plan = parsed.plan;
+    let show_error = !parsed.error.is_empty();
+    let error = parsed.error;
+    let findings = parsed.findings;
+    let show_findings = !findings.is_empty();
+    div()
+        .id("research-report")
+        .flex_1()
+        .h_full()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .overflow_y_scroll()
+        .p_4()
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap_6()
+                .when_some(job, |column, job| {
+                    let phase = card_phase(job);
+                    let time = if job.running {
+                        job.started
+                            .map(elapsed_text)
+                            .unwrap_or_else(|| "0:00".to_string())
+                    } else {
+                        "Waiting".to_string()
+                    };
+                    column.child(
+                        div()
+                            .w_full()
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(border)
+                            .flex()
+                            .gap_2()
+                            .text_sm()
+                            .child(phase)
+                            .child(time),
+                    )
+                })
+                .when(show_query, |column| {
+                    column.child(report_block(
+                        "Query",
+                        border,
+                        muted,
+                        div()
+                            .w_full()
+                            .min_w(px(0.0))
+                            .text_lg()
+                            .whitespace_normal()
+                            .child(query),
+                    ))
+                })
+                .when(show_answers, |column| {
+                    column.child(report_block(
+                        "Answers",
+                        border,
+                        muted,
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .children(answers.into_iter().map(|(question, answer)| {
+                                answer_row(question, answer, fill, fill_text).into_any_element()
+                            })),
+                    ))
+                })
+                .when(show_plan, |column| {
+                    column.child(report_block(
+                        "Plan",
+                        border,
+                        muted,
+                        crate::markdown_view::view("research-plan", plan, plan_images, false)
+                            .w_full()
+                            .selectable(false)
+                            .on_link_click(move |url, _, window, cx| {
+                                let url = url.to_string();
+                                plan_view
+                                    .update(cx, |this, cx| {
+                                        this.follow_link(&url, window, cx);
+                                    })
+                                    .ok();
+                            }),
+                    ))
+                })
+                .when(show_error, |column| {
+                    column.child(
+                        div()
+                            .w_full()
+                            .min_w(px(0.0))
+                            .p_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(danger)
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(div().text_sm().text_color(danger).child("Stopped"))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .min_w(px(0.0))
+                                    .whitespace_normal()
+                                    .text_color(danger)
+                                    .child(error),
+                            ),
+                    )
+                })
+                .when(show_findings, |column| {
+                    column.child(
+                        div()
+                            .w_full()
+                            .pt_4()
+                            .border_t_1()
+                            .border_color(border)
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(div().text_sm().child("Findings"))
+                            .child(
+                                crate::markdown_view::view(
+                                    "research-findings",
+                                    findings,
+                                    images,
+                                    false,
+                                )
+                                .w_full()
+                                .selectable(false)
+                                .on_link_click(
+                                    move |url, _, window, cx| {
+                                        let url = url.to_string();
+                                        view.update(cx, |this, cx| {
+                                            this.follow_link(&url, window, cx);
+                                        })
+                                        .ok();
+                                    },
+                                ),
+                            ),
+                    )
+                }),
+        )
+}
+
+fn report_block(
+    label: &'static str,
+    border: impl Into<gpui_kit::Hsla>,
+    muted: impl Into<gpui_kit::Hsla>,
+    body: impl IntoElement,
+) -> impl IntoElement {
+    div()
+        .w_full()
+        .min_w(px(0.0))
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(border)
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(div().text_sm().text_color(muted).child(label))
+        .child(body)
+}
+
+fn answer_row(
+    question: String,
+    answer: String,
+    fill: gpui_kit::Hsla,
+    text: gpui_kit::Hsla,
+) -> impl IntoElement {
+    let answer_color = text;
+    div()
+        .w_full()
+        .min_w(px(0.0))
+        .p_3()
+        .rounded_md()
+        .bg(fill)
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .w_full()
+                .min_w(px(0.0))
+                .whitespace_normal()
+                .text_color(text)
+                .child(question),
+        )
+        .child(
+            div()
+                .w_full()
+                .min_w(px(0.0))
+                .whitespace_normal()
+                .text_sm()
+                .text_color(answer_color)
+                .child(answer),
+        )
+}
+
 pub(super) fn cards(
     pane: &EditorPane,
     view: gpui_kit::WeakEntity<Root>,
@@ -563,6 +871,195 @@ fn card_phase(job: &Job) -> String {
 fn elapsed_text(started: Instant) -> String {
     let secs = started.elapsed().as_secs();
     format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+struct ResearchReport {
+    query: String,
+    answers: Vec<(String, String)>,
+    plan: String,
+    findings: String,
+    error: String,
+}
+
+/// Split a research note on the headings [`research_note_body`] writes.
+///
+/// A body with none of those headings stays the findings text.
+fn parse_research_body(body: &str) -> ResearchReport {
+    let mut section = ReportSection::Skip;
+    let mut saw_structure = false;
+    let mut preamble = String::new();
+    let mut query = String::new();
+    let mut answers_raw = String::new();
+    let mut plan = String::new();
+    let mut findings = String::new();
+    let mut error = String::new();
+    for line in body.lines() {
+        let line = line.trim_end_matches('\r');
+        if section != ReportSection::Findings
+            && let Some(next) = report_heading(line)
+        {
+            saw_structure = true;
+            section = next;
+            continue;
+        }
+        if saw_structure
+            && section != ReportSection::Findings
+            && line.trim() == "The investigation stopped."
+        {
+            section = ReportSection::Error;
+            push_line(&mut error, line);
+            continue;
+        }
+        match section {
+            ReportSection::Skip => {
+                if !line.trim().is_empty() && !is_slug_heading(line) {
+                    push_line(&mut preamble, line);
+                }
+            }
+            ReportSection::Query => push_line(&mut query, line),
+            ReportSection::Plan => push_line(&mut plan, line),
+            ReportSection::Answers if line.is_empty() || is_answer_line(line) => {
+                push_line(&mut answers_raw, line);
+            }
+            ReportSection::Answers => {
+                section = ReportSection::Error;
+                push_line(&mut error, line);
+            }
+            ReportSection::Findings => push_line(&mut findings, line),
+            ReportSection::Error => push_line(&mut error, line),
+        }
+    }
+    if !saw_structure {
+        return ResearchReport {
+            query: String::new(),
+            answers: Vec::new(),
+            plan: String::new(),
+            findings: body.trim().to_string(),
+            error: String::new(),
+        };
+    }
+    let mut error = error.trim().to_string();
+    let preamble = preamble.trim();
+    if !preamble.is_empty() {
+        if error.is_empty() {
+            error = preamble.to_string();
+        } else {
+            error = format!("{preamble}\n\n{error}");
+        }
+    }
+    ResearchReport {
+        query: query.trim().to_string(),
+        answers: parse_answer_lines(&answers_raw),
+        plan: plan.trim().to_string(),
+        findings: findings.trim().to_string(),
+        error,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReportSection {
+    Skip,
+    Query,
+    Answers,
+    Plan,
+    Findings,
+    Error,
+}
+
+fn report_heading(line: &str) -> Option<ReportSection> {
+    match line.trim() {
+        "## Query" => Some(ReportSection::Query),
+        "## Answers" => Some(ReportSection::Answers),
+        "## Plan" => Some(ReportSection::Plan),
+        "## Findings" => Some(ReportSection::Findings),
+        _ => None,
+    }
+}
+
+fn is_slug_heading(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("# ") && !trimmed.starts_with("##")
+}
+
+fn is_answer_line(line: &str) -> bool {
+    line.starts_with("- ") || line.starts_with(' ') || line.starts_with('\t')
+}
+
+fn upsert_plan(body: &str, plan: &str) -> String {
+    let heading = "## Plan";
+    let lines: Vec<&str> = body.lines().collect();
+    let Some(start) = lines.iter().position(|line| line.trim() == heading) else {
+        let block = format!("{heading}\n\n{plan}\n");
+        if let Some(findings) = lines.iter().position(|line| line.trim() == "## Findings") {
+            let mut out = join_lines(&lines[..findings]);
+            out.push_str(&block);
+            out.push('\n');
+            out.push_str(&join_lines(&lines[findings..]));
+            return out;
+        }
+        let mut out = body.trim_end().to_string();
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(&block);
+        return out;
+    };
+    let end = lines
+        .iter()
+        .skip(start + 1)
+        .position(|line| line.trim().starts_with("## "))
+        .map(|offset| start + 1 + offset)
+        .unwrap_or(lines.len());
+    let mut out = join_lines(&lines[..start]);
+    out.push_str(heading);
+    out.push_str("\n\n");
+    out.push_str(plan.trim());
+    out.push('\n');
+    if end < lines.len() {
+        out.push('\n');
+        out.push_str(&join_lines(&lines[end..]));
+    }
+    out
+}
+
+fn join_lines(lines: &[&str]) -> String {
+    let mut out = String::new();
+    for line in lines {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn push_line(buf: &mut String, line: &str) {
+    if !buf.is_empty() {
+        buf.push('\n');
+    }
+    buf.push_str(line);
+}
+
+fn parse_answer_lines(text: &str) -> Vec<(String, String)> {
+    let mut items = Vec::new();
+    let mut question: Option<String> = None;
+    let mut answer = String::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("- ") {
+            if let Some(question) = question.take() {
+                items.push((question, answer.trim().to_string()));
+                answer.clear();
+            }
+            question = Some(rest.trim().to_string());
+        } else if question.is_some() && !line.trim().is_empty() {
+            if !answer.is_empty() {
+                answer.push('\n');
+            }
+            answer.push_str(line.trim());
+        }
+    }
+    if let Some(question) = question {
+        items.push((question, answer.trim().to_string()));
+    }
+    items
 }
 
 fn research_note_body(name: &str, query: &str, answers: &[(String, String)]) -> String {
@@ -678,6 +1175,7 @@ mod tests {
             query: String::new(),
             answers: Vec::new(),
             phase: Arc::new(Mutex::new(ResearchNode::Search)),
+            plan: Arc::new(Mutex::new(String::new())),
             started: None,
             cancel: CancellationToken::new(),
             running: true,
@@ -697,6 +1195,88 @@ mod tests {
             "how-did-the-port-change"
         );
         assert_eq!(research_slug("..."), "research");
+    }
+
+    #[test]
+    fn the_report_splits_query_answers_and_findings() {
+        let mut body = research_note_body(
+            "ports",
+            "How did the port change?",
+            &[("Which years?".into(), "1990 to 2000".into())],
+        );
+        body.push_str("\n## Findings\n\nThe quay moved.\n");
+        let report = parse_research_body(&body);
+        assert_eq!(report.query, "How did the port change?");
+        assert_eq!(
+            report.answers,
+            vec![("Which years?".to_string(), "1990 to 2000".to_string())]
+        );
+        assert_eq!(report.findings, "The quay moved.");
+        assert!(report.error.is_empty());
+    }
+
+    #[test]
+    fn missing_findings_stay_empty() {
+        let body = research_note_body("ports", "How did the port change?", &[]);
+        let report = parse_research_body(&body);
+        assert_eq!(report.query, "How did the port change?");
+        assert!(report.findings.is_empty());
+        assert!(report.error.is_empty());
+    }
+
+    #[test]
+    fn a_plain_body_stays_findings() {
+        let report = parse_research_body("# Title\n\nHello.\n");
+        assert!(report.query.is_empty());
+        assert!(report.answers.is_empty());
+        assert_eq!(report.findings, "# Title\n\nHello.");
+    }
+
+    #[test]
+    fn the_slug_heading_is_not_the_title() {
+        let body = research_note_body("do-research-on-wow", "Do research on the mage class", &[]);
+        let report = parse_research_body(&body);
+        assert_eq!(report.query, "Do research on the mage class");
+        assert!(!report.query.contains("do-research-on-wow"));
+        assert!(!report.findings.contains("do-research-on-wow"));
+    }
+
+    #[test]
+    fn the_report_keeps_the_plan() {
+        let mut body = research_note_body("ports", "How did the port change?", &[]);
+        body.push_str("\n## Plan\n\nSearch the quay.\n\n## Findings\n\nThe quay moved.\n");
+        let report = parse_research_body(&body);
+        assert_eq!(report.plan, "Search the quay.");
+        assert_eq!(report.findings, "The quay moved.");
+        assert_eq!(report.query, "How did the port change?");
+    }
+
+    #[test]
+    fn a_revised_plan_replaces_the_old_plan() {
+        let body = "# ports\n\n## Query\n\nHow?\n\n## Plan\n\nFirst.\n\n## Findings\n\nDone.\n";
+        let next = upsert_plan(body, "Second.");
+        let report = parse_research_body(&next);
+        assert_eq!(report.plan, "Second.");
+        assert_eq!(report.query, "How?");
+        assert_eq!(report.findings, "Done.");
+    }
+
+    #[test]
+    fn the_plan_is_inserted_before_findings() {
+        let body = "# ports\n\n## Query\n\nHow?\n\n## Findings\n\nDone.\n";
+        let report = parse_research_body(&upsert_plan(body, "Search."));
+        assert_eq!(report.plan, "Search.");
+        assert_eq!(report.findings, "Done.");
+    }
+
+    #[test]
+    fn a_stop_message_is_not_findings() {
+        let mut body = research_note_body("ports", "How did the port change?", &[]);
+        body.push_str("\nThe investigation stopped.\n\nno key\n");
+        let report = parse_research_body(&body);
+        assert!(report.findings.is_empty());
+        assert!(report.error.contains("The investigation stopped."));
+        assert!(!report.error.contains("## Findings"));
     }
 
     #[test]

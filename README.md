@@ -72,7 +72,7 @@ Use `speech`, `sight`, `deed`, or `research`. The editor shows the body. Save wr
 
 ## Research
 
-A Research rune asks for a question, then for a few clarifying answers. Charlotte writes a plan first. When that plan needs facts that are not in the question, Charlotte gathers those facts and revises the plan. The investigation then searches, reads, and writes. The file tree shows that run above Settings until the findings land in the note.
+A Research rune asks for a question, then for a few clarifying answers. Charlotte writes a plan first. When that plan needs facts that are not in the question, Charlotte gathers those facts and revises the plan. The note shows that plan. The investigation then searches, reads, and writes. The file tree shows that run above Settings until the findings land in the note.
 
 Set `OPENAI_API_KEY` before you start a Research rune. `OPENAI_BASE_URL` and `OPENAI_MODEL` are optional. The default model is `gpt-5.6-luna`.
 
