@@ -1,6 +1,7 @@
 //! Vault workspace: file tree, source editor, markdown preview, and row selection.
 
 mod preview;
+mod research;
 mod rows;
 mod view;
 
@@ -118,6 +119,7 @@ pub(super) struct EditorPane {
     _subscription: Subscription,
     archivist: crate::archivist::Panel,
     epoch: u64,
+    research: research::ResearchDesk,
 }
 
 enum Capture {
@@ -246,6 +248,7 @@ impl EditorPane {
             _subscription: subscription,
             archivist: crate::archivist::Panel::new(show_archivist, window, cx),
             epoch: next_epoch(),
+            research: research::ResearchDesk::new(),
         };
         if pane.note_view == NoteView::Source {
             pane.editor.focus_handle(cx).focus(window, cx);
@@ -1364,6 +1367,10 @@ impl EditorPane {
             NoteKind::Speech => "speech",
             NoteKind::Sight => "sight",
             NoteKind::Deed => "deed",
+            NoteKind::Research => {
+                self.open_research_wizard(window, cx);
+                return;
+            }
         };
         let seed = child_name(&self.parent_folder(), seed_name);
         open_create_dialog(
@@ -2255,7 +2262,9 @@ fn note_body(text: &str) -> (NoteKind, String) {
 
 fn seed_body(kind: NoteKind, name: &str) -> String {
     match kind {
-        NoteKind::Book | NoteKind::Speech | NoteKind::Sight => format!("# {name}\n"),
+        NoteKind::Book | NoteKind::Speech | NoteKind::Sight | NoteKind::Research => {
+            format!("# {name}\n")
+        }
         NoteKind::Deed => "- [ ] \n".to_string(),
     }
 }
@@ -2266,6 +2275,7 @@ pub(super) fn kind_title(kind: NoteKind) -> &'static str {
         NoteKind::Speech => "Speech Runes (Málrunar)",
         NoteKind::Sight => "Sight Runes (Sjónrunar)",
         NoteKind::Deed => "Deed Runes (Verkrunar)",
+        NoteKind::Research => "Research Runes (Rannsóknarrúnar)",
     }
 }
 

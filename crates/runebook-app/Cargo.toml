@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 async-trait = "0.1"
+charlotte = { path = "../../../charlotte", default-features = false, features = ["notepad"] }
 cpal = "0.15"
 gpui-kit = { version = "0.8", features = ["tree-sitter-markdown"] }
 hound = "3.5"

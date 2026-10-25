@@ -230,6 +230,9 @@ pub(crate) fn note(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_
     if pane.settings_open {
         return settings_panel(pane, view, cx).into_any_element();
     }
+    if pane.research.wizard_open() {
+        return super::research::wizard(pane, view, cx).into_any_element();
+    }
     note_surface(pane, view, cx)
 }
 
@@ -424,6 +427,7 @@ pub(crate) fn files(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl
                 }))
                 .overflow_y_scrollbar(),
         )
+        .child(super::research::cards(pane, view.clone(), cx))
         .child(settings_row(view, cx))
 }
 
@@ -582,6 +586,7 @@ fn create_actions(view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
                             .item(new_kind_item(view.clone(), NoteKind::Speech))
                             .item(new_kind_item(view.clone(), NoteKind::Sight))
                             .item(new_kind_item(view.clone(), NoteKind::Deed))
+                            .item(new_kind_item(view.clone(), NoteKind::Research))
                     }
                 }),
         )
@@ -621,6 +626,7 @@ fn note_icon(kind: NoteKind) -> IconName {
         NoteKind::Speech => IconName::Mic,
         NoteKind::Sight => IconName::Video,
         NoteKind::Deed => IconName::ListTodo,
+        NoteKind::Research => IconName::Search,
     }
 }
 

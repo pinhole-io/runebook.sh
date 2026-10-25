@@ -1,6 +1,6 @@
 //! Markdown preview for a note row and for Archivist text.
 //!
-//! Block images, rules, footnotes, and `<details>` are drawn here.
+//! Block images, rules, footnotes, definitions, and `<details>` are drawn here.
 //! A local image path must stay inside the vault. The resolver refuses a
 //! symlink and a file larger than 8 MiB. A failure shows the alt text and
 //! does not include a path.
@@ -46,7 +46,8 @@ pub(crate) fn view(
     images: Option<ImageRoots>,
     hide_anchors: bool,
 ) -> TextView {
-    let source = SharedString::from(shield_details(&source.into()));
+    let shielded = shield_details(&source.into());
+    let source = SharedString::from(crate::html_style::style_html(&shielded));
     let links = Arc::new(crate::anchors::link_urls(source.as_ref()));
     let images = Arc::new(images);
     let parser_links = Arc::clone(&links);
@@ -69,7 +70,12 @@ pub(crate) fn view(
             let images = Arc::clone(&images);
             move |node, _, cx| render_figure(node, &images, cx)
         })
+        .markdown_block_renderer("md-deflist", {
+            let images = Arc::clone(&images);
+            move |node, _, cx| render_deflist(node, &images, cx)
+        })
         .plugin(FootnoteMark)
+        .plugin(HtmlInline)
         .plugin(ImageRef {
             links,
             images: Arc::clone(&images),
@@ -85,6 +91,11 @@ struct Figure {
 struct Details {
     summary: String,
     body: String,
+    starts_open: bool,
+}
+
+struct DefList {
+    items: Vec<(String, String)>,
 }
 
 struct Footnote {
@@ -110,11 +121,7 @@ fn parse_extra(
     match node {
         markdown_ast::Node::Code(code) => details_code(code),
         markdown_ast::Node::ThematicBreak(_) => Some(MarkdownNode::new("md-rule", ()).text("")),
-        markdown_ast::Node::Html(html) => {
-            let details = details_parts(&html.value)?;
-            let summary = details.summary.clone();
-            Some(MarkdownNode::new("md-details", details).text(summary))
-        }
+        markdown_ast::Node::Html(html) => html_block(&html.value),
         markdown_ast::Node::FootnoteDefinition(def) => {
             if hide {
                 return Some(MarkdownNode::new("md-skip", ()).text(""));
@@ -166,6 +173,32 @@ fn details_code(code: &markdown_ast::Code) -> Option<MarkdownNode> {
             .text(summary)
             .markdown(markdown),
     )
+}
+
+fn html_block(html: &str) -> Option<MarkdownNode> {
+    if let Some(items) = crate::html_style::def_list(html) {
+        let text = items
+            .iter()
+            .map(|(term, _)| term.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(MarkdownNode::new("md-deflist", DefList { items }).text(text));
+    }
+    if let Some((url, alt)) = crate::html_style::figure_html(html) {
+        return Some(
+            MarkdownNode::new(
+                "md-figure",
+                Figure {
+                    url,
+                    alt: alt.clone(),
+                },
+            )
+            .text(alt),
+        );
+    }
+    let details = details_parts(html)?;
+    let summary = details.summary.clone();
+    Some(MarkdownNode::new("md-details", details).text(summary))
 }
 
 fn figure(node: &markdown_ast::Node, links: &HashMap<String, String>) -> Option<Figure> {
@@ -225,9 +258,14 @@ fn render_footnote(
     let id = note.id.clone();
     let body = note.body.clone();
     let key = text_key(&format!("{id}\n{body}"));
+    let border = cx.theme().border;
     div()
         .w_full()
         .min_w(px(0.))
+        .mt_2()
+        .pt_2()
+        .border_t_1()
+        .border_color(border)
         .flex()
         .items_start()
         .gap_2()
@@ -257,14 +295,23 @@ fn render_details(
         return div().into_any_element();
     };
     let key = text_key(&format!("{}\n{}", details.summary, details.body));
-    let open = details_open()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .contains(&key);
+    let starts_open = details.starts_open;
+    let open = {
+        let state = details_state()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if state.shut.contains(&key) {
+            false
+        } else {
+            starts_open || state.open.contains(&key)
+        }
+    };
     let summary = details.summary.clone();
     let body = details.body.clone();
     let marker = if open { "▾" } else { "▸" };
-    let link = cx.theme().link;
+    let border = cx.theme().border;
+    let fill = cx.theme().secondary;
+    let ink = cx.theme().foreground;
     div()
         .w_full()
         .min_w(px(0.))
@@ -274,38 +321,101 @@ fn render_details(
         .child(
             div()
                 .id(SharedString::from(format!("md-summary-{key}")))
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .bg(fill)
                 .cursor_pointer()
-                .text_color(link)
-                .child(format!("{marker} {summary}"))
+                .text_color(ink)
+                .child(marker.to_string())
+                .child(summary)
                 .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
                     cx.stop_propagation();
                 })
                 .on_mouse_up(MouseButton::Left, move |_: &MouseUpEvent, _, cx| {
                     cx.stop_propagation();
-                    let mut open = details_open().lock().unwrap_or_else(|err| err.into_inner());
-                    if !open.remove(&key) {
-                        if open.len() >= 128 {
-                            open.clear();
-                        }
-                        open.insert(key);
+                    let mut state = details_state()
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner());
+                    if state.open.len() + state.shut.len() >= 128 {
+                        state.open.clear();
+                        state.shut.clear();
+                    }
+                    let shown = if state.shut.contains(&key) {
+                        false
+                    } else {
+                        starts_open || state.open.contains(&key)
+                    };
+                    if shown {
+                        state.open.remove(&key);
+                        state.shut.insert(key);
+                    } else {
+                        state.shut.remove(&key);
+                        state.open.insert(key);
                     }
                     cx.refresh_windows();
                 }),
         )
         .when(open && !body.trim().is_empty(), |block| {
             block.child(
-                div().pl_4().child(
-                    view(
-                        SharedString::from(format!("md-details-{key}")),
-                        body,
-                        images.as_ref().clone(),
-                        false,
-                    )
-                    .selectable(false),
-                ),
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(div().w(px(2.)).bg(border))
+                    .child(
+                        div().flex_1().min_w(px(0.)).child(
+                            view(
+                                SharedString::from(format!("md-details-{key}")),
+                                body,
+                                images.as_ref().clone(),
+                                false,
+                            )
+                            .selectable(false),
+                        ),
+                    ),
             )
         })
         .into_any_element()
+}
+
+fn render_deflist(
+    node: &MarkdownNode,
+    images: &Arc<Option<ImageRoots>>,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let Some(list) = node.data::<DefList>() else {
+        return div().into_any_element();
+    };
+    let ink = cx.theme().foreground;
+    let mut column = div().w_full().min_w(px(0.)).flex().flex_col().gap_2();
+    for (index, (term, body)) in list.items.iter().enumerate() {
+        let term = term.clone();
+        let body = body.clone();
+        column = column.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().text_color(ink).child(term))
+                .when(!body.trim().is_empty(), |item| {
+                    item.child(
+                        div().pl_4().child(
+                            view(
+                                SharedString::from(format!("md-def-{index}-{}", text_key(&body))),
+                                body,
+                                images.as_ref().clone(),
+                                false,
+                            )
+                            .selectable(false),
+                        ),
+                    )
+                }),
+        );
+    }
+    column.into_any_element()
 }
 
 fn render_figure(
@@ -382,9 +492,19 @@ fn open_image(url: &str, images: &Option<ImageRoots>, cx: &mut App) {
     let _ = command.spawn();
 }
 
-fn details_open() -> &'static Mutex<HashSet<u64>> {
-    static OPEN: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
-    OPEN.get_or_init(|| Mutex::new(HashSet::new()))
+struct DetailState {
+    open: HashSet<u64>,
+    shut: HashSet<u64>,
+}
+
+fn details_state() -> &'static Mutex<DetailState> {
+    static STATE: OnceLock<Mutex<DetailState>> = OnceLock::new();
+    STATE.get_or_init(|| {
+        Mutex::new(DetailState {
+            open: HashSet::new(),
+            shut: HashSet::new(),
+        })
+    })
 }
 
 fn text_key(text: &str) -> u64 {
@@ -517,9 +637,14 @@ fn details_opens(line: &str) -> bool {
     if indent > 3 {
         return false;
     }
-    let rest = &line[indent..];
+    let Some(rest) = line.get(indent..) else {
+        return false;
+    };
     let tag = "<details";
-    if rest.len() < tag.len() || !rest[..tag.len()].eq_ignore_ascii_case(tag) {
+    let Some(head) = rest.get(..tag.len()) else {
+        return false;
+    };
+    if !head.eq_ignore_ascii_case(tag) {
         return false;
     }
     let boundary = rest.as_bytes().get(tag.len()).copied().unwrap_or(b' ');
@@ -622,11 +747,11 @@ fn details_parts(html: &str) -> Option<Details> {
     let (summary, body_at) = if let Some(start) = lower.find("<summary") {
         let content = start + lower[start..].find('>')? + 1;
         let close = content + lower[content..].find("</summary>")?;
-        let summary = html[content..close].trim();
+        let summary = crate::html_style::visible_text(&html[content..close]);
         let summary = if summary.is_empty() {
             "Details".to_string()
         } else {
-            summary.to_string()
+            summary
         };
         (summary, close + "</summary>".len())
     } else {
@@ -636,9 +761,18 @@ fn details_parts(html: &str) -> Option<Details> {
     if body_at > end {
         return None;
     }
+    let open_tag_end = open + lower[open..].find('>')? + 1;
+    let starts_open = html[open..open_tag_end].split_whitespace().any(|part| {
+        part.trim_matches(|ch: char| matches!(ch, '<' | '>' | '/'))
+            .split('=')
+            .next()
+            .unwrap_or("")
+            .eq_ignore_ascii_case("open")
+    });
     Some(Details {
         summary,
         body: html[body_at..end].trim().to_string(),
+        starts_open,
     })
 }
 
@@ -662,6 +796,103 @@ fn strip_footnote(raw: &str) -> String {
         }
     }
     body
+}
+
+struct HtmlInline;
+
+impl MarkdownPlugin for HtmlInline {
+    fn name(&self) -> &str {
+        "html-inline"
+    }
+
+    fn parse(
+        &self,
+        node: &markdown_ast::Node,
+        _: &MarkdownParseContext<'_>,
+    ) -> Option<MarkdownNode> {
+        let markdown_ast::Node::Link(link) = node else {
+            return None;
+        };
+        let kind = link.url.strip_prefix(crate::html_style::HTML_WIDGET)?;
+        if !matches!(kind, "kbd" | "sup" | "sub" | "small") {
+            return None;
+        }
+        let label = plain_text(node);
+        if label.is_empty() {
+            return None;
+        }
+        Some(MarkdownNode::new("html-inline", kind.to_string()).text(label))
+    }
+
+    fn render_inline(
+        &self,
+        node: &MarkdownNode,
+        context: &InlineRenderContext,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Option<InlineElement> {
+        let kind = node.data::<String>()?;
+        let text = node.as_text().to_string();
+        let size = context.font_size();
+        let element = match kind.as_str() {
+            "kbd" => {
+                let box_size = size * 0.85;
+                div()
+                    .px_1()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(px(3.))
+                    .bg(cx.theme().secondary)
+                    .text_size(box_size)
+                    .line_height(box_size)
+                    .child(text)
+                    .into_any_element()
+            }
+            "sup" => {
+                let box_size = size * 0.65;
+                div()
+                    .text_size(box_size)
+                    .line_height(box_size)
+                    .child(text)
+                    .into_any_element()
+            }
+            "sub" => {
+                let box_size = size * 0.65;
+                div()
+                    .text_size(box_size)
+                    .line_height(box_size)
+                    .child(text)
+                    .into_any_element()
+            }
+            _ => {
+                let box_size = size * 0.85;
+                div()
+                    .text_size(box_size)
+                    .line_height(box_size)
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text)
+                    .into_any_element()
+            }
+        };
+        let baseline = match kind.as_str() {
+            "sup" => size,
+            "sub" => size * 0.15,
+            "small" => size * 0.75,
+            _ => size * 0.8,
+        };
+        Some(InlineElement::new(element).with_baseline(baseline))
+    }
+}
+
+fn plain_text(node: &markdown_ast::Node) -> String {
+    match node {
+        markdown_ast::Node::Text(text) => text.value.clone(),
+        markdown_ast::Node::InlineCode(code) => code.value.clone(),
+        other => other
+            .children()
+            .map(|children| children.iter().map(plain_text).collect())
+            .unwrap_or_default(),
+    }
 }
 
 struct FootnoteMark;
@@ -914,6 +1145,12 @@ After.
     #[test]
     fn code_fence_keeps_a_details_tag() {
         let source = "```\n<details>\n</details>\n```\n";
+        assert_eq!(shield_details(source), source);
+    }
+
+    #[test]
+    fn a_curly_apostrophe_stays_prose() {
+        let source = "Someone’s notes stay prose.\n";
         assert_eq!(shield_details(source), source);
     }
 

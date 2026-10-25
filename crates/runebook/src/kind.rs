@@ -1,10 +1,10 @@
 //! Note kind stored in the file.
 //!
-//! Book notes are the file body. Speech, Sight, and Deed notes start with a
-//! short header. A file with no header, or a header this crate does not know,
-//! is a Book note.
+//! Book notes are the file body. Speech, Sight, Deed, and Research notes start
+//! with a short header. A file with no header, or a header this crate does not
+//! know, is a Book note.
 
-/// The four note kinds.
+/// The five note kinds.
 ///
 /// Book is the default. A file omits the header for Book.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -17,6 +17,8 @@ pub enum NoteKind {
     Sight,
     /// A task list. The body is markdown checkboxes.
     Deed,
+    /// A web investigation. Charlotte writes the findings into the note.
+    Research,
 }
 
 /// One markdown task line.
@@ -33,13 +35,14 @@ pub struct TaskLine {
 const HEADER_LIMIT: usize = 256;
 
 impl NoteKind {
-    /// File key for Speech, Sight, and Deed. Book has no key.
+    /// File key for Speech, Sight, Deed, and Research. Book has no key.
     pub fn key(self) -> Option<&'static str> {
         match self {
             Self::Book => None,
             Self::Speech => Some("speech"),
             Self::Sight => Some("sight"),
             Self::Deed => Some("deed"),
+            Self::Research => Some("research"),
         }
     }
 
@@ -48,6 +51,7 @@ impl NoteKind {
             "speech" => Some(Self::Speech),
             "sight" => Some(Self::Sight),
             "deed" => Some(Self::Deed),
+            "research" => Some(Self::Research),
             _ => None,
         }
     }
@@ -63,7 +67,7 @@ impl NoteKind {
 /// ---
 /// ```
 ///
-/// `kind` is `speech`, `sight`, or `deed`. Any other file is [`NoteKind::Book`]
+/// `kind` is `speech`, `sight`, `deed`, or `research`. Any other file is [`NoteKind::Book`]
 /// and the body is `text`.
 pub fn decode_note(text: &str) -> (NoteKind, &str) {
     let scan = byte_prefix(text, HEADER_LIMIT);
@@ -202,7 +206,12 @@ mod tests {
     #[test]
     fn speech_sight_and_deed_round_trip() {
         let body = "# Talk\n";
-        for kind in [NoteKind::Speech, NoteKind::Sight, NoteKind::Deed] {
+        for kind in [
+            NoteKind::Speech,
+            NoteKind::Sight,
+            NoteKind::Deed,
+            NoteKind::Research,
+        ] {
             let file = encode_note(kind, body);
             assert_eq!(decode_note(&file), (kind, body));
             assert_eq!(kind_from_prefix(file.as_bytes()), kind);

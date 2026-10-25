@@ -3,7 +3,7 @@
 //! A vault is a folder of `*.md` notes plus `runebook.toml`.
 //! Wiki links and the file tree come from those files.
 //! There is no sidecar database.
-//! A note is Book, Speech, Sight, or Deed. Book is a markdown file.
+//! A note is Book, Speech, Sight, Deed, or Research. Book is a markdown file.
 //! The other kinds start with a `kind` header.
 //! Media files beside a note use a known video, audio, or image extension.
 //! Folder delete removes those files.

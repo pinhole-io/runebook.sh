@@ -7,6 +7,7 @@ mod archivist;
 mod capture;
 mod chrome;
 mod dock;
+mod html_style;
 mod markdown_view;
 mod mermaid;
 mod pane;

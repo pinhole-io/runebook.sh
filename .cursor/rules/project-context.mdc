@@ -16,9 +16,9 @@ Local markdown notes at `projects/runebook.sh/`.
 
 - A vault root contains `runebook.toml` (`schema_version = 1`).
 - A note is a `*.md` file. `NoteId` is the relative path without `.md`, with `/` separators.
-- A note has one kind: Book, Speech, Sight, or Deed.
+- A note has one kind: Book, Speech, Sight, Deed, or Research.
 - Book is a markdown file with no header. A file with no header is a Book note.
-- Speech, Sight, and Deed start with this header. `kind` is `speech`, `sight`, or `deed`.
+- Speech, Sight, Deed, and Research start with this header. `kind` is `speech`, `sight`, `deed`, or `research`.
 
 ```markdown
 ---
@@ -31,6 +31,7 @@ kind: speech
 - Speech stores a transcript. The app does not save the audio file.
 - Sight stores a markdown link. The mp4 sits beside that note.
 - Deed is a markdown checklist.
+- Research stores a question. Charlotte writes a plan, gathers any missing context, then investigates and appends the findings.
 - A preview checkbox toggles that task line in the note.
 - A media file beside a note uses a video, audio, or image extension: `mp4`, `webm`, `mkv`, `mov`, `mp3`, `wav`, `ogg`, `m4a`, `flac`, `png`, `jpg`, `jpeg`, `gif`, `webp`.
 - Folder delete removes those files. Any other non-note file still blocks folder delete.
@@ -58,5 +59,6 @@ Resolve `[[target]]` in this order:
 - The dock panel names are `files`, `note`, and `archivist`.
 - `dock_layout` stores the dock JSON. A bad value uses the default split.
 - The source pane is the Kit `Editor`. The preview pane is Kit markdown.
+- HTML in a note uses those same styles. `<details>` starts closed. A click opens it. `<pre>`, `<code>`, `<kbd>`, `<img>`, and `<a>` follow the markdown look. A script tag is dropped.
 - The window shows the preview until the user flips to the source.
 - Autosave is debounced. Also flush on note switch and window close.
