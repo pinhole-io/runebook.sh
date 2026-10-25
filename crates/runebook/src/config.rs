@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::fsutil::atomic_write;
 
-/// Last-vault path and window preferences for the desktop app.
+/// Last-vault path, window preferences, and the saved dock layout.
 ///
 /// The file is `$XDG_CONFIG_HOME/runebook/config.toml`.
 /// When `XDG_CONFIG_HOME` is unset, the directory is `~/.config`.
@@ -23,6 +23,9 @@ pub struct AppConfig {
     /// View used when a note opens.
     #[serde(default)]
     pub note_view: NoteViewChoice,
+    /// Saved dock layout, as JSON. Absent means the default split.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dock_layout: Option<String>,
 }
 
 /// Light or dark window theme. Dark is the default.
@@ -102,6 +105,34 @@ impl AppConfig {
             source,
         })?;
         atomic_write(path, &text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppConfig;
+
+    #[test]
+    fn missing_dock_layout_loads_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"light\"\n").unwrap();
+        let config = AppConfig::load_from(&path).unwrap();
+        assert!(config.dock_layout.is_none());
+        assert_eq!(config.theme, super::ThemeChoice::Light);
+    }
+
+    #[test]
+    fn dock_layout_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let saved = AppConfig {
+            dock_layout: Some("{\"version\":1}".to_string()),
+            ..AppConfig::default()
+        };
+        saved.save_to(&path).unwrap();
+        let loaded = AppConfig::load_from(&path).unwrap();
+        assert_eq!(loaded.dock_layout.as_deref(), Some("{\"version\":1}"));
     }
 }
 

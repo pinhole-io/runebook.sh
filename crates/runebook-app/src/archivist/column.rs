@@ -6,14 +6,15 @@ use gpui_kit::component::input::{Enter, Input};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, ClickEvent, Context, Hsla, SharedString, div, px};
+use gpui_kit::{AnyElement, App, ClickEvent, Hsla, SharedString, WeakEntity, div, px};
 
 use super::{MISSING_KEY, Panel};
 use crate::Root;
 use crate::capture::groq_key_is_set;
 use crate::chrome::panel_header;
+use crate::on_root;
 
-pub(crate) fn column(panel: &Panel, cx: &mut Context<Root>) -> impl IntoElement {
+pub(crate) fn column(panel: &Panel, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let border = cx.theme().sidebar_border;
     let sidebar = cx.theme().sidebar;
     let foreground = cx.theme().sidebar_foreground;
@@ -24,32 +25,28 @@ pub(crate) fn column(panel: &Panel, cx: &mut Context<Root>) -> impl IntoElement 
 
     div()
         .id("archivist")
-        .w(px(320.))
-        .h_full()
+        .size_full()
         .min_h(px(0.))
         .min_w(px(0.))
-        .flex_shrink_0()
         .flex()
         .flex_col()
         .overflow_hidden()
-        .border_l_1()
-        .border_color(border)
         .bg(sidebar)
         .text_color(foreground)
         .child(
             panel_header(div().id("archivist-header").px_2().text_sm(), border)
                 .child("Archivist")
                 .child(div().flex_1())
-                .child(hide_button(cx)),
+                .child(hide_button(view.clone())),
         )
         .child(transcript(panel, muted, danger, busy))
         .when(!panel.held.is_empty(), |column| {
-            column.child(held_rows(panel, cx))
+            column.child(held_rows(panel, view.clone(), cx))
         })
-        .child(composer(panel, ready, busy, danger, cx))
+        .child(composer(panel, ready, busy, danger, view, cx))
 }
 
-fn hide_button(cx: &mut Context<Root>) -> impl IntoElement {
+fn hide_button(view: WeakEntity<Root>) -> impl IntoElement {
     Button::new("hide-archivist")
         .ghost()
         .small()
@@ -57,7 +54,7 @@ fn hide_button(cx: &mut Context<Root>) -> impl IntoElement {
         .icon(IconName::PanelRightClose)
         .tooltip("Hide the Archivist")
         .accessibility_label("Hide the Archivist")
-        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+        .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
             if let Some(pane) = this.pane.as_mut() {
                 pane.toggle_archivist();
             }
@@ -226,7 +223,7 @@ fn plain_block(
         )
 }
 
-fn held_rows(panel: &Panel, cx: &mut Context<Root>) -> impl IntoElement {
+fn held_rows(panel: &Panel, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
     let border = cx.theme().border;
     let cards: Vec<AnyElement> = panel
@@ -234,7 +231,7 @@ fn held_rows(panel: &Panel, cx: &mut Context<Root>) -> impl IntoElement {
         .iter()
         .enumerate()
         .map(|(index, row)| {
-            held_card(index, &row.note_id, &row.source, muted, cx).into_any_element()
+            held_card(index, &row.note_id, &row.source, muted, view.clone()).into_any_element()
         })
         .collect();
     div()
@@ -260,7 +257,7 @@ fn held_card(
     note_id: &str,
     source: &str,
     muted: Hsla,
-    cx: &mut Context<Root>,
+    view: WeakEntity<Root>,
 ) -> impl IntoElement {
     div()
         .flex()
@@ -294,7 +291,7 @@ fn held_card(
                 .compact()
                 .cursor_pointer()
                 .label("Remove")
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                .on_click(on_root(&view, move |this, _: &ClickEvent, _, cx| {
                     if let Some(pane) = this.pane.as_mut() {
                         pane.dismiss_held_rows(index);
                     }
@@ -319,7 +316,8 @@ fn composer(
     ready: bool,
     busy: bool,
     danger: impl Into<Hsla>,
-    cx: &mut Context<Root>,
+    view: WeakEntity<Root>,
+    cx: &App,
 ) -> impl IntoElement {
     let border = cx.theme().sidebar_border;
     let danger = danger.into();
@@ -337,7 +335,7 @@ fn composer(
         .child(
             div()
                 .id("archivist-draft")
-                .on_action(cx.listener(|this, _: &Enter, window, cx| {
+                .on_action(on_root(&view, |this, _: &Enter, window, cx| {
                     cx.stop_propagation();
                     if let Some(pane) = this.pane.as_mut() {
                         pane.send_archivist(window, cx);
@@ -353,7 +351,7 @@ fn composer(
                 .cursor_pointer()
                 .disabled(!ready || busy)
                 .label("Send")
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
                     if let Some(pane) = this.pane.as_mut() {
                         pane.send_archivist(window, cx);
                     }

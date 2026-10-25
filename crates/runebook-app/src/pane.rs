@@ -4,6 +4,9 @@ mod preview;
 mod rows;
 mod view;
 
+pub(crate) use preview::queue_clips;
+pub(crate) use view::{files, note, status_bar, toolbar};
+
 use rows::{context_message, rewrite_message, selected_source, split_rows};
 
 use std::cell::{Cell, RefCell};
@@ -37,8 +40,6 @@ use crate::capture::{
 };
 use crate::playback::{self, ClipKind};
 use crate::save_setting;
-
-pub(super) use view::screen;
 
 #[derive(Clone, PartialEq, Eq)]
 enum TreeSelection {
@@ -134,6 +135,14 @@ struct ClipHold {
     href: String,
     position: Duration,
     duration: Duration,
+}
+
+/// Drop a playback JPEG once a newer one is on screen.
+fn release_image(image: Arc<Image>, window: &mut Window, cx: &mut Context<Root>) {
+    if let Some(rendered) = image.clone().get_render_image(window, cx) {
+        let _ = window.drop_image(rendered);
+    }
+    image.remove_asset(cx);
 }
 
 /// Note width in device pixels, minus the sidebar, capped for the atlas.
@@ -438,16 +447,18 @@ impl EditorPane {
     }
 
     /// Stop the clip and keep its last frame as the still preview.
-    fn end_playback(&mut self, window: &mut Window) {
+    fn end_playback(&mut self, window: &mut Window, cx: &mut Context<Root>) {
         self.playback_watch = self.playback_watch.wrapping_add(1);
         let Some(mut play) = self.playback.take() else {
             return;
         };
-        for picture in play.take_shown().into_iter().flatten() {
-            let _ = window.drop_image(picture);
+        if let Some(pending) = play.take_pending() {
+            release_image(pending, window, cx);
         }
         let href = play.href().to_string();
-        if let Some(bytes) = play.take_still() {
+        if let Some(shown) = play.take_shown() {
+            self.posters.insert(href, PosterState::Ready(shown));
+        } else if let Some(bytes) = play.take_still() {
             self.posters.insert(
                 href,
                 PosterState::Ready(Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes))),
@@ -455,7 +466,7 @@ impl EditorPane {
         }
     }
 
-    fn pause_playback(&mut self, window: &mut Window) {
+    fn pause_playback(&mut self, window: &mut Window, cx: &mut Context<Root>) {
         let Some(play) = self.playback.as_ref() else {
             return;
         };
@@ -464,12 +475,12 @@ impl EditorPane {
             position: play.position(),
             duration: play.duration(),
         };
-        self.end_playback(window);
+        self.end_playback(window, cx);
         self.hold = Some(hold);
     }
 
-    fn dismiss_media(&mut self, window: &mut Window) {
-        self.end_playback(window);
+    fn dismiss_media(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+        self.end_playback(window, cx);
         self.hold = None;
         self.seek_drag = false;
         self.seek_preview = None;
@@ -483,13 +494,22 @@ impl EditorPane {
         self.playback.as_ref().map(playback::Playback::href)
     }
 
-    /// The decoded picture for `href`, when that clip is playing.
-    pub(super) fn live_frame(&self, href: &str) -> Option<Arc<gpui_kit::RenderImage>> {
+    /// The last decoded JPEG for `href`, when that clip is playing.
+    pub(super) fn live_shown(&self, href: &str) -> Option<Arc<Image>> {
         let play = self.playback.as_ref()?;
         if play.href() != href {
             return None;
         }
-        play.frame()
+        play.shown()
+    }
+
+    /// The JPEG that is still decoding for `href`, when that clip is playing.
+    pub(super) fn live_pending(&self, href: &str) -> Option<Arc<Image>> {
+        let play = self.playback.as_ref()?;
+        if play.href() != href {
+            return None;
+        }
+        play.pending()
     }
 
     /// Play, pause, or resume `href`. Pause holds the place.
@@ -502,7 +522,7 @@ impl EditorPane {
     ) {
         self.sync_picture_width(window);
         if self.playing_href() == Some(href) {
-            self.pause_playback(window);
+            self.pause_playback(window, cx);
             return;
         }
         if self.hold.as_ref().is_some_and(|hold| hold.href == href) {
@@ -512,7 +532,7 @@ impl EditorPane {
             return;
         }
         self.hold = None;
-        self.end_playback(window);
+        self.end_playback(window, cx);
         self.start_clip(href, kind, Duration::ZERO, cx);
     }
 
@@ -670,7 +690,7 @@ impl EditorPane {
             at.min(duration)
         };
         if playing {
-            self.end_playback(window);
+            self.end_playback(window, cx);
             self.start_clip(href, kind, at, cx);
             return;
         }
@@ -741,7 +761,6 @@ impl EditorPane {
             at,
             self.picture_width,
             self.media_muted,
-            cx.svg_renderer(),
         ) {
             Ok(started) => {
                 let href = started.playback.href().to_string();
@@ -784,7 +803,7 @@ impl EditorPane {
         href: &str,
         watch: u64,
         window: &mut Window,
-        _cx: &mut Context<Root>,
+        cx: &mut Context<Root>,
     ) -> bool {
         let finished = {
             let Some(play) = self.playback.as_mut() else {
@@ -793,22 +812,24 @@ impl EditorPane {
             if self.playback_watch != watch || play.href() != href {
                 return false;
             }
-            if let Some(picture) = play.take_decoded() {
-                if let Some(old) = play.show_frame(picture) {
-                    let _ = window.drop_image(old);
-                }
-                play.mark_presented();
-            }
             if play.frame_due()
-                && !play.is_decoding()
                 && let Some(bytes) = play.take_jpeg()
             {
-                play.decode_next(bytes);
+                play.note_jpeg(bytes);
+                play.mark_presented();
             }
+            let decoded = play
+                .pending()
+                .and_then(|image| image.get_render_image(window, cx))
+                .is_some();
+            if decoded && let Some(old) = play.promote() {
+                release_image(old, window, cx);
+            }
+            play.start_pending();
             play.finished()
         };
         if finished {
-            self.pause_playback(window);
+            self.pause_playback(window, cx);
             if let Some(hold) = &mut self.hold
                 && !hold.duration.is_zero()
             {
@@ -851,11 +872,6 @@ impl EditorPane {
 
     pub(super) fn screen_recording(&self) -> bool {
         matches!(self.capture, Capture::Screen(_))
-    }
-
-    /// Kind of the open note. An empty editor is Book.
-    pub(super) fn note_kind(&self) -> NoteKind {
-        self.open_kind
     }
 
     /// The mic control records only into a Speech note.
@@ -1451,7 +1467,7 @@ impl EditorPane {
     }
 
     fn clear_editor(&mut self, window: &mut Window, cx: &mut Context<Root>) {
-        self.dismiss_media(window);
+        self.dismiss_media(window, cx);
         self.open_note = None;
         self.open_kind = NoteKind::Book;
         self.tree_selection = TreeSelection::None;
@@ -1534,6 +1550,16 @@ impl EditorPane {
     /// Show or hide the Archivist column.
     pub(crate) fn toggle_archivist(&mut self) {
         self.archivist.toggle();
+    }
+
+    /// Whether the Archivist column is open.
+    pub(crate) fn archivist_open(&self) -> bool {
+        self.archivist.is_open()
+    }
+
+    /// The Archivist session drawn in the dock panel.
+    pub(crate) fn archivist(&self) -> &crate::archivist::Panel {
+        &self.archivist
     }
 
     /// Send the draft to the Archivist. A busy turn or a missing key does nothing.
@@ -1793,18 +1819,15 @@ impl EditorPane {
         Ok(())
     }
 
-    /// Flip the checkbox on preview row `index` of a Deed note.
+    /// Flip the checkbox on preview row `index`.
     ///
     /// Returns true when the body changed and a save should wait.
-    pub(super) fn toggle_deed_task(
+    pub(super) fn toggle_task(
         &mut self,
         index: usize,
         window: &mut Window,
         cx: &mut Context<Root>,
     ) -> bool {
-        if self.open_kind != NoteKind::Deed {
-            return false;
-        }
         let Some(next) = toggled_task_body(&self.latest, index) else {
             return false;
         };
@@ -1817,7 +1840,7 @@ impl EditorPane {
     }
 
     fn apply_file(&mut self, text: &str, window: &mut Window, cx: &mut Context<Root>) {
-        self.dismiss_media(window);
+        self.dismiss_media(window, cx);
         let (kind, body) = note_body(text);
         self.open_kind = kind;
         self.saved_text = body.clone();
@@ -2316,6 +2339,27 @@ mod next_open_tests {
                 None,
             ),
             None
+        );
+    }
+}
+
+#[cfg(test)]
+mod task_tests {
+    use super::toggled_task_body;
+
+    #[test]
+    fn toggle_flips_one_task_line_and_leaves_the_heading() {
+        let source = "# Task list\n\n- [x] Completed task\n- [ ] Incomplete task\n";
+        assert!(toggled_task_body(source, 0).is_none());
+        let next = toggled_task_body(source, 1).expect("completed task");
+        assert_eq!(
+            next,
+            "# Task list\n\n- [ ] Completed task\n- [ ] Incomplete task\n"
+        );
+        let next = toggled_task_body(&next, 2).expect("incomplete task");
+        assert_eq!(
+            next,
+            "# Task list\n\n- [ ] Completed task\n- [x] Incomplete task\n"
         );
     }
 }

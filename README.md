@@ -67,11 +67,13 @@ kind: speech
 ---
 ```
 
-Use `speech`, `sight`, or `deed`. The editor shows the body. Save writes the header back. A Deed note uses markdown checkboxes. A click on a box in the preview toggles that line.
+Use `speech`, `sight`, or `deed`. The editor shows the body. Save writes the header back. A click on a preview checkbox toggles that task line in the note.
 
 The app skips hidden files and directories. It also skips symlinks. `[[wiki links]]` point at a note id. A bare stem matches one note when that stem is unique.
 
-The user config is `$XDG_CONFIG_HOME/runebook/config.toml`. When `XDG_CONFIG_HOME` is unset, the path is `~/.config/runebook/config.toml`. It stores the last vault, the microphone, the theme, and the default note view.
+The user config is `$XDG_CONFIG_HOME/runebook/config.toml`. When `XDG_CONFIG_HOME` is unset, the path is `~/.config/runebook/config.toml`. It stores the last vault, the microphone, the theme, the default note view, and `dock_layout`.
+
+The file tree, the note, and the Archivist column are dock panels. Their names are `files`, `note`, and `archivist`. `dock_layout` stores that layout as JSON.
 
 ## Tests
 

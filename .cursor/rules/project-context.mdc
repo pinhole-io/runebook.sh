@@ -30,7 +30,8 @@ kind: speech
 - The editor shows the body. Save writes the header back from the open note's kind.
 - Speech stores a transcript. The app does not save the audio file.
 - Sight stores a markdown link. The mp4 sits beside that note.
-- Deed is a markdown checklist. The preview toggles `- [ ]` and `- [x]`.
+- Deed is a markdown checklist.
+- A preview checkbox toggles that task line in the note.
 - A media file beside a note uses a video, audio, or image extension: `mp4`, `webm`, `mkv`, `mov`, `mp3`, `wav`, `ogg`, `m4a`, `flac`, `png`, `jpg`, `jpeg`, `gif`, `webp`.
 - Folder delete removes those files. Any other non-note file still blocks folder delete.
 - A preview row that is only a video or audio link plays in the note. The picture follows the file frame rate. Pause holds the place. The bar seeks. Mute silences the sound.
@@ -38,7 +39,7 @@ kind: speech
 - The alt text shows when that image does not load. The path must stay inside the vault.
 - Skip hidden paths and symlinks. Do not follow a symlink out of the vault.
 - There is no sidecar database. The index is rebuilt from the files.
-- User config is `$XDG_CONFIG_HOME/runebook/config.toml`. It stores `last_vault`, `microphone`, `theme`, and `note_view`.
+- User config is `$XDG_CONFIG_HOME/runebook/config.toml`. It stores `last_vault`, `microphone`, `theme`, `note_view`, and `dock_layout`.
 
 ## Links
 
@@ -52,6 +53,10 @@ Resolve `[[target]]` in this order:
 ## App
 
 - Call `gpui_kit::init` before any GPUI Kit control.
+- The window uses a Kit `TitleBar`. The toolbar sits in that bar.
+- The file tree, the note, and the Archivist column sit in a Kit `DockArea`.
+- The dock panel names are `files`, `note`, and `archivist`.
+- `dock_layout` stores the dock JSON. A bad value uses the default split.
 - The source pane is the Kit `Editor`. The preview pane is Kit markdown.
 - The window shows the preview until the user flips to the source.
 - Autosave is debounced. Also flush on note switch and window close.

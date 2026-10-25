@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream};
-use gpui_kit::{Image, ImageFormat, RenderImage, SvgRenderer};
+use gpui_kit::{Image, ImageFormat};
 
 const MAX_JPEG: usize = 8 * 1024 * 1024;
 const MAX_PENDING: usize = 16 * 1024 * 1024;
@@ -151,8 +151,6 @@ pub(crate) fn video_args(
     push_seek(&mut args, start);
     args.extend([
         "-re".into(),
-        "-fflags".into(),
-        "nobuffer".into(),
         "-i".into(),
         path.as_os_str().to_os_string(),
         "-an".into(),
@@ -336,13 +334,13 @@ pub(crate) struct Playback {
     drained: Arc<AtomicBool>,
     muted: Arc<AtomicBool>,
     jpeg: Arc<Mutex<VecDeque<Vec<u8>>>>,
-    frame: std::cell::RefCell<Option<Arc<RenderImage>>>,
-    /// The picture before `frame`. It stays until the one after `frame` arrives.
-    retire: std::cell::RefCell<Option<Arc<RenderImage>>>,
+    /// The last JPEG that GPUI has already decoded.
+    shown: std::cell::RefCell<Option<Arc<Image>>>,
+    /// The one JPEG that is allowed to decode.
+    pending: std::cell::RefCell<Option<Arc<Image>>>,
+    /// The newest due JPEG. It waits until `pending` is decoded.
+    fresh: std::cell::RefCell<Option<Vec<u8>>>,
     still: std::cell::RefCell<Option<Vec<u8>>>,
-    decoded: Arc<Mutex<Option<Arc<RenderImage>>>>,
-    decoding: Arc<AtomicBool>,
-    renderer: SvgRenderer,
     children: Vec<Child>,
     threads: Vec<JoinHandle<()>>,
     stream: Option<Stream>,
@@ -363,7 +361,6 @@ pub(crate) fn start(
     at: Duration,
     width: u32,
     muted: bool,
-    renderer: SvgRenderer,
 ) -> Result<Started, String> {
     let timing = probe_timing(path);
     let stop = Arc::new(AtomicBool::new(false));
@@ -440,12 +437,10 @@ pub(crate) fn start(
             drained,
             muted,
             jpeg,
-            frame: std::cell::RefCell::new(None),
-            retire: std::cell::RefCell::new(None),
+            shown: std::cell::RefCell::new(None),
+            pending: std::cell::RefCell::new(None),
+            fresh: std::cell::RefCell::new(None),
             still: std::cell::RefCell::new(None),
-            decoded: Arc::new(Mutex::new(None)),
-            decoding: Arc::new(AtomicBool::new(false)),
-            renderer,
             children,
             threads,
             stream,
@@ -507,62 +502,52 @@ impl Playback {
         latest
     }
 
-    /// True while one JPEG is being decoded.
-    pub(crate) fn is_decoding(&self) -> bool {
-        self.decoding.load(Ordering::Acquire)
-    }
-
-    /// Decode `bytes` on a worker thread. A later poll reads the picture.
-    pub(crate) fn decode_next(&self, bytes: Vec<u8>) {
-        if self.decoding.swap(true, Ordering::AcqRel) {
-            return;
-        }
+    /// Remember the newest due JPEG. A decode that is already running stays.
+    pub(crate) fn note_jpeg(&self, bytes: Vec<u8>) {
         *self.still.borrow_mut() = Some(bytes.clone());
-        let renderer = self.renderer.clone();
-        let slot = Arc::clone(&self.decoded);
-        let busy = Arc::clone(&self.decoding);
-        thread::spawn(move || {
-            let _clear = ClearDecode(busy);
-            if let Some(picture) = decode_jpeg(bytes, renderer) {
-                let mut slot = match slot.lock() {
-                    Ok(slot) => slot,
-                    Err(err) => err.into_inner(),
-                };
-                *slot = Some(picture);
-            }
-        });
+        *self.fresh.borrow_mut() = Some(bytes);
     }
 
-    /// The newest decoded picture, if the worker has finished one.
-    pub(crate) fn take_decoded(&self) -> Option<Arc<RenderImage>> {
-        let mut slot = match self.decoded.lock() {
-            Ok(slot) => slot,
-            Err(err) => err.into_inner(),
-        };
-        slot.take()
+    /// The last JPEG that GPUI has already decoded.
+    pub(crate) fn shown(&self) -> Option<Arc<Image>> {
+        self.shown.borrow().clone()
     }
 
-    /// Show `picture` and return the picture from two swaps ago.
+    /// The JPEG that is allowed to decode.
+    pub(crate) fn pending(&self) -> Option<Arc<Image>> {
+        self.pending.borrow().clone()
+    }
+
+    /// Start the newest stored JPEG when nothing is decoding.
+    pub(crate) fn start_pending(&self) -> Option<Arc<Image>> {
+        if self.pending.borrow().is_some() {
+            return None;
+        }
+        let bytes = self.fresh.borrow_mut().take()?;
+        let picture = Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes));
+        *self.pending.borrow_mut() = Some(Arc::clone(&picture));
+        Some(picture)
+    }
+
+    /// Move the decoded pending JPEG onto `shown`.
     ///
-    /// The previous picture stays alive so its atlas texture survives present.
-    pub(crate) fn show_frame(&self, picture: Arc<RenderImage>) -> Option<Arc<RenderImage>> {
-        let previous = self.frame.borrow_mut().replace(picture);
-        std::mem::replace(&mut *self.retire.borrow_mut(), previous)
+    /// The returned image is the previous `shown`. The caller can release it.
+    pub(crate) fn promote(&self) -> Option<Arc<Image>> {
+        let next = self.pending.borrow_mut().take()?;
+        self.shown.borrow_mut().replace(next)
     }
 
-    pub(crate) fn frame(&self) -> Option<Arc<RenderImage>> {
-        self.frame.borrow().clone()
+    /// Take the decoded JPEG. The caller keeps this image.
+    pub(crate) fn take_shown(&mut self) -> Option<Arc<Image>> {
+        self.shown.borrow_mut().take()
     }
 
-    /// The picture on screen and the one before it.
-    pub(crate) fn take_shown(&mut self) -> [Option<Arc<RenderImage>>; 2] {
-        [
-            self.frame.borrow_mut().take(),
-            self.retire.borrow_mut().take(),
-        ]
+    /// Take the JPEG that is still decoding. The caller releases it.
+    pub(crate) fn take_pending(&mut self) -> Option<Arc<Image>> {
+        self.pending.borrow_mut().take()
     }
 
-    /// JPEG bytes of the last picture sent to the decoder.
+    /// JPEG bytes of the last picture shown.
     pub(crate) fn take_still(&mut self) -> Option<Vec<u8>> {
         self.still.borrow_mut().take()
     }
@@ -807,22 +792,6 @@ fn stop_children(children: &mut [Child]) {
     }
 }
 
-/// Clears the decode flag when the worker finishes or panics.
-struct ClearDecode(Arc<AtomicBool>);
-
-impl Drop for ClearDecode {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
-/// Decode one JPEG into a picture GPUI can paint immediately.
-fn decode_jpeg(bytes: Vec<u8>, renderer: SvgRenderer) -> Option<Arc<RenderImage>> {
-    Image::from_bytes(ImageFormat::Jpeg, bytes)
-        .to_image_data(renderer)
-        .ok()
-}
-
 fn pump_jpegs(mut input: impl Read, slot: &Mutex<VecDeque<Vec<u8>>>, stop: &AtomicBool) {
     let mut pending = Vec::new();
     let mut chunk = [0u8; 64 * 1024];
@@ -997,7 +966,6 @@ mod tests {
         assert_eq!(arg_after(&video, "-q:v"), "1");
         assert_eq!(arg_after(&poster, "-q:v"), "1");
         assert_eq!(arg_after(&video, "-pix_fmt"), "yuvj444p");
-        assert_eq!(arg_after(&video, "-fflags"), "nobuffer");
         assert_eq!(arg_after(&video, "-flush_packets"), "1");
         assert!(video.iter().any(|arg| arg == "-re"));
         assert!(!video.iter().any(|arg| arg == "-ss"));
@@ -1088,6 +1056,50 @@ mod tests {
             elapsed += Duration::from_millis(8);
         }
         assert!((28..=32).contains(&shown), "shown {shown}");
+    }
+
+    #[test]
+    fn a_second_jpeg_waits_until_the_pending_one_is_promoted() {
+        let play = empty_playback();
+        play.note_jpeg(vec![1]);
+        let first = play.start_pending().expect("pending");
+        assert_eq!(first.bytes, vec![1]);
+        play.note_jpeg(vec![2]);
+        assert!(play.start_pending().is_none());
+        assert_eq!(play.pending().expect("still first").bytes, vec![1]);
+        assert!(play.promote().is_none());
+        assert_eq!(play.shown().expect("shown").bytes, vec![1]);
+        let second = play.start_pending().expect("second");
+        assert_eq!(second.bytes, vec![2]);
+        let old = play.promote().expect("previous shown");
+        assert_eq!(old.bytes, vec![1]);
+        assert_eq!(play.shown().expect("new shown").bytes, vec![2]);
+    }
+
+    fn empty_playback() -> Playback {
+        Playback {
+            href: String::new(),
+            kind: ClipKind::Video,
+            origin: Duration::ZERO,
+            started: Instant::now(),
+            duration: Duration::ZERO,
+            interval: Duration::ZERO,
+            rate: None,
+            presented: std::cell::Cell::new(0),
+            stop: Arc::new(AtomicBool::new(false)),
+            audio_stop: Arc::new(AtomicBool::new(false)),
+            video_done: Arc::new(AtomicBool::new(false)),
+            drained: Arc::new(AtomicBool::new(false)),
+            muted: Arc::new(AtomicBool::new(false)),
+            jpeg: Arc::new(Mutex::new(VecDeque::new())),
+            shown: std::cell::RefCell::new(None),
+            pending: std::cell::RefCell::new(None),
+            fresh: std::cell::RefCell::new(None),
+            still: std::cell::RefCell::new(None),
+            children: Vec::new(),
+            threads: Vec::new(),
+            stream: None,
+        }
     }
 
     #[test]

@@ -6,6 +6,7 @@ mod anchors;
 mod archivist;
 mod capture;
 mod chrome;
+mod dock;
 mod markdown_view;
 mod mermaid;
 mod pane;
@@ -16,15 +17,16 @@ use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::dock::DockArea;
 use gpui_kit::component::{ActiveTheme, Theme, ThemeMode, TitleBar};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Bounds, ClickEvent, Context, FocusHandle, KeyBinding, PathPromptOptions, Render,
-    SharedString, Window, WindowBounds, WindowDecorations, WindowOptions, div, px, size,
+    App, Bounds, ClickEvent, Context, Entity, FocusHandle, KeyBinding, PathPromptOptions, Render,
+    SharedString, WeakEntity, Window, WindowBounds, WindowDecorations, WindowOptions, div, px,
+    size,
 };
 use runebook::{AppConfig, Error, NoteId, ThemeChoice, Vault};
 
-use crate::chrome::window_controls;
 use crate::pane::EditorPane;
 
 gpui_kit::actions!(runebook, [SaveNote, NewNote, OpenVault, ToggleNoteView]);
@@ -72,6 +74,16 @@ fn main() {
         });
 }
 
+pub(crate) fn on_root<E: 'static>(
+    view: &WeakEntity<Root>,
+    f: impl Fn(&mut Root, &E, &mut Window, &mut Context<Root>) + 'static,
+) -> impl Fn(&E, &mut Window, &mut App) + 'static {
+    let view = view.clone();
+    move |event, window, cx| {
+        view.update(cx, |root, cx| f(root, event, window, cx)).ok();
+    }
+}
+
 fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-s", SaveNote, None),
@@ -89,23 +101,32 @@ struct Root {
     focus: FocusHandle,
     banner: Option<String>,
     pane: Option<EditorPane>,
+    dock: Entity<DockArea>,
     autosave_gen: u64,
+    dock_save_gen: u64,
     pending_open: Option<(PathBuf, bool)>,
 }
 
 impl Root {
     fn new(last: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let weak = cx.weak_entity();
-        window.on_window_should_close(cx, move |_, app| {
-            weak.update(app, |this, cx| this.flush(cx)).ok();
-            true
+        window.on_window_should_close(cx, {
+            let weak = weak.clone();
+            move |_, app| {
+                weak.update(app, |this, cx| this.flush(cx)).ok();
+                true
+            }
         });
 
+        let saved = AppConfig::load().ok().and_then(|config| config.dock_layout);
+        let dock = crate::dock::install(weak, saved.as_deref(), window, cx);
         let mut root = Self {
             focus: cx.focus_handle(),
             banner: None,
             pane: None,
+            dock,
             autosave_gen: 0,
+            dock_save_gen: 0,
             pending_open: None,
         };
         if let Some(path) = last {
@@ -134,6 +155,32 @@ impl Root {
                 if this.autosave_gen == generation {
                     this.flush(cx);
                 }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn schedule_dock_save(&mut self, area: &Entity<DockArea>, cx: &mut Context<Self>) {
+        self.dock_save_gen = self.dock_save_gen.wrapping_add(1);
+        let generation = self.dock_save_gen;
+        let area = area.clone();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(400))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.dock_save_gen != generation {
+                    return;
+                }
+                let state = area.read(cx).dump(cx);
+                let Ok(json) = serde_json::to_string(&state) else {
+                    return;
+                };
+                if json.len() > crate::dock::LAYOUT_LIMIT {
+                    return;
+                }
+                save_setting(|config| config.dock_layout = Some(json)).ok();
             })
             .ok();
         })
@@ -351,25 +398,20 @@ impl Root {
         cx.notify();
     }
 
-    fn welcome(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let banner = self.banner.clone();
         let background = cx.theme().background;
         let foreground = cx.theme().foreground;
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
         div()
-            .size_full()
+            .flex_1()
+            .h_full()
+            .min_h(px(0.))
             .flex()
             .flex_col()
             .bg(background)
             .text_color(foreground)
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_end()
-                    .child(window_controls(window, cx)),
-            )
             .child(
                 div()
                     .flex_1()
@@ -451,15 +493,45 @@ impl Render for Root {
         if let Some(pane) = self.pane.as_mut() {
             pane.sync_picture_width(window);
         }
+        let view = cx.weak_entity();
+        let background = cx.theme().background;
+        let foreground = cx.theme().foreground;
+        let mut title = TitleBar::new().h(px(40.)).bg(background).on_close_window({
+            let view = view.clone();
+            move |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.flush(cx);
+                })
+                .ok();
+                window.remove_window();
+            }
+        });
+        if let Some(pane) = self.pane.as_ref() {
+            title = title.child(pane::toolbar(pane, view, cx));
+        }
         let body = if self.pane.is_some() {
-            pane::screen(self, window, cx).into_any_element()
+            div()
+                .flex_1()
+                .h_full()
+                .min_h(px(0.))
+                .min_w(px(0.))
+                .child(self.dock.clone())
+                .into_any_element()
         } else {
-            self.welcome(window, cx).into_any_element()
+            self.welcome(cx).into_any_element()
         };
+        let status = self
+            .pane
+            .as_ref()
+            .map(|pane| pane::status_bar(pane, cx).into_any_element());
 
         div()
             .id("runebook")
             .size_full()
+            .flex()
+            .flex_col()
+            .bg(background)
+            .text_color(foreground)
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &SaveNote, _, cx| {
                 this.flush(cx);
@@ -482,6 +554,8 @@ impl Render for Root {
                 }
                 cx.notify();
             }))
+            .child(title)
             .child(body)
+            .children(status)
     }
 }

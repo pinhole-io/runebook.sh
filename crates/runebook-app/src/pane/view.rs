@@ -15,56 +15,18 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Selectable, Sizable, Theme};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AppContext, ClickEvent, Context, Image, ImageFormat, Render, SharedString, Window, black, div,
-    img, px, relative, svg,
+    App, AppContext, ClickEvent, Context, Image, ImageFormat, Render, SharedString, WeakEntity,
+    Window, black, div, img, px, relative, svg,
 };
 
 use super::{EditorPane, NameAction, NoteView, Prompt, TreeSelection};
-use crate::chrome::{panel_header, window_controls};
+use crate::chrome::panel_header;
 use runebook::{NoteKind, ThemeChoice};
 
 use crate::capture::{ScreenTarget, list_record_sources};
-use crate::{NewNote, OpenVault, Root, ToggleNoteView, theme_mode};
+use crate::{NewNote, OpenVault, Root, ToggleNoteView, on_root, theme_mode};
 
-pub(crate) fn screen(
-    root: &Root,
-    window: &mut Window,
-    cx: &mut Context<Root>,
-) -> gpui_kit::AnyElement {
-    let Some(pane) = root.pane.as_ref() else {
-        return div().into_any_element();
-    };
-    let view = cx.weak_entity();
-    let background = cx.theme().background;
-    let foreground = cx.theme().foreground;
-    let border = cx.theme().border;
-
-    div()
-        .size_full()
-        .flex()
-        .flex_col()
-        .bg(background)
-        .text_color(foreground)
-        .child(toolbar(pane, window, cx))
-        .child(
-            div()
-                .flex_1()
-                .min_h(px(0.0))
-                .flex()
-                .overflow_hidden()
-                .border_t_1()
-                .border_color(border)
-                .child(file_tree(pane, cx))
-                .child(main_surface(pane, view, cx))
-                .when(pane.archivist.is_open(), |row| {
-                    row.child(crate::archivist::column(&pane.archivist, cx))
-                }),
-        )
-        .child(status_bar(pane, cx))
-        .into_any_element()
-}
-
-fn toolbar(pane: &EditorPane, window: &Window, cx: &mut Context<Root>) -> impl IntoElement {
+pub(crate) fn toolbar(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
     Toolbar::new("vault-toolbar")
         .w_full()
@@ -77,16 +39,15 @@ fn toolbar(pane: &EditorPane, window: &Window, cx: &mut Context<Root>) -> impl I
                 .icon(IconName::FolderOpen)
                 .label("Open vault")
                 .tooltip_with_action("Open vault", &OpenVault, None)
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
                     this.pick_vault(false, cx);
                 })),
         )
         .content(div().flex_1())
-        .content(capture_buttons(pane, cx))
-        .content(window_controls(window, cx))
+        .content(capture_buttons(pane, view, cx))
 }
 
-fn archivist_button(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoElement {
+fn archivist_button(pane: &EditorPane, view: WeakEntity<Root>) -> impl IntoElement {
     let label = if pane.archivist.is_open() {
         "Hide the Archivist"
     } else {
@@ -101,7 +62,7 @@ fn archivist_button(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoEleme
         .label("Archivist")
         .tooltip(label)
         .accessibility_label(label)
-        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+        .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
             if let Some(pane) = this.pane.as_mut() {
                 pane.archivist.toggle();
             }
@@ -109,7 +70,7 @@ fn archivist_button(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoEleme
         }))
 }
 
-fn capture_buttons(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoElement {
+fn capture_buttons(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let voice_on = pane.voice_recording();
     let screen_on = pane.screen_recording();
     let busy = pane.capture_status().is_some();
@@ -137,7 +98,7 @@ fn capture_buttons(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoElemen
         })
         .tooltip(voice_label)
         .accessibility_label(voice_label)
-        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+        .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
             if let Some(pane) = this.pane.as_mut() {
                 pane.toggle_voice(cx);
             }
@@ -152,12 +113,13 @@ fn capture_buttons(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoElemen
             screen_on,
             busy || !pane.sight_allowed(),
             screen_label,
+            view,
             cx,
         ))
 }
 
 /// A live capture stays the size of the other toolbar icons and uses a red record mark.
-fn recording_style(button: Button, live: bool, cx: &mut Context<Root>) -> Button {
+fn recording_style(button: Button, live: bool, cx: &App) -> Button {
     if !live {
         return button.ghost();
     }
@@ -175,7 +137,8 @@ fn screen_button(
     screen_on: bool,
     busy: bool,
     screen_label: &str,
-    cx: &mut Context<Root>,
+    view: WeakEntity<Root>,
+    cx: &App,
 ) -> gpui_kit::AnyElement {
     let button = Button::new("record-screen")
         .cursor_pointer()
@@ -188,7 +151,7 @@ fn screen_button(
         .accessibility_label(screen_label.to_string());
     if screen_on {
         return recording_style(button, true, cx)
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+            .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
                 if let Some(pane) = this.pane.as_mut() {
                     pane.toggle_screen(cx);
                 }
@@ -196,7 +159,6 @@ fn screen_button(
             }))
             .into_any_element();
     }
-    let view = cx.weak_entity();
     recording_style(button, false, cx)
         .disabled(busy)
         .dropdown_menu(move |menu, _, menu_cx| {
@@ -245,7 +207,7 @@ fn screen_target_item(
     })
 }
 
-fn toggle_note_view(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoElement {
+fn toggle_note_view(pane: &EditorPane, view: WeakEntity<Root>) -> impl IntoElement {
     let (icon, label) = match pane.note_view {
         NoteView::Preview => (IconName::SquarePen, "Edit source"),
         NoteView::Source => (IconName::Eye, "Show preview"),
@@ -256,7 +218,7 @@ fn toggle_note_view(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoEleme
         .icon(icon)
         .tooltip_with_action(label, &ToggleNoteView, None)
         .accessibility_label(label)
-        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+        .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
             if let Some(pane) = this.pane.as_mut() {
                 pane.toggle_note_view(window, cx);
             }
@@ -264,24 +226,16 @@ fn toggle_note_view(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoEleme
         }))
 }
 
-fn main_surface(
-    pane: &EditorPane,
-    view: gpui_kit::WeakEntity<Root>,
-    cx: &mut Context<Root>,
-) -> gpui_kit::AnyElement {
+pub(crate) fn note(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_kit::AnyElement {
     if pane.settings_open {
-        return settings_panel(pane, cx).into_any_element();
+        return settings_panel(pane, view, cx).into_any_element();
     }
     note_surface(pane, view, cx)
 }
 
-fn note_surface(
-    pane: &EditorPane,
-    view: gpui_kit::WeakEntity<Root>,
-    cx: &mut Context<Root>,
-) -> gpui_kit::AnyElement {
+fn note_surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_kit::AnyElement {
     let body = match pane.note_view {
-        NoteView::Preview => super::preview::surface(pane, view, cx).into_any_element(),
+        NoteView::Preview => super::preview::surface(pane, view.clone(), cx).into_any_element(),
         NoteView::Source => source_surface(pane).into_any_element(),
     };
     let border = cx.theme().border;
@@ -293,7 +247,7 @@ fn note_surface(
         .flex()
         .flex_col()
         .overflow_hidden()
-        .child(note_header(pane, border, cx))
+        .child(note_header(pane, border, view, cx))
         .child(body)
         .into_any_element()
 }
@@ -301,12 +255,13 @@ fn note_surface(
 fn note_header(
     pane: &EditorPane,
     border: gpui_kit::Hsla,
-    cx: &mut Context<Root>,
+    view: WeakEntity<Root>,
+    _cx: &App,
 ) -> impl IntoElement {
     panel_header(div().id("note-header").px_2(), border)
-        .child(archivist_button(pane, cx))
+        .child(archivist_button(pane, view.clone()))
         .child(div().flex_1())
-        .child(toggle_note_view(pane, cx))
+        .child(toggle_note_view(pane, view))
 }
 
 fn source_surface(pane: &EditorPane) -> impl IntoElement {
@@ -353,7 +308,8 @@ fn row_actions(
     key: &str,
     selected: bool,
     selection: TreeSelection,
-    cx: &mut Context<Root>,
+    view: WeakEntity<Root>,
+    cx: &App,
 ) -> impl IntoElement {
     let group = SharedString::from(format!("row-{key}"));
     let rename_selection = selection.clone();
@@ -379,7 +335,7 @@ fn row_actions(
                 .icon(IconName::PenLine)
                 .tooltip("Rename")
                 .accessibility_label("Rename")
-                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                .on_click(on_root(&view, move |this, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
                     if let Some(pane) = this.pane.as_mut() {
                         pane.tree_selection = rename_selection.clone();
@@ -411,7 +367,7 @@ fn row_actions(
                 )
                 .aria_label("Delete")
                 .tooltip(|window, cx| Tooltip::new("Delete").build(window, cx))
-                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                .on_click(on_root(&view, move |this, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
                     if let Some(pane) = this.pane.as_mut() {
                         pane.tree_selection = delete_selection.clone();
@@ -422,26 +378,22 @@ fn row_actions(
         )
 }
 
-fn file_tree(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoElement {
+pub(crate) fn files(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let selected = pane.tree_selection.clone();
     let entries = pane.tree.children.clone();
     let sidebar = cx.theme().sidebar;
-    let border = cx.theme().sidebar_border;
     let foreground = cx.theme().sidebar_foreground;
     div()
         .id("file-tree")
-        .w(px(260.))
-        .h_full()
+        .size_full()
         .min_h(px(0.))
-        .flex_shrink_0()
+        .min_w(px(0.))
         .overflow_hidden()
         .flex()
         .flex_col()
         .bg(sidebar)
         .text_color(foreground)
-        .border_r_1()
-        .border_color(border)
-        .child(create_actions(cx))
+        .child(create_actions(view.clone(), cx))
         .child(
             div()
                 .id("file-list")
@@ -453,7 +405,7 @@ fn file_tree(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoElement {
                         .downcast_ref::<NoteMove>()
                         .is_some_and(|drag| !drag.id.parent().is_root())
                 })
-                .on_drop(cx.listener(|this, drag: &NoteMove, _, cx| {
+                .on_drop(on_root(&view, |this, drag: &NoteMove, _, cx| {
                     if let Some(pane) = this.pane.as_mut() {
                         pane.move_note(&drag.id, &runebook::FolderId::root());
                     }
@@ -466,15 +418,16 @@ fn file_tree(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoElement {
                         &selected,
                         &pane.collapsed,
                         pane.prompt.as_ref(),
+                        view.clone(),
                         cx,
                     )
                 }))
                 .overflow_y_scrollbar(),
         )
-        .child(settings_row(cx))
+        .child(settings_row(view, cx))
 }
 
-fn settings_row(cx: &mut Context<Root>) -> impl IntoElement {
+fn settings_row(view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let border = cx.theme().sidebar_border;
     div()
         .w_full()
@@ -491,7 +444,7 @@ fn settings_row(cx: &mut Context<Root>) -> impl IntoElement {
                 .cursor_pointer()
                 .icon(IconName::Settings)
                 .label("Settings")
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
                     if let Some(pane) = this.pane.as_mut() {
                         pane.toggle_settings(cx);
                     }
@@ -500,7 +453,7 @@ fn settings_row(cx: &mut Context<Root>) -> impl IntoElement {
         )
 }
 
-fn settings_panel(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoElement {
+fn settings_panel(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
     div()
         .id("settings-panel")
@@ -520,9 +473,9 @@ fn settings_panel(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoElement
                 .child(setting_label("Microphone", muted))
                 .child(microphone_field(pane, cx))
                 .child(setting_label("Theme", muted))
-                .child(theme_group(pane, cx))
+                .child(theme_group(pane, view.clone()))
                 .child(setting_label("Note view", muted))
-                .child(note_view_group(pane, cx)),
+                .child(note_view_group(pane, view)),
         )
 }
 
@@ -530,7 +483,7 @@ fn setting_label(text: &'static str, color: impl Into<gpui_kit::Hsla>) -> impl I
     div().text_xs().text_color(color).child(text)
 }
 
-fn microphone_field(pane: &EditorPane, cx: &mut Context<Root>) -> gpui_kit::AnyElement {
+fn microphone_field(pane: &EditorPane, cx: &App) -> gpui_kit::AnyElement {
     let Some(select) = pane.microphone_select.as_ref() else {
         return microphone_loading(cx).into_any_element();
     };
@@ -541,7 +494,7 @@ fn microphone_field(pane: &EditorPane, cx: &mut Context<Root>) -> gpui_kit::AnyE
         .into_any_element()
 }
 
-fn microphone_loading(cx: &mut Context<Root>) -> impl IntoElement {
+fn microphone_loading(cx: &App) -> impl IntoElement {
     let border = cx.theme().border;
     let muted = cx.theme().muted_foreground;
     div()
@@ -559,8 +512,7 @@ fn microphone_loading(cx: &mut Context<Root>) -> impl IntoElement {
         .child("loading...")
 }
 
-fn theme_group(pane: &EditorPane, cx: &mut Context<Root>) -> RadioGroup {
-    let view = cx.weak_entity();
+fn theme_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
     let selected = match pane.theme {
         ThemeChoice::Dark => 0,
         ThemeChoice::Light => 1,
@@ -586,8 +538,7 @@ fn theme_group(pane: &EditorPane, cx: &mut Context<Root>) -> RadioGroup {
         })
 }
 
-fn note_view_group(pane: &EditorPane, cx: &mut Context<Root>) -> RadioGroup {
-    let view = cx.weak_entity();
+fn note_view_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
     let selected = match pane.default_note_view {
         NoteView::Preview => 0,
         NoteView::Source => 1,
@@ -613,9 +564,8 @@ fn note_view_group(pane: &EditorPane, cx: &mut Context<Root>) -> RadioGroup {
         })
 }
 
-fn create_actions(cx: &mut Context<Root>) -> impl IntoElement {
+fn create_actions(view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let border = cx.theme().sidebar_border;
-    let view = cx.weak_entity();
     panel_header(div().id("tree-header").justify_center().px_1(), border)
         .child(
             Button::new("new-note")
@@ -625,11 +575,14 @@ fn create_actions(cx: &mut Context<Root>) -> impl IntoElement {
                 .icon(IconName::FilePlus)
                 .label("New note")
                 .tooltip_with_action("New note", &NewNote, None)
-                .dropdown_menu(move |menu, _, _| {
-                    menu.item(new_kind_item(view.clone(), NoteKind::Book))
-                        .item(new_kind_item(view.clone(), NoteKind::Speech))
-                        .item(new_kind_item(view.clone(), NoteKind::Sight))
-                        .item(new_kind_item(view.clone(), NoteKind::Deed))
+                .dropdown_menu({
+                    let view = view.clone();
+                    move |menu, _, _| {
+                        menu.item(new_kind_item(view.clone(), NoteKind::Book))
+                            .item(new_kind_item(view.clone(), NoteKind::Speech))
+                            .item(new_kind_item(view.clone(), NoteKind::Sight))
+                            .item(new_kind_item(view.clone(), NoteKind::Deed))
+                    }
                 }),
         )
         .child(div().mx_2().h(px(16.)).w(px(1.)).flex_shrink_0().bg(border))
@@ -641,7 +594,7 @@ fn create_actions(cx: &mut Context<Root>) -> impl IntoElement {
                 .icon(IconName::FolderPlus)
                 .label("New folder")
                 .tooltip("New folder")
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
                     if let Some(pane) = this.pane.as_mut() {
                         pane.begin_create_folder(window, cx);
                     }
@@ -677,7 +630,8 @@ fn render_entry(
     selected: &TreeSelection,
     collapsed: &std::collections::HashSet<runebook::FolderId>,
     prompt: Option<&Prompt>,
-    cx: &mut Context<Root>,
+    view: WeakEntity<Root>,
+    cx: &App,
 ) -> gpui_kit::AnyElement {
     let pad = px(8.0 + depth as f32 * 12.0);
     let sidebar = cx.theme().sidebar;
@@ -707,7 +661,7 @@ fn render_entry(
                         .bg(if open { accent } else { sidebar })
                         .text_color(if open { accent_foreground } else { foreground })
                         .cursor_pointer()
-                        .child(folder_toggle(&key, folded, folder_id.clone(), cx))
+                        .child(folder_toggle(&key, folded, folder_id.clone(), view.clone()))
                         .child(if folded {
                             IconName::Folder
                         } else {
@@ -716,15 +670,24 @@ fn render_entry(
                         .child(row_label(&key, name, renaming))
                         .when(renaming.is_none(), |row| {
                             let select_id = select_id.clone();
-                            row.child(row_actions(&key, open, TreeSelection::Folder(id), cx))
-                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            row.child(row_actions(
+                                &key,
+                                open,
+                                TreeSelection::Folder(id),
+                                view.clone(),
+                                cx,
+                            ))
+                            .on_click(on_root(
+                                &view,
+                                move |this, _: &ClickEvent, _, cx| {
                                     if let Some(pane) = this.pane.as_mut() {
                                         pane.select_tree_folder(select_id.clone());
                                     }
                                     cx.notify();
-                                }))
+                                },
+                            ))
                         })
-                        .when(renaming.is_some(), |row| rename_keys(row, cx))
+                        .when(renaming.is_some(), |row| rename_keys(row, view.clone()))
                         .can_drop({
                             let folder = folder_id.clone();
                             move |value, _, _| {
@@ -738,7 +701,7 @@ fn render_entry(
                         })
                         .on_drop({
                             let folder = folder_id.clone();
-                            cx.listener(move |this, drag: &NoteMove, _, cx| {
+                            on_root(&view, move |this, drag: &NoteMove, _, cx| {
                                 if let Some(pane) = this.pane.as_mut() {
                                     pane.move_note(&drag.id, &folder);
                                 }
@@ -748,7 +711,15 @@ fn render_entry(
                 )
                 .when(!folded, |row| {
                     row.children(children.into_iter().map(|child| {
-                        render_entry(child, depth + 1, selected, collapsed, prompt, cx)
+                        render_entry(
+                            child,
+                            depth + 1,
+                            selected,
+                            collapsed,
+                            prompt,
+                            view.clone(),
+                            cx,
+                        )
                     }))
                 })
                 .into_any_element()
@@ -774,21 +745,30 @@ fn render_entry(
                 .child(note_icon(kind))
                 .child(row_label(&key, name, renaming))
                 .when(renaming.is_none(), |row| {
-                    row.child(row_actions(&key, open, TreeSelection::Note(id), cx))
-                        .on_drag(
-                            NoteMove {
-                                id: note_id.clone(),
-                            },
-                            |drag, _, _, cx| {
-                                let text = SharedString::from(drag.id.name());
-                                cx.new(|_| DragChip { text })
-                            },
-                        )
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    row.child(row_actions(
+                        &key,
+                        open,
+                        TreeSelection::Note(id),
+                        view.clone(),
+                        cx,
+                    ))
+                    .on_drag(
+                        NoteMove {
+                            id: note_id.clone(),
+                        },
+                        |drag, _, _, cx| {
+                            let text = SharedString::from(drag.id.name());
+                            cx.new(|_| DragChip { text })
+                        },
+                    )
+                    .on_click(on_root(
+                        &view,
+                        move |this, _: &ClickEvent, window, cx| {
                             this.open_note(note_id.clone(), window, cx);
-                        }))
+                        },
+                    ))
                 })
-                .when(renaming.is_some(), |row| rename_keys(row, cx))
+                .when(renaming.is_some(), |row| rename_keys(row, view.clone()))
                 .into_any_element()
         }
     }
@@ -832,18 +812,18 @@ fn row_label(
     }
 }
 
-fn rename_keys<E>(row: E, cx: &mut Context<Root>) -> E
+fn rename_keys<E>(row: E, view: WeakEntity<Root>) -> E
 where
     E: gpui_kit::StatefulInteractiveElement,
 {
-    row.on_action(cx.listener(|this, _: &Enter, window, cx| {
+    row.on_action(on_root(&view, |this, _: &Enter, window, cx| {
         cx.stop_propagation();
         if let Some(pane) = this.pane.as_mut() {
             pane.submit_prompt(window, cx);
         }
         cx.notify();
     }))
-    .on_action(cx.listener(|this, _: &Escape, _, cx| {
+    .on_action(on_root(&view, |this, _: &Escape, _, cx| {
         cx.stop_propagation();
         if let Some(pane) = this.pane.as_mut() {
             pane.cancel_prompt();
@@ -856,7 +836,7 @@ fn folder_toggle(
     key: &str,
     folded: bool,
     folder: runebook::FolderId,
-    cx: &mut Context<Root>,
+    view: WeakEntity<Root>,
 ) -> impl IntoElement {
     let icon = if folded {
         IconName::ChevronRight
@@ -868,7 +848,7 @@ fn folder_toggle(
         .flex_shrink_0()
         .cursor_pointer()
         .child(icon)
-        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+        .on_click(on_root(&view, move |this, _: &ClickEvent, _, cx| {
             cx.stop_propagation();
             if let Some(pane) = this.pane.as_mut() {
                 pane.toggle_folder(folder.clone());
@@ -898,7 +878,7 @@ impl Render for DragChip {
     }
 }
 
-fn status_bar(pane: &EditorPane, cx: &mut Context<Root>) -> impl IntoElement {
+pub(crate) fn status_bar(pane: &EditorPane, cx: &App) -> impl IntoElement {
     let note = pane
         .open_note
         .as_ref()

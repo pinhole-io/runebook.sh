@@ -15,22 +15,59 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_kit::{
-    Anchor, AnyElement, Bounds, ClickEvent, Context, Image, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, SharedString, StyleRefinement, canvas,
-    div, img, px, svg,
+    Anchor, AnyElement, App, Bounds, ClickEvent, Image, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, SharedString, StyleRefinement, WeakEntity, canvas, div,
+    img, px, svg,
 };
-use runebook::{NoteKind, parse_task_line};
+use runebook::parse_task_line;
 
 use super::EditorPane;
 use super::rows::split_rows;
 use crate::Root;
+use crate::on_root;
 use crate::playback::{ClipKind, MediaLink};
 
-pub(super) fn surface(
-    pane: &EditorPane,
-    view: gpui_kit::WeakEntity<Root>,
-    cx: &mut Context<Root>,
-) -> impl IntoElement {
+/// Schedule poster and timing work for the preview. Call this before the row paint.
+pub(crate) fn queue_clips(pane: &EditorPane, view: WeakEntity<Root>, cx: &mut App) {
+    if pane.settings_open || pane.note_view != super::NoteView::Preview {
+        return;
+    }
+    for row in split_rows(&pane.latest) {
+        let slice = &pane.latest[row.start..row.end];
+        let Some(link) = crate::playback::media_link(slice) else {
+            continue;
+        };
+        if link.kind == ClipKind::Video
+            && pane.picture(&link.href).is_none()
+            && !pane.poster_started(&link.href)
+        {
+            let href = link.href.clone();
+            let view = view.clone();
+            cx.defer(move |cx| {
+                view.update(cx, |root, cx| {
+                    if let Some(pane) = root.pane.as_mut() {
+                        pane.request_poster(&href, cx);
+                    }
+                })
+                .ok();
+            });
+        }
+        if !pane.has_timing(&link.href) {
+            let href = link.href.clone();
+            let view = view.clone();
+            cx.defer(move |cx| {
+                view.update(cx, |root, cx| {
+                    if let Some(pane) = root.pane.as_mut() {
+                        pane.ensure_timing(&href, cx);
+                    }
+                })
+                .ok();
+            });
+        }
+    }
+}
+
+pub(super) fn surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let slices: Vec<String> = split_rows(&pane.latest)
         .into_iter()
         .map(|row| pane.latest[row.start..row.end].to_string())
@@ -49,7 +86,6 @@ pub(super) fn surface(
     let selection = cx.theme().selection;
     let hover = cx.theme().list_hover;
 
-    let kind = pane.note_kind();
     let images = pane
         .open_note
         .as_ref()
@@ -60,38 +96,17 @@ pub(super) fn surface(
     let mut body: Vec<AnyElement> = Vec::with_capacity(slices.len() + 1);
     for (index, slice) in slices.into_iter().enumerate() {
         let selected = bounds.is_some_and(|(lo, hi)| index >= lo && index <= hi);
-        let (checked, source) = row_source(kind, &slice);
+        let (checked, source) = row_source(&slice);
+        let pad = super::rows::list_pad(&slice);
         let clip = crate::playback::media_link(&slice).map(|link| {
             let playing = pane.playing_href() == Some(link.href.as_str());
-            let frame = pane.picture(&link.href);
-            let live = pane.live_frame(&link.href);
+            let poster = pane.picture(&link.href);
+            let shown = pane.live_shown(&link.href);
+            let frame = shown.or(poster);
+            let live = pane.live_pending(&link.href);
             let position = pane.clip_position(&link.href);
             let duration = pane.clip_duration(&link.href);
             let muted = pane.media_muted();
-            if link.kind == ClipKind::Video && frame.is_none() && !pane.poster_started(&link.href) {
-                let href = link.href.clone();
-                let view = view.clone();
-                cx.defer(move |cx| {
-                    view.update(cx, |root, cx| {
-                        if let Some(pane) = root.pane.as_mut() {
-                            pane.request_poster(&href, cx);
-                        }
-                    })
-                    .ok();
-                });
-            }
-            if !pane.has_timing(&link.href) {
-                let href = link.href.clone();
-                let view = view.clone();
-                cx.defer(move |cx| {
-                    view.update(cx, |root, cx| {
-                        if let Some(pane) = root.pane.as_mut() {
-                            pane.ensure_timing(&href, cx);
-                        }
-                    })
-                    .ok();
-                });
-            }
             ClipPaint {
                 link,
                 playing,
@@ -103,7 +118,6 @@ pub(super) fn surface(
             }
         });
         let prepared = crate::anchors::prepare(&pane.latest, &source);
-        let pad = super::rows::list_pad(&source);
         let row = note_row(
             index,
             RowText {
@@ -142,7 +156,7 @@ pub(super) fn surface(
         .flex_col()
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            on_root(&view, |this, _: &MouseDownEvent, _, cx| {
                 if let Some(pane) = this.pane.as_mut() {
                     pane.clear_note_rows();
                 }
@@ -151,7 +165,7 @@ pub(super) fn surface(
         )
         .on_mouse_up(
             MouseButton::Left,
-            cx.listener(|this, _: &MouseUpEvent, _, cx| {
+            on_root(&view, |this, _: &MouseUpEvent, _, cx| {
                 if let Some(pane) = this.pane.as_mut() {
                     pane.release_note_row();
                 }
@@ -161,19 +175,24 @@ pub(super) fn surface(
         .children(body)
 }
 
-fn row_source(kind: NoteKind, slice: &str) -> (Option<bool>, String) {
-    if kind != NoteKind::Deed {
-        return (None, slice.to_string());
-    }
+/// The preview draws its own box, so the row text omits the task marker.
+fn row_source(slice: &str) -> (Option<bool>, String) {
     let line_end = slice.find('\n').unwrap_or(slice.len());
     let raw = &slice[..line_end];
     let logical = raw.strip_suffix('\r').unwrap_or(raw);
     let Some(task) = parse_task_line(logical) else {
         return (None, slice.to_string());
     };
-    let mut shown = task.plain;
+    let mut shown = task_label(logical);
     shown.push_str(&slice[line_end..]);
     (Some(task.checked), shown)
+}
+
+fn task_label(line: &str) -> String {
+    let Some(end) = line.find(']') else {
+        return line.to_string();
+    };
+    line[end + 1..].trim_start().to_string()
 }
 
 struct RowPaint {
@@ -187,7 +206,7 @@ struct ClipPaint {
     link: MediaLink,
     playing: bool,
     frame: Option<Arc<Image>>,
-    live: Option<Arc<gpui_kit::RenderImage>>,
+    live: Option<Arc<Image>>,
     position: Duration,
     duration: Duration,
     muted: bool,
@@ -205,8 +224,8 @@ fn note_row(
     text: RowText,
     paint: RowPaint,
     clip: Option<ClipPaint>,
-    view: gpui_kit::WeakEntity<Root>,
-    cx: &mut Context<Root>,
+    view: WeakEntity<Root>,
+    cx: &App,
 ) -> impl IntoElement {
     let RowText {
         source,
@@ -220,6 +239,7 @@ fn note_row(
         hover,
         checked,
     } = paint;
+    let is_task = checked.is_some();
     div()
         .id(SharedString::from(format!("note-row-{index}")))
         .w_full()
@@ -233,11 +253,11 @@ fn note_row(
         .when(selected, |row| row.bg(selection))
         .when(!selected, |row| row.hover(move |style| style.bg(hover)))
         .when_some(checked, |row, checked| {
-            row.child(task_box(index, checked, cx))
+            row.child(task_box(index, checked, pad, view.clone(), cx))
         })
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+            on_root(&view, move |this, event: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();
                 if let Some(pane) = this.pane.as_mut() {
                     pane.press_note_row(index, event.modifiers.shift);
@@ -245,7 +265,7 @@ fn note_row(
                 cx.notify();
             }),
         )
-        .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
+        .on_mouse_move(on_root(&view, move |this, _: &MouseMoveEvent, _, cx| {
             let changed = this
                 .pane
                 .as_mut()
@@ -256,7 +276,7 @@ fn note_row(
         }))
         .on_mouse_up(
             MouseButton::Left,
-            cx.listener(|this, _: &MouseUpEvent, _, cx| {
+            on_root(&view, |this, _: &MouseUpEvent, _, cx| {
                 if let Some(pane) = this.pane.as_mut() {
                     pane.release_note_row();
                 }
@@ -264,11 +284,11 @@ fn note_row(
             }),
         )
         .child(match clip {
-            Some(clip) => player(index, clip, cx).into_any_element(),
+            Some(clip) => player(index, clip, view.clone(), cx).into_any_element(),
             None => div()
                 .flex_1()
                 .min_w(px(0.))
-                .pl(px(pad))
+                .pl(px(if is_task { 0. } else { pad }))
                 .child(
                     crate::markdown_view::view(
                         SharedString::from(format!("note-row-text-{index}")),
@@ -299,7 +319,12 @@ fn fitted(source: impl Into<gpui_kit::ImageSource> + 'static) -> impl IntoElemen
     )
 }
 
-fn player(index: usize, clip: ClipPaint, cx: &mut Context<Root>) -> impl IntoElement + 'static {
+fn player(
+    index: usize,
+    clip: ClipPaint,
+    view: WeakEntity<Root>,
+    cx: &App,
+) -> impl IntoElement + 'static {
     let ClipPaint {
         link,
         playing,
@@ -327,6 +352,7 @@ fn player(index: usize, clip: ClipPaint, cx: &mut Context<Root>) -> impl IntoEle
             overlay: kind == ClipKind::Video,
         },
         &seek_bounds,
+        view.clone(),
         cx,
     );
     if kind != ClipKind::Video {
@@ -343,8 +369,9 @@ fn player(index: usize, clip: ClipPaint, cx: &mut Context<Root>) -> impl IntoEle
             .into_any_element();
     }
     let well = cx.theme().secondary;
-    let ratio = frame
+    let ratio = live
         .as_ref()
+        .or(frame.as_ref())
         .and_then(|image| crate::playback::jpeg_ratio(&image.bytes))
         .unwrap_or(16.0 / 9.0);
     let play_href = href.clone();
@@ -360,7 +387,7 @@ fn player(index: usize, clip: ClipPaint, cx: &mut Context<Root>) -> impl IntoEle
         .overflow_hidden()
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+            on_root(&view, move |this, _: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
                 if let Some(pane) = this.pane.as_mut() {
                     pane.toggle_playback(&play_href, kind, window, cx);
@@ -368,20 +395,23 @@ fn player(index: usize, clip: ClipPaint, cx: &mut Context<Root>) -> impl IntoEle
                 cx.notify();
             }),
         )
-        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-            let Some(pane) = this.pane.as_mut() else {
-                return;
-            };
-            let bounds = match move_bounds.lock() {
-                Ok(bounds) => *bounds,
-                Err(err) => *err.into_inner(),
-            };
-            pane.move_seek(&seek_href, seek_ratio(bounds, event.position.x));
-            cx.notify();
-        }))
+        .on_mouse_move(on_root(
+            &view,
+            move |this, event: &MouseMoveEvent, _, cx| {
+                let Some(pane) = this.pane.as_mut() else {
+                    return;
+                };
+                let bounds = match move_bounds.lock() {
+                    Ok(bounds) => *bounds,
+                    Err(err) => *err.into_inner(),
+                };
+                pane.move_seek(&seek_href, seek_ratio(bounds, event.position.x));
+                cx.notify();
+            },
+        ))
         .on_mouse_up(
             MouseButton::Left,
-            cx.listener(move |this, _: &MouseUpEvent, window, cx| {
+            on_root(&view, move |this, _: &MouseUpEvent, window, cx| {
                 cx.stop_propagation();
                 if let Some(pane) = this.pane.as_mut() {
                     pane.finish_seek(&finish_href, kind, window, cx);
@@ -390,9 +420,7 @@ fn player(index: usize, clip: ClipPaint, cx: &mut Context<Root>) -> impl IntoEle
             }),
         )
         .when(frame.is_none() && live.is_none(), |stage| stage.bg(well))
-        .when(live.is_none(), |stage| {
-            stage.when_some(frame, |stage, image| stage.child(fitted(image)))
-        })
+        .when_some(frame, |stage, image| stage.child(fitted(image)))
         .when_some(live, |stage, image| stage.child(fitted(image)))
         .when(!playing, |stage| {
             let href = center_href;
@@ -408,7 +436,7 @@ fn player(index: usize, clip: ClipPaint, cx: &mut Context<Root>) -> impl IntoEle
                         IconName::Play,
                         px(28.),
                         "Play",
-                        cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                        on_root(&view, move |this, _: &MouseDownEvent, window, cx| {
                             cx.stop_propagation();
                             if let Some(pane) = this.pane.as_mut() {
                                 pane.toggle_playback(&href, kind, window, cx);
@@ -437,7 +465,8 @@ struct Transport {
 fn transport(
     bar: Transport,
     seek_bounds: &Arc<Mutex<Bounds<Pixels>>>,
-    cx: &mut Context<Root>,
+    view: WeakEntity<Root>,
+    cx: &App,
 ) -> impl IntoElement + 'static {
     let Transport {
         index,
@@ -487,7 +516,7 @@ fn transport(
             },
             px(16.),
             if playing { "Pause" } else { "Play" },
-            cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+            on_root(&view, move |this, _: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
                 if let Some(pane) = this.pane.as_mut() {
                     pane.toggle_playback(&play_href, kind, window, cx);
@@ -507,7 +536,7 @@ fn transport(
                 fill,
             },
             bounds,
-            cx,
+            view.clone(),
         ))
         .child(icon_hit(
             format!("mute-{index}"),
@@ -518,7 +547,7 @@ fn transport(
             },
             px(16.),
             if muted { "Unmute" } else { "Mute" },
-            cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+            on_root(&view, move |this, _: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();
                 if let Some(pane) = this.pane.as_mut() {
                     pane.toggle_mute();
@@ -540,7 +569,7 @@ struct Seek {
 fn seek_track(
     bar: Seek,
     bounds: Arc<Mutex<Bounds<Pixels>>>,
-    cx: &mut Context<Root>,
+    view: WeakEntity<Root>,
 ) -> impl IntoElement + 'static {
     let Seek {
         index,
@@ -594,7 +623,7 @@ fn seek_track(
         )
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+            on_root(&view, move |this, event: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();
                 let Some(pane) = this.pane.as_mut() else {
                     return;
@@ -607,20 +636,23 @@ fn seek_track(
                 cx.notify();
             }),
         )
-        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-            let Some(pane) = this.pane.as_mut() else {
-                return;
-            };
-            let area = match move_bounds.lock() {
-                Ok(area) => *area,
-                Err(err) => *err.into_inner(),
-            };
-            pane.move_seek(&move_href, seek_ratio(area, event.position.x));
-            cx.notify();
-        }))
+        .on_mouse_move(on_root(
+            &view,
+            move |this, event: &MouseMoveEvent, _, cx| {
+                let Some(pane) = this.pane.as_mut() else {
+                    return;
+                };
+                let area = match move_bounds.lock() {
+                    Ok(area) => *area,
+                    Err(err) => *err.into_inner(),
+                };
+                pane.move_seek(&move_href, seek_ratio(area, event.position.x));
+                cx.notify();
+            },
+        ))
         .on_mouse_up(
             MouseButton::Left,
-            cx.listener(move |this, _: &MouseUpEvent, window, cx| {
+            on_root(&view, move |this, _: &MouseUpEvent, window, cx| {
                 cx.stop_propagation();
                 if let Some(pane) = this.pane.as_mut() {
                     pane.finish_seek(&up_href, kind, window, cx);
@@ -671,12 +703,19 @@ fn clock(duration: Duration) -> String {
     }
 }
 
-fn task_box(index: usize, checked: bool, cx: &mut Context<Root>) -> impl IntoElement {
+fn task_box(
+    index: usize,
+    checked: bool,
+    pad: f32,
+    view: WeakEntity<Root>,
+    cx: &App,
+) -> impl IntoElement {
     let border = cx.theme().foreground;
     let empty = cx.theme().background;
     div()
         .id(SharedString::from(format!("task-box-{index}")))
         .mt(px(4.))
+        .ml(px(pad))
         .mr_2()
         .size(px(16.))
         .flex_shrink_0()
@@ -702,12 +741,12 @@ fn task_box(index: usize, checked: bool, cx: &mut Context<Root>) -> impl IntoEle
         .on_mouse_up(MouseButton::Left, |_: &MouseUpEvent, _, cx| {
             cx.stop_propagation();
         })
-        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+        .on_click(on_root(&view, move |this, _: &ClickEvent, window, cx| {
             cx.stop_propagation();
             let dirty = this
                 .pane
                 .as_mut()
-                .is_some_and(|pane| pane.toggle_deed_task(index, window, cx));
+                .is_some_and(|pane| pane.toggle_task(index, window, cx));
             if dirty {
                 this.schedule_autosave(cx);
             }
@@ -753,8 +792,8 @@ impl IntoElement for RowAnchor {
 fn row_actions(
     row: AnyElement,
     rewrite: Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>,
-    view: gpui_kit::WeakEntity<Root>,
-    cx: &mut Context<Root>,
+    view: WeakEntity<Root>,
+    cx: &App,
 ) -> impl IntoElement {
     Popover::new("note-row-actions")
         .anchor(Anchor::TopLeft)
@@ -762,29 +801,33 @@ fn row_actions(
         .open(true)
         .overlay_closable(false)
         .trigger_style(StyleRefinement::default().w_full())
-        .on_open_change(move |open, window, cx| {
-            if *open {
-                return;
-            }
-            // The popover can close during the row click. Clear after that update ends.
+        .on_open_change({
             let view = view.clone();
-            window.defer(cx, move |_, cx| {
-                view.update(cx, |root, cx| {
-                    if let Some(pane) = root.pane.as_mut() {
-                        pane.clear_note_rows();
-                    }
-                    cx.notify();
-                })
-                .ok();
-            });
+            move |open, window, cx| {
+                if *open {
+                    return;
+                }
+                // The popover can close during the row click. Clear after that update ends.
+                let view = view.clone();
+                window.defer(cx, move |_, cx| {
+                    view.update(cx, |root, cx| {
+                        if let Some(pane) = root.pane.as_mut() {
+                            pane.clear_note_rows();
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                });
+            }
         })
         .trigger(RowAnchor { row })
-        .child(row_menu(rewrite, cx))
+        .child(row_menu(rewrite, view.clone(), cx))
 }
 
 fn row_menu(
     rewrite: Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>,
-    cx: &mut Context<Root>,
+    view: WeakEntity<Root>,
+    cx: &App,
 ) -> impl IntoElement {
     let prompting = rewrite.is_some();
     let empty = rewrite
@@ -812,7 +855,7 @@ fn row_menu(
                         .small()
                         .cursor_pointer()
                         .label("Add to chat")
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
                             if let Some(pane) = this.pane.as_mut() {
                                 pane.add_selected_rows_to_chat();
                             }
@@ -825,7 +868,7 @@ fn row_menu(
                         .primary()
                         .cursor_pointer()
                         .label("Rewrite")
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
                             if let Some(pane) = this.pane.as_mut() {
                                 pane.begin_row_rewrite(window, cx);
                             }
@@ -840,14 +883,14 @@ fn row_menu(
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .on_action(cx.listener(|this, _: &Enter, window, cx| {
+                    .on_action(on_root(&view, |this, _: &Enter, window, cx| {
                         cx.stop_propagation();
                         if let Some(pane) = this.pane.as_mut() {
                             pane.apply_row_rewrite(window, cx);
                         }
                         cx.notify();
                     }))
-                    .on_action(cx.listener(|this, _: &Escape, _, cx| {
+                    .on_action(on_root(&view, |this, _: &Escape, _, cx| {
                         cx.stop_propagation();
                         if let Some(pane) = this.pane.as_mut() {
                             pane.clear_note_rows();
@@ -862,7 +905,7 @@ fn row_menu(
                             .cursor_pointer()
                             .disabled(empty)
                             .label("Apply")
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
                                 if let Some(pane) = this.pane.as_mut() {
                                     pane.apply_row_rewrite(window, cx);
                                 }
@@ -871,4 +914,29 @@ fn row_menu(
                     ),
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::row_source;
+
+    #[test]
+    fn a_task_row_keeps_the_label_and_drops_the_box() {
+        let (checked, shown) = row_source("- [x] Completed task\n");
+        assert_eq!(checked, Some(true));
+        assert_eq!(shown, "Completed task\n");
+        let (checked, shown) = row_source("- [ ] Incomplete task\n");
+        assert_eq!(checked, Some(false));
+        assert_eq!(shown, "Incomplete task\n");
+        let (checked, shown) = row_source("  * [X] Nested\n");
+        assert_eq!(checked, Some(true));
+        assert_eq!(shown, "Nested\n");
+    }
+
+    #[test]
+    fn a_normal_row_stays_unchanged() {
+        let (checked, shown) = row_source("# Task list\n");
+        assert_eq!(checked, None);
+        assert_eq!(shown, "# Task list\n");
+    }
 }
