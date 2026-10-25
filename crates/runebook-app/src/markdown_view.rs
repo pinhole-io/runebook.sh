@@ -46,7 +46,7 @@ pub(crate) fn view(
     images: Option<ImageRoots>,
     hide_anchors: bool,
 ) -> TextView {
-    let source = source.into();
+    let source = SharedString::from(shield_details(&source.into()));
     let links = Arc::new(crate::anchors::link_urls(source.as_ref()));
     let images = Arc::new(images);
     let parser_links = Arc::clone(&links);
@@ -108,6 +108,7 @@ fn parse_extra(
         return Some(MarkdownNode::new("md-figure", figure).text(alt));
     }
     match node {
+        markdown_ast::Node::Code(code) => details_code(code),
         markdown_ast::Node::ThematicBreak(_) => Some(MarkdownNode::new("md-rule", ()).text("")),
         markdown_ast::Node::Html(html) => {
             let details = details_parts(&html.value)?;
@@ -150,6 +151,21 @@ fn parse_extra(
         }
         _ => None,
     }
+}
+
+fn details_code(code: &markdown_ast::Code) -> Option<MarkdownNode> {
+    let lang = code.lang.as_deref()?.trim();
+    if !lang.eq_ignore_ascii_case(DETAILS_FENCE) {
+        return None;
+    }
+    let details = details_parts(&code.value)?;
+    let summary = details.summary.clone();
+    let markdown = code.value.clone();
+    Some(
+        MarkdownNode::new("md-details", details)
+            .text(summary)
+            .markdown(markdown),
+    )
 }
 
 fn figure(node: &markdown_ast::Node, links: &HashMap<String, String>) -> Option<Figure> {
@@ -377,6 +393,225 @@ fn text_key(text: &str) -> u64 {
     hasher.finish()
 }
 
+const DETAILS_FENCE: &str = "runebook-details";
+
+/// CommonMark ends a `<details>` block at a blank line.
+/// One fence keeps the element together so the summary can hide the body.
+fn shield_details(source: &str) -> String {
+    let lines = source_pieces(source);
+    let mut out = String::with_capacity(source.len());
+    let mut index = 0;
+    let mut fence: Option<(char, usize)> = None;
+    while index < lines.len() {
+        let body = lines[index].body;
+        if let Some((marker, count)) = fence {
+            if closing_fence(body, marker, count) {
+                fence = None;
+            }
+            out.push_str(lines[index].raw);
+            index += 1;
+            continue;
+        }
+        if let Some(open) = opening_fence(body) {
+            fence = Some(open);
+            out.push_str(lines[index].raw);
+            index += 1;
+            continue;
+        }
+        if details_opens(body)
+            && let Some(end) = details_span(&lines, index)
+        {
+            let mut html = String::new();
+            for line in &lines[index..=end] {
+                html.push_str(line.raw);
+            }
+            out.push_str(&details_fence(&html));
+            index = end + 1;
+            continue;
+        }
+        out.push_str(lines[index].raw);
+        index += 1;
+    }
+    out
+}
+
+struct SourcePiece<'a> {
+    body: &'a str,
+    raw: &'a str,
+}
+
+fn source_pieces(source: &str) -> Vec<SourcePiece<'_>> {
+    let mut start = 0;
+    let mut pieces = Vec::new();
+    for raw in source.split_inclusive('\n') {
+        let end = start + raw.len();
+        let body = raw.trim_end_matches(['\n', '\r']);
+        pieces.push(SourcePiece {
+            body,
+            raw: &source[start..end],
+        });
+        start = end;
+    }
+    pieces
+}
+
+fn details_span(lines: &[SourcePiece<'_>], start: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut fence: Option<(char, usize)> = None;
+    let mut closed = false;
+    for (index, line) in lines.iter().enumerate().skip(start) {
+        if let Some((marker, count)) = fence {
+            if closing_fence(line.body, marker, count) {
+                fence = None;
+            }
+            continue;
+        }
+        if index != start
+            && let Some(open) = opening_fence(line.body)
+        {
+            fence = Some(open);
+            continue;
+        }
+        if has_details_close(line.body) {
+            closed = true;
+        }
+        depth += details_delta(line.body);
+        if closed && depth <= 0 {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn details_fence(html: &str) -> String {
+    let fence = "`".repeat(backtick_run(html).max(2) + 1);
+    let mut out = String::with_capacity(html.len() + fence.len() * 2 + DETAILS_FENCE.len() + 3);
+    out.push_str(&fence);
+    out.push_str(DETAILS_FENCE);
+    out.push('\n');
+    out.push_str(html);
+    if !html.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&fence);
+    out.push('\n');
+    out
+}
+
+fn backtick_run(text: &str) -> usize {
+    let mut run = 0;
+    let mut longest = 0;
+    for ch in text.chars() {
+        if ch == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    longest
+}
+
+fn details_opens(line: &str) -> bool {
+    let indent = leading_indent(line);
+    if indent > 3 {
+        return false;
+    }
+    let rest = &line[indent..];
+    let tag = "<details";
+    if rest.len() < tag.len() || !rest[..tag.len()].eq_ignore_ascii_case(tag) {
+        return false;
+    }
+    let boundary = rest.as_bytes().get(tag.len()).copied().unwrap_or(b' ');
+    !boundary.is_ascii_alphanumeric()
+}
+
+fn has_details_close(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let mut start = 0;
+    while let Some(at) = lower[start..].find("</details") {
+        let index = start + at;
+        let after = index + "</details".len();
+        let boundary = lower.as_bytes().get(after).copied().unwrap_or(b' ');
+        if !boundary.is_ascii_alphanumeric() {
+            return true;
+        }
+        start = index + 1;
+    }
+    false
+}
+
+fn details_delta(line: &str) -> i32 {
+    let lower = line.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let tag = "details";
+    let mut delta = 0i32;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'<' {
+            index += 1;
+            continue;
+        }
+        let close = bytes.get(index + 1) == Some(&b'/');
+        let name_at = if close { index + 2 } else { index + 1 };
+        if lower.len() >= name_at + tag.len() && lower[name_at..].starts_with(tag) {
+            let after = name_at + tag.len();
+            let boundary = bytes.get(after).copied().unwrap_or(b' ');
+            if !boundary.is_ascii_alphanumeric() {
+                if close {
+                    delta -= 1;
+                } else if !void_tag(&lower[after..]) {
+                    delta += 1;
+                }
+            }
+        }
+        index += 1;
+    }
+    delta
+}
+
+fn void_tag(after_name: &str) -> bool {
+    after_name
+        .find('>')
+        .is_some_and(|end| after_name[..end].trim_end().ends_with('/'))
+}
+
+fn leading_indent(line: &str) -> usize {
+    line.bytes()
+        .take_while(|byte| *byte == b' ' || *byte == b'\t')
+        .count()
+}
+
+fn opening_fence(line: &str) -> Option<(char, usize)> {
+    let indent = leading_indent(line);
+    if indent > 3 {
+        return None;
+    }
+    let rest = &line[indent..];
+    let marker = rest.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let count = rest.chars().take_while(|ch| *ch == marker).count();
+    if count < 3 {
+        return None;
+    }
+    let after = &rest[count..];
+    if marker == '`' && after.contains('`') {
+        return None;
+    }
+    Some((marker, count))
+}
+
+fn closing_fence(line: &str, marker: char, count: usize) -> bool {
+    let indent = leading_indent(line);
+    if indent > 3 {
+        return false;
+    }
+    let rest = line[indent..].trim_end();
+    !rest.is_empty() && rest.chars().all(|ch| ch == marker) && rest.chars().count() >= count
+}
+
 fn details_parts(html: &str) -> Option<Details> {
     let lower = html.to_ascii_lowercase();
     let open = lower.find("<details")?;
@@ -462,6 +697,26 @@ impl MarkdownPlugin for FootnoteMark {
             .text_xs()
             .text_color(cx.theme().link)
             .child(node.as_text().to_string())
+    }
+
+    fn render_inline(
+        &self,
+        node: &MarkdownNode,
+        context: &InlineRenderContext,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Option<InlineElement> {
+        let size = context.font_size() * (2. / 3.);
+        Some(
+            InlineElement::new(
+                div()
+                    .text_size(size)
+                    .line_height(size)
+                    .text_color(cx.theme().link)
+                    .child(node.as_text().to_string()),
+            )
+            .with_baseline(context.font_size()),
+        )
     }
 }
 
@@ -632,6 +887,50 @@ mod tests {
         let details = details_parts(html).expect("details");
         assert_eq!(details.summary, "Click to expand");
         assert_eq!(details.body, "Body");
+    }
+
+    #[test]
+    fn shielded_details_keep_the_summary_and_the_sentence() {
+        let source = "\
+<details>
+<summary>Click to expand</summary>
+
+Some Markdown renderers allow inline HTML, but support varies.
+
+</details>
+
+After.
+";
+        let shielded = shield_details(source);
+        assert!(shielded.ends_with("After.\n"));
+        let details = details_parts(&fence_html(&shielded)).expect("details");
+        assert_eq!(details.summary, "Click to expand");
+        assert_eq!(
+            details.body,
+            "Some Markdown renderers allow inline HTML, but support varies."
+        );
+    }
+
+    #[test]
+    fn code_fence_keeps_a_details_tag() {
+        let source = "```\n<details>\n</details>\n```\n";
+        assert_eq!(shield_details(source), source);
+    }
+
+    #[test]
+    fn unclosed_details_stays_literal() {
+        let source = "<details>\n<summary>Click to expand</summary>\n\nStill open.\n";
+        assert_eq!(shield_details(source), source);
+    }
+
+    fn fence_html(source: &str) -> String {
+        let ticks = source.chars().take_while(|ch| *ch == '`').count();
+        let rest = source[ticks..]
+            .strip_prefix("runebook-details\n")
+            .expect("info");
+        let close = format!("\n{}", "`".repeat(ticks));
+        let end = rest.rfind(&close).expect("close");
+        rest[..end].to_string()
     }
 
     #[test]

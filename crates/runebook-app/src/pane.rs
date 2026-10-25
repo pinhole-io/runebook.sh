@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
@@ -24,8 +24,8 @@ use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectState};
 use gpui_kit::component::{ActiveTheme, IndexPath, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AppContext, ClickEvent, Context, Entity, Focusable, Image, ImageFormat, SharedString,
-    Subscription, Window, div, px,
+    AppContext, ClickEvent, Context, Entity, Focusable, Image, ImageFormat, RenderImage,
+    SharedString, Subscription, Window, div, px,
 };
 use runebook::{
     AppConfig, Error, FolderId, NoteId, NoteKind, NoteViewChoice, ThemeChoice, Vault, VaultIndex,
@@ -108,6 +108,9 @@ pub(super) struct EditorPane {
     timings: HashMap<String, TimingState>,
     posters: HashMap<String, PosterState>,
     poster_epoch: u64,
+    film: Option<Film>,
+    loading: Option<String>,
+    load_stop: Option<Arc<AtomicBool>>,
     picture_width: u32,
     capture: Capture,
     prompt: Option<Prompt>,
@@ -137,12 +140,11 @@ struct ClipHold {
     duration: Duration,
 }
 
-/// Drop a playback JPEG once a newer one is on screen.
-fn release_image(image: Arc<Image>, window: &mut Window, cx: &mut Context<Root>) {
-    if let Some(rendered) = image.clone().get_render_image(window, cx) {
-        let _ = window.drop_image(rendered);
-    }
-    image.remove_asset(cx);
+struct Film {
+    href: String,
+    frames: Vec<playback::FilmFrame>,
+    interval: Duration,
+    timing: playback::ClipTiming,
 }
 
 /// Note width in device pixels, minus the sidebar, capped for the atlas.
@@ -157,6 +159,12 @@ fn resume_point(hold: &ClipHold) -> Duration {
         Duration::ZERO
     } else {
         hold.position
+    }
+}
+
+fn drop_frames(frames: Vec<playback::FilmFrame>, window: &mut Window) {
+    for frame in frames {
+        let _ = window.drop_image(frame.image);
     }
 }
 
@@ -228,6 +236,9 @@ impl EditorPane {
             timings: HashMap::new(),
             posters: HashMap::new(),
             poster_epoch: 0,
+            film: None,
+            loading: None,
+            load_stop: None,
             picture_width: note_frame_width(window),
             capture: Capture::Idle,
             prompt: None,
@@ -446,24 +457,10 @@ impl EditorPane {
         self.picture_width = note_frame_width(window);
     }
 
-    /// Stop the clip and keep its last frame as the still preview.
-    fn end_playback(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+    /// Stop the speaker. The decoded frames stay until the note changes.
+    fn end_playback(&mut self, _window: &mut Window, _cx: &mut Context<Root>) {
         self.playback_watch = self.playback_watch.wrapping_add(1);
-        let Some(mut play) = self.playback.take() else {
-            return;
-        };
-        if let Some(pending) = play.take_pending() {
-            release_image(pending, window, cx);
-        }
-        let href = play.href().to_string();
-        if let Some(shown) = play.take_shown() {
-            self.posters.insert(href, PosterState::Ready(shown));
-        } else if let Some(bytes) = play.take_still() {
-            self.posters.insert(
-                href,
-                PosterState::Ready(Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes))),
-            );
-        }
+        self.playback.take();
     }
 
     fn pause_playback(&mut self, window: &mut Window, cx: &mut Context<Root>) {
@@ -480,13 +477,46 @@ impl EditorPane {
     }
 
     fn dismiss_media(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+        let href = self.film.as_ref().map(|film| film.href.clone());
+        let position = href.as_deref().map(|href| self.clip_position(href));
+        self.cancel_load();
         self.end_playback(window, cx);
+        let poster = position.and_then(|position| self.poster_from_film(position));
+        self.drop_film(window);
         self.hold = None;
         self.seek_drag = false;
         self.seek_preview = None;
         self.timings.clear();
         self.posters.clear();
         self.poster_epoch = self.poster_epoch.wrapping_add(1);
+        if let Some((href, image)) = poster {
+            self.posters.insert(href, PosterState::Ready(image));
+        }
+    }
+
+    fn cancel_load(&mut self) {
+        if let Some(stop) = self.load_stop.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        if self.loading.take().is_some() {
+            self.playback_watch = self.playback_watch.wrapping_add(1);
+        }
+    }
+
+    fn drop_film(&mut self, window: &mut Window) {
+        if let Some(film) = self.film.take() {
+            drop_frames(film.frames, window);
+        }
+    }
+
+    fn poster_from_film(&self, position: Duration) -> Option<(String, Arc<Image>)> {
+        let film = self.film.as_ref()?;
+        let slot = playback::frame_slot(position, film.interval, film.frames.len())?;
+        let image = Arc::new(Image::from_bytes(
+            ImageFormat::Jpeg,
+            film.frames[slot].jpeg.clone(),
+        ));
+        Some((film.href.clone(), image))
     }
 
     /// The href of the clip that is playing, when one is playing.
@@ -494,22 +524,33 @@ impl EditorPane {
         self.playback.as_ref().map(playback::Playback::href)
     }
 
-    /// The last decoded JPEG for `href`, when that clip is playing.
-    pub(super) fn live_shown(&self, href: &str) -> Option<Arc<Image>> {
-        let play = self.playback.as_ref()?;
-        if play.href() != href {
+    /// The decoded frame for `href`, when that clip is loaded and not still loading.
+    pub(super) fn live_picture(&self, href: &str) -> Option<Arc<RenderImage>> {
+        if self.is_loading(href) {
             return None;
         }
-        play.shown()
+        let position = self.clip_position(href);
+        let film = self.film.as_ref()?;
+        if film.href != href {
+            return None;
+        }
+        let slot = playback::frame_slot(position, film.interval, film.frames.len())?;
+        Some(Arc::clone(&film.frames[slot].image))
     }
 
-    /// The JPEG that is still decoding for `href`, when that clip is playing.
-    pub(super) fn live_pending(&self, href: &str) -> Option<Arc<Image>> {
-        let play = self.playback.as_ref()?;
-        if play.href() != href {
+    /// True while `href` is reading and decoding frames.
+    pub(super) fn is_loading(&self, href: &str) -> bool {
+        self.loading.as_deref() == Some(href)
+    }
+
+    /// Width divided by height for the loaded frames of `href`.
+    pub(super) fn film_ratio(&self, href: &str) -> Option<f32> {
+        let film = self.film.as_ref()?;
+        if film.href != href {
             return None;
         }
-        play.pending()
+        let frame = film.frames.first()?;
+        playback::jpeg_ratio(&frame.jpeg)
     }
 
     /// Play, pause, or resume `href`. Pause holds the place.
@@ -521,19 +562,32 @@ impl EditorPane {
         cx: &mut Context<Root>,
     ) {
         self.sync_picture_width(window);
+        if self.is_loading(href) {
+            self.cancel_load();
+            return;
+        }
         if self.playing_href() == Some(href) {
             self.pause_playback(window, cx);
             return;
         }
-        if self.hold.as_ref().is_some_and(|hold| hold.href == href) {
+        let at = if self.hold.as_ref().is_some_and(|hold| hold.href == href) {
             let hold = self.hold.take().expect("hold");
-            let at = resume_point(&hold);
-            self.start_clip(href, kind, at, cx);
+            resume_point(&hold)
+        } else {
+            self.hold = None;
+            Duration::ZERO
+        };
+        if self.playing_href().is_some() {
+            self.end_playback(window, cx);
+        }
+        if self.film.as_ref().is_some_and(|film| film.href != href) {
+            self.drop_film(window);
+        }
+        if kind == ClipKind::Video && self.film.as_ref().is_some_and(|film| film.href == href) {
+            self.start_video_clock(href, at, cx);
             return;
         }
-        self.hold = None;
-        self.end_playback(window, cx);
-        self.start_clip(href, kind, Duration::ZERO, cx);
+        self.start_clip(href, kind, at, cx);
     }
 
     pub(super) fn media_muted(&self) -> bool {
@@ -548,6 +602,9 @@ impl EditorPane {
     }
 
     pub(super) fn clip_position(&self, href: &str) -> Duration {
+        if self.is_loading(href) {
+            return Duration::ZERO;
+        }
         if let Some((seek_href, at)) = &self.seek_preview
             && seek_href == href
         {
@@ -689,6 +746,11 @@ impl EditorPane {
         } else {
             at.min(duration)
         };
+        if playing && self.film.as_ref().is_some_and(|film| film.href == href) {
+            self.end_playback(window, cx);
+            self.start_video_clock(href, at, cx);
+            return;
+        }
         if playing {
             self.end_playback(window, cx);
             self.start_clip(href, kind, at, cx);
@@ -699,6 +761,9 @@ impl EditorPane {
             position: at,
             duration,
         });
+        if self.film.as_ref().is_some_and(|film| film.href == href) {
+            return;
+        }
         self.grab_still(href, at, cx);
     }
 
@@ -740,6 +805,10 @@ impl EditorPane {
     }
 
     fn start_clip(&mut self, href: &str, kind: ClipKind, at: Duration, cx: &mut Context<Root>) {
+        if kind == ClipKind::Video {
+            self.begin_film(href, at, cx);
+            return;
+        }
         self.hold = None;
         self.playback_watch = self.playback_watch.wrapping_add(1);
         let watch = self.playback_watch;
@@ -754,14 +823,105 @@ impl EditorPane {
                 return;
             }
         };
-        match playback::start(
-            &path,
-            href.to_string(),
-            kind,
-            at,
-            self.picture_width,
-            self.media_muted,
-        ) {
+        match playback::start(&path, href.to_string(), kind, at, self.media_muted) {
+            Ok(started) => {
+                let href = started.playback.href().to_string();
+                self.timings
+                    .insert(href.clone(), TimingState::Ready(started.playback.timing()));
+                self.notice = started.notice;
+                self.playback = Some(started.playback);
+                self.watch_playback(href, watch, cx);
+            }
+            Err(err) => self.notice = Some(err),
+        }
+    }
+
+    fn begin_film(&mut self, href: &str, at: Duration, cx: &mut Context<Root>) {
+        self.cancel_load();
+        self.playback_watch = self.playback_watch.wrapping_add(1);
+        let watch = self.playback_watch;
+        let Some(id) = self.open_note.clone() else {
+            self.notice = Some("Open a note first".to_string());
+            return;
+        };
+        let path = match self.vault.media_file(&id, href) {
+            Ok(path) => path,
+            Err(_) => {
+                self.notice = Some("Could not open the media file".to_string());
+                return;
+            }
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        self.load_stop = Some(Arc::clone(&stop));
+        self.loading = Some(href.to_string());
+        let href = href.to_string();
+        let width = self.picture_width;
+        let renderer = cx.svg_renderer();
+        cx.spawn(async move |this, cx| {
+            let loaded = cx
+                .background_executor()
+                .spawn(async move { playback::load_film(&path, width, renderer, &stop) })
+                .await;
+            this.update_in(cx, |root, window, cx| {
+                let Some(pane) = root.pane.as_mut() else {
+                    return;
+                };
+                if pane.playback_watch != watch {
+                    if let Ok(film) = loaded {
+                        drop_frames(film.frames, window);
+                    }
+                    return;
+                }
+                pane.loading = None;
+                pane.load_stop = None;
+                match loaded {
+                    Ok(loaded) if loaded.frames.is_empty() => {
+                        pane.notice = Some("Could not open the media file".to_string());
+                    }
+                    Ok(loaded) => {
+                        let mut timing = loaded.timing;
+                        timing.duration = loaded.duration;
+                        pane.film = Some(Film {
+                            href: href.clone(),
+                            interval: playback::frame_interval(timing.fps),
+                            timing,
+                            frames: loaded.frames,
+                        });
+                        pane.start_video_clock(&href, at, cx);
+                    }
+                    Err(err) => pane.notice = Some(err),
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn start_video_clock(&mut self, href: &str, at: Duration, cx: &mut Context<Root>) {
+        let Some(timing) = self
+            .film
+            .as_ref()
+            .filter(|film| film.href == href)
+            .map(|film| film.timing)
+        else {
+            self.begin_film(href, at, cx);
+            return;
+        };
+        self.hold = None;
+        self.playback_watch = self.playback_watch.wrapping_add(1);
+        let watch = self.playback_watch;
+        let Some(id) = self.open_note.clone() else {
+            self.notice = Some("Open a note first".to_string());
+            return;
+        };
+        let path = match self.vault.media_file(&id, href) {
+            Ok(path) => path,
+            Err(_) => {
+                self.notice = Some("Could not open the media file".to_string());
+                return;
+            }
+        };
+        match playback::start_video(&path, href.to_string(), at, self.media_muted, timing) {
             Ok(started) => {
                 let href = started.playback.href().to_string();
                 self.timings
@@ -812,20 +972,6 @@ impl EditorPane {
             if self.playback_watch != watch || play.href() != href {
                 return false;
             }
-            if play.frame_due()
-                && let Some(bytes) = play.take_jpeg()
-            {
-                play.note_jpeg(bytes);
-                play.mark_presented();
-            }
-            let decoded = play
-                .pending()
-                .and_then(|image| image.get_render_image(window, cx))
-                .is_some();
-            if decoded && let Some(old) = play.promote() {
-                release_image(old, window, cx);
-            }
-            play.start_pending();
             play.finished()
         };
         if finished {

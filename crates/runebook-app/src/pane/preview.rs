@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use gpui_kit::{
     Anchor, AnyElement, App, Bounds, ClickEvent, Image, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, SharedString, StyleRefinement, WeakEntity, canvas, div,
-    img, px, svg,
+    MouseMoveEvent, MouseUpEvent, Pixels, RenderImage, SharedString, StyleRefinement, WeakEntity,
+    canvas, div, img, px, svg,
 };
 use runebook::parse_task_line;
 
@@ -101,9 +101,17 @@ pub(super) fn surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> im
         let clip = crate::playback::media_link(&slice).map(|link| {
             let playing = pane.playing_href() == Some(link.href.as_str());
             let poster = pane.picture(&link.href);
-            let shown = pane.live_shown(&link.href);
-            let frame = shown.or(poster);
-            let live = pane.live_pending(&link.href);
+            let rendered = pane.live_picture(&link.href);
+            let loading = pane.is_loading(&link.href);
+            let ratio = pane
+                .film_ratio(&link.href)
+                .or_else(|| {
+                    poster
+                        .as_ref()
+                        .and_then(|image| crate::playback::jpeg_ratio(&image.bytes))
+                })
+                .unwrap_or(16.0 / 9.0);
+            let frame = if rendered.is_some() { None } else { poster };
             let position = pane.clip_position(&link.href);
             let duration = pane.clip_duration(&link.href);
             let muted = pane.media_muted();
@@ -111,7 +119,9 @@ pub(super) fn surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> im
                 link,
                 playing,
                 frame,
-                live,
+                rendered,
+                loading,
+                ratio,
                 position,
                 duration,
                 muted,
@@ -206,7 +216,9 @@ struct ClipPaint {
     link: MediaLink,
     playing: bool,
     frame: Option<Arc<Image>>,
-    live: Option<Arc<Image>>,
+    rendered: Option<Arc<RenderImage>>,
+    loading: bool,
+    ratio: f32,
     position: Duration,
     duration: Duration,
     muted: bool,
@@ -329,7 +341,9 @@ fn player(
         link,
         playing,
         frame,
-        live,
+        rendered,
+        loading,
+        ratio,
         position,
         duration,
         muted,
@@ -369,11 +383,7 @@ fn player(
             .into_any_element();
     }
     let well = cx.theme().secondary;
-    let ratio = live
-        .as_ref()
-        .or(frame.as_ref())
-        .and_then(|image| crate::playback::jpeg_ratio(&image.bytes))
-        .unwrap_or(16.0 / 9.0);
+    let ink = cx.theme().foreground;
     let play_href = href.clone();
     let seek_href = href.clone();
     let center_href = href.clone();
@@ -419,10 +429,24 @@ fn player(
                 cx.notify();
             }),
         )
-        .when(frame.is_none() && live.is_none(), |stage| stage.bg(well))
+        .when(frame.is_none() && rendered.is_none(), |stage| {
+            stage.bg(well)
+        })
         .when_some(frame, |stage, image| stage.child(fitted(image)))
-        .when_some(live, |stage, image| stage.child(fitted(image)))
-        .when(!playing, |stage| {
+        .when_some(rendered, |stage, image| stage.child(fitted(image)))
+        .when(loading, |stage| {
+            stage.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(ink)
+                    .child("Loading"),
+            )
+        })
+        .when(!playing && !loading, |stage| {
             let href = center_href;
             stage.child(
                 div()

@@ -9,17 +9,19 @@ use std::io::{ErrorKind, Read};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream};
-use gpui_kit::{Image, ImageFormat};
+use gpui_kit::{Image, ImageFormat, RenderImage, SvgRenderer};
 
 const MAX_JPEG: usize = 8 * 1024 * 1024;
-const MAX_PENDING: usize = 16 * 1024 * 1024;
 const MAX_QUEUED: usize = 48_000 * 2;
+/// Most frames kept for one clip. A longer file plays this prefix.
+const FRAME_LIMIT: usize = 600;
 
 /// A video or audio file named by a preview row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,6 +173,149 @@ pub(crate) fn video_args(
     args
 }
 
+/// Every JPEG for `path`, written as fast as `ffmpeg` can go.
+///
+/// This is [`video_args`] without `-re`. The clock starts after these frames exist.
+pub(crate) fn preload_args(path: &Path, rate: Option<Rate>, width: u32) -> Vec<OsString> {
+    video_args(path, rate, Duration::ZERO, width)
+        .into_iter()
+        .filter(|arg| arg != "-re")
+        .collect()
+}
+
+/// One decoded playback frame and the JPEG it came from.
+pub(crate) struct FilmFrame {
+    pub jpeg: Vec<u8>,
+    pub image: Arc<RenderImage>,
+}
+
+/// Frames ready to play. `duration` is the file length, or the loaded prefix.
+pub(crate) struct LoadedFilm {
+    pub frames: Vec<FilmFrame>,
+    pub timing: ClipTiming,
+    pub duration: Duration,
+}
+
+/// Read and decode every frame of `path`. `stop` cancels the work.
+///
+/// This does not open the speaker and does not spawn a shell.
+pub(crate) fn load_film(
+    path: &Path,
+    width: u32,
+    renderer: SvgRenderer,
+    stop: &AtomicBool,
+) -> Result<LoadedFilm, String> {
+    let timing = probe_timing(path);
+    let mut child = spawn_ffmpeg(preload_args(path, timing.fps, width))?;
+    let mut stdout = match take_stdout(&mut child) {
+        Ok(stdout) => stdout,
+        Err(err) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err);
+        }
+    };
+    let frames = decode_stream(&mut stdout, renderer, stop);
+    let _ = child.kill();
+    let _ = child.wait();
+    let interval = frame_interval(timing.fps);
+    let duration = film_duration(frames.len(), interval, timing.duration);
+    Ok(LoadedFilm {
+        frames,
+        timing,
+        duration,
+    })
+}
+
+fn film_duration(frames: usize, interval: Duration, file: Duration) -> Duration {
+    if frames == FRAME_LIMIT && !interval.is_zero() {
+        let loaded = interval.saturating_mul(u32::try_from(frames).unwrap_or(u32::MAX));
+        if file.is_zero() || loaded < file {
+            return loaded;
+        }
+    }
+    file
+}
+
+/// How many JPEGs to decode at once. One thread makes the loader wait on each frame.
+fn worker_count() -> usize {
+    thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+}
+
+/// Read JPEGs from `input` and decode them on several threads.
+///
+/// Decode starts while `ffmpeg` is still writing. Frame order stays the file order.
+fn decode_stream(
+    input: &mut impl Read,
+    renderer: SvgRenderer,
+    stop: &AtomicBool,
+) -> Vec<FilmFrame> {
+    let workers = worker_count();
+    thread::scope(|scope| {
+        let mut senders = Vec::with_capacity(workers);
+        let mut joins = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let (sender, receiver) = sync_channel(2);
+            let renderer = renderer.clone();
+            joins.push(scope.spawn(move || decode_worker(receiver, renderer, stop)));
+            senders.push(sender);
+        }
+        let mut index = 0usize;
+        pull_jpegs(input, stop, |jpeg| {
+            let sent = senders[index % workers].send((index, jpeg)).is_ok();
+            index += 1;
+            sent
+        });
+        drop(senders);
+        let mut frames = Vec::new();
+        for join in joins {
+            if let Ok(part) = join.join() {
+                frames.extend(part);
+            }
+        }
+        frames.sort_by_key(|(index, _)| *index);
+        frames.into_iter().map(|(_, frame)| frame).collect()
+    })
+}
+
+fn decode_worker(
+    receiver: Receiver<(usize, Vec<u8>)>,
+    renderer: SvgRenderer,
+    stop: &AtomicBool,
+) -> Vec<(usize, FilmFrame)> {
+    let mut frames = Vec::new();
+    while let Ok((index, jpeg)) = receiver.recv() {
+        if stop.load(Ordering::Relaxed) {
+            continue;
+        }
+        let Some(image) = decode_jpeg(&jpeg, &renderer) else {
+            continue;
+        };
+        frames.push((index, FilmFrame { jpeg, image }));
+    }
+    frames
+}
+
+fn decode_jpeg(jpeg: &[u8], renderer: &SvgRenderer) -> Option<Arc<RenderImage>> {
+    let source = Image::from_bytes(ImageFormat::Jpeg, jpeg.to_vec());
+    source.to_image_data(renderer.clone()).ok()
+}
+
+/// The frame to paint at `position`.
+pub(crate) fn frame_slot(position: Duration, interval: Duration, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let index = if interval.is_zero() {
+        0
+    } else {
+        frame_index(position, interval) as usize
+    };
+    Some(index.min(len - 1))
+}
+
 /// Signed 16-bit little-endian PCM for `path`, starting at `start`.
 pub(crate) fn audio_args(path: &Path, rate: u32, channels: u16, start: Duration) -> Vec<OsString> {
     let mut args = head(path, start);
@@ -233,6 +378,7 @@ fn output_rate(rate: Rate) -> Rate {
     }
 }
 
+#[cfg(test)]
 fn is_frame_due(presented: u64, elapsed: Duration, interval: Duration) -> bool {
     if interval.is_zero() {
         return true;
@@ -240,6 +386,7 @@ fn is_frame_due(presented: u64, elapsed: Duration, interval: Duration) -> bool {
     frame_index(elapsed, interval) >= presented
 }
 
+#[cfg(test)]
 fn next_presented(presented: u64, elapsed: Duration, interval: Duration) -> u64 {
     let shown = presented.saturating_add(1);
     if interval.is_zero() {
@@ -253,7 +400,7 @@ fn frame_index(elapsed: Duration, interval: Duration) -> u64 {
     (elapsed.as_nanos() / step) as u64
 }
 
-fn frame_interval(rate: Option<Rate>) -> Duration {
+pub(crate) fn frame_interval(rate: Option<Rate>) -> Duration {
     let Some(rate) = rate.map(output_rate) else {
         return Duration::ZERO;
     };
@@ -325,22 +472,14 @@ pub(crate) struct Playback {
     origin: Duration,
     started: Instant,
     duration: Duration,
-    interval: Duration,
     rate: Option<Rate>,
-    presented: std::cell::Cell<u64>,
     stop: Arc<AtomicBool>,
     audio_stop: Arc<AtomicBool>,
     video_done: Arc<AtomicBool>,
     drained: Arc<AtomicBool>,
     muted: Arc<AtomicBool>,
-    jpeg: Arc<Mutex<VecDeque<Vec<u8>>>>,
-    /// The last JPEG that GPUI has already decoded.
-    shown: std::cell::RefCell<Option<Arc<Image>>>,
-    /// The one JPEG that is allowed to decode.
-    pending: std::cell::RefCell<Option<Arc<Image>>>,
-    /// The newest due JPEG. It waits until `pending` is decoded.
-    fresh: std::cell::RefCell<Option<Vec<u8>>>,
-    still: std::cell::RefCell<Option<Vec<u8>>>,
+    /// Video frames are already decoded. Finish only when the clock ends.
+    clock_only: bool,
     children: Vec<Child>,
     threads: Vec<JoinHandle<()>>,
     stream: Option<Stream>,
@@ -359,42 +498,43 @@ pub(crate) fn start(
     href: String,
     kind: ClipKind,
     at: Duration,
-    width: u32,
     muted: bool,
 ) -> Result<Started, String> {
     let timing = probe_timing(path);
+    open_playback(path, href, kind, at, muted, timing, false)
+}
+
+/// Start the clock and the speaker for a clip whose frames are already decoded.
+pub(crate) fn start_video(
+    path: &Path,
+    href: String,
+    at: Duration,
+    muted: bool,
+    timing: ClipTiming,
+) -> Result<Started, String> {
+    open_playback(path, href, ClipKind::Video, at, muted, timing, true)
+}
+
+fn open_playback(
+    path: &Path,
+    href: String,
+    kind: ClipKind,
+    at: Duration,
+    muted: bool,
+    timing: ClipTiming,
+    clock_only: bool,
+) -> Result<Started, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let audio_stop = Arc::new(AtomicBool::new(false));
     let video_done = Arc::new(AtomicBool::new(false));
     let audio_done = Arc::new(AtomicBool::new(false));
     let drained = Arc::new(AtomicBool::new(false));
     let muted = Arc::new(AtomicBool::new(muted));
-    let jpeg = Arc::new(Mutex::new(VecDeque::new()));
     let samples = Arc::new(Mutex::new(VecDeque::new()));
     let mut children = Vec::new();
     let mut threads = Vec::new();
     let mut stream = None;
     let mut notice = None;
-
-    if kind == ClipKind::Video {
-        let mut child = spawn_ffmpeg(video_args(path, timing.fps, at, width))?;
-        let stdout = match take_stdout(&mut child) {
-            Ok(stdout) => stdout,
-            Err(err) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(err);
-            }
-        };
-        children.push(child);
-        let slot = Arc::clone(&jpeg);
-        let stop_flag = Arc::clone(&stop);
-        let done = Arc::clone(&video_done);
-        threads.push(thread::spawn(move || {
-            pump_jpegs(stdout, &slot, &stop_flag);
-            done.store(true, Ordering::Release);
-        }));
-    }
 
     match open_audio(
         path,
@@ -428,19 +568,13 @@ pub(crate) fn start(
             origin: at,
             started: Instant::now(),
             duration: timing.duration,
-            interval: frame_interval(timing.fps),
             rate: timing.fps.map(output_rate),
-            presented: std::cell::Cell::new(0),
             stop,
             audio_stop,
             video_done,
             drained,
             muted,
-            jpeg,
-            shown: std::cell::RefCell::new(None),
-            pending: std::cell::RefCell::new(None),
-            fresh: std::cell::RefCell::new(None),
-            still: std::cell::RefCell::new(None),
+            clock_only,
             children,
             threads,
             stream,
@@ -478,83 +612,12 @@ impl Playback {
         self.muted.store(muted, Ordering::Relaxed);
     }
 
-    /// True when the next picture should appear.
-    pub(crate) fn frame_due(&self) -> bool {
-        is_frame_due(self.presented.get(), self.started.elapsed(), self.interval)
-    }
-
-    pub(crate) fn mark_presented(&self) {
-        self.presented.set(next_presented(
-            self.presented.get(),
-            self.started.elapsed(),
-            self.interval,
-        ));
-    }
-
-    pub(crate) fn take_jpeg(&self) -> Option<Vec<u8>> {
-        let mut slot = match self.jpeg.lock() {
-            Ok(slot) => slot,
-            Err(err) => err.into_inner(),
-        };
-        // The newest frame matches the clock. Older ones would play the clip slowly.
-        let latest = slot.pop_back();
-        slot.clear();
-        latest
-    }
-
-    /// Remember the newest due JPEG. A decode that is already running stays.
-    pub(crate) fn note_jpeg(&self, bytes: Vec<u8>) {
-        *self.still.borrow_mut() = Some(bytes.clone());
-        *self.fresh.borrow_mut() = Some(bytes);
-    }
-
-    /// The last JPEG that GPUI has already decoded.
-    pub(crate) fn shown(&self) -> Option<Arc<Image>> {
-        self.shown.borrow().clone()
-    }
-
-    /// The JPEG that is allowed to decode.
-    pub(crate) fn pending(&self) -> Option<Arc<Image>> {
-        self.pending.borrow().clone()
-    }
-
-    /// Start the newest stored JPEG when nothing is decoding.
-    pub(crate) fn start_pending(&self) -> Option<Arc<Image>> {
-        if self.pending.borrow().is_some() {
-            return None;
-        }
-        let bytes = self.fresh.borrow_mut().take()?;
-        let picture = Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes));
-        *self.pending.borrow_mut() = Some(Arc::clone(&picture));
-        Some(picture)
-    }
-
-    /// Move the decoded pending JPEG onto `shown`.
-    ///
-    /// The returned image is the previous `shown`. The caller can release it.
-    pub(crate) fn promote(&self) -> Option<Arc<Image>> {
-        let next = self.pending.borrow_mut().take()?;
-        self.shown.borrow_mut().replace(next)
-    }
-
-    /// Take the decoded JPEG. The caller keeps this image.
-    pub(crate) fn take_shown(&mut self) -> Option<Arc<Image>> {
-        self.shown.borrow_mut().take()
-    }
-
-    /// Take the JPEG that is still decoding. The caller releases it.
-    pub(crate) fn take_pending(&mut self) -> Option<Arc<Image>> {
-        self.pending.borrow_mut().take()
-    }
-
-    /// JPEG bytes of the last picture shown.
-    pub(crate) fn take_still(&mut self) -> Option<Vec<u8>> {
-        self.still.borrow_mut().take()
-    }
-
     pub(crate) fn finished(&self) -> bool {
         if self.clock_done() {
             return true;
+        }
+        if self.clock_only {
+            return false;
         }
         match self.kind {
             ClipKind::Video => {
@@ -792,26 +855,38 @@ fn stop_children(children: &mut [Child]) {
     }
 }
 
-fn pump_jpegs(mut input: impl Read, slot: &Mutex<VecDeque<Vec<u8>>>, stop: &AtomicBool) {
+#[cfg(test)]
+fn collect_jpegs(mut input: impl Read, stop: &AtomicBool) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+    pull_jpegs(&mut input, stop, |jpeg| {
+        frames.push(jpeg);
+        true
+    });
+    frames
+}
+
+fn pull_jpegs(input: &mut impl Read, stop: &AtomicBool, mut on_jpeg: impl FnMut(Vec<u8>) -> bool) {
     let mut pending = Vec::new();
+    let mut frames = 0usize;
     let mut chunk = [0u8; 64 * 1024];
-    while !stop.load(Ordering::Relaxed) {
+    while frames < FRAME_LIMIT && !stop.load(Ordering::Relaxed) {
         let count = match input.read(&mut chunk) {
             Ok(0) | Err(_) => break,
             Ok(count) => count,
         };
         pending.extend_from_slice(&chunk[..count]);
-        while let Some(jpeg) = next_jpeg(&mut pending) {
-            enqueue(slot, jpeg, stop);
-        }
-        if pending.len() > MAX_PENDING {
-            let keep = pending[pending.len() - 1];
-            pending.clear();
-            pending.push(keep);
+        while frames < FRAME_LIMIT
+            && let Some(jpeg) = next_jpeg(&mut pending)
+        {
+            frames += 1;
+            if !on_jpeg(jpeg) || stop.load(Ordering::Relaxed) {
+                return;
+            }
         }
     }
 }
 
+#[cfg(test)]
 fn enqueue(slot: &Mutex<VecDeque<Vec<u8>>>, jpeg: Vec<u8>, stop: &AtomicBool) {
     if stop.load(Ordering::Relaxed) {
         return;
@@ -968,6 +1043,14 @@ mod tests {
         assert_eq!(arg_after(&video, "-pix_fmt"), "yuvj444p");
         assert_eq!(arg_after(&video, "-flush_packets"), "1");
         assert!(video.iter().any(|arg| arg == "-re"));
+        let preload = preload_args(path, Some(rate), 1200);
+        assert!(!preload.iter().any(|arg| arg == "-re"));
+        assert_eq!(arg_after(&preload, "-q:v"), "1");
+        assert_eq!(arg_after(&preload, "-pix_fmt"), "yuvj444p");
+        assert_eq!(
+            arg_after(&preload, "-vf"),
+            "fps=24/1,scale=w='min(1200,iw)':h=-2:flags=lanczos"
+        );
         assert!(!video.iter().any(|arg| arg == "-ss"));
         assert_eq!(
             arg_after(&video, "-vf"),
@@ -1059,47 +1142,24 @@ mod tests {
     }
 
     #[test]
-    fn a_second_jpeg_waits_until_the_pending_one_is_promoted() {
-        let play = empty_playback();
-        play.note_jpeg(vec![1]);
-        let first = play.start_pending().expect("pending");
-        assert_eq!(first.bytes, vec![1]);
-        play.note_jpeg(vec![2]);
-        assert!(play.start_pending().is_none());
-        assert_eq!(play.pending().expect("still first").bytes, vec![1]);
-        assert!(play.promote().is_none());
-        assert_eq!(play.shown().expect("shown").bytes, vec![1]);
-        let second = play.start_pending().expect("second");
-        assert_eq!(second.bytes, vec![2]);
-        let old = play.promote().expect("previous shown");
-        assert_eq!(old.bytes, vec![1]);
-        assert_eq!(play.shown().expect("new shown").bytes, vec![2]);
+    fn collect_jpegs_stops_at_the_frame_limit() {
+        let one = [0xFF, 0xD8, 0x11, 0xFF, 0xD9];
+        let mut bytes = Vec::new();
+        for _ in 0..FRAME_LIMIT + 5 {
+            bytes.extend_from_slice(&one);
+        }
+        let stop = AtomicBool::new(false);
+        let frames = collect_jpegs(bytes.as_slice(), &stop);
+        assert_eq!(frames.len(), FRAME_LIMIT);
     }
 
-    fn empty_playback() -> Playback {
-        Playback {
-            href: String::new(),
-            kind: ClipKind::Video,
-            origin: Duration::ZERO,
-            started: Instant::now(),
-            duration: Duration::ZERO,
-            interval: Duration::ZERO,
-            rate: None,
-            presented: std::cell::Cell::new(0),
-            stop: Arc::new(AtomicBool::new(false)),
-            audio_stop: Arc::new(AtomicBool::new(false)),
-            video_done: Arc::new(AtomicBool::new(false)),
-            drained: Arc::new(AtomicBool::new(false)),
-            muted: Arc::new(AtomicBool::new(false)),
-            jpeg: Arc::new(Mutex::new(VecDeque::new())),
-            shown: std::cell::RefCell::new(None),
-            pending: std::cell::RefCell::new(None),
-            fresh: std::cell::RefCell::new(None),
-            still: std::cell::RefCell::new(None),
-            children: Vec::new(),
-            threads: Vec::new(),
-            stream: None,
-        }
+    #[test]
+    fn frame_slot_follows_the_clock() {
+        let interval = frame_interval(Some(Rate { num: 30, den: 1 }));
+        let slot = frame_slot(Duration::from_millis(500), interval, 30).expect("slot");
+        assert!((14..=16).contains(&slot), "slot {slot}");
+        assert_eq!(frame_slot(Duration::from_secs(10), interval, 30), Some(29));
+        assert!(frame_slot(Duration::ZERO, interval, 0).is_none());
     }
 
     #[test]
