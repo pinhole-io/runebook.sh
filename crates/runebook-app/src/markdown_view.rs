@@ -483,13 +483,21 @@ fn open_image(url: &str, images: &Option<ImageRoots>, cx: &mut App) {
     let Ok(path) = images.vault.media_file(&images.note, url) else {
         return;
     };
-    let mut command = std::process::Command::new("xdg-open");
-    command
-        .arg(&path)
+    let _ = spawn_desktop_open(&path);
+}
+
+pub(crate) fn spawn_desktop_open(path: &std::path::Path) -> std::io::Result<std::process::Child> {
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program)
+        .arg(path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let _ = command.spawn();
+        .stderr(std::process::Stdio::null())
+        .spawn()
 }
 
 struct DetailState {

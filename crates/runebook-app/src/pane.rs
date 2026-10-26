@@ -252,9 +252,21 @@ impl EditorPane {
         let default_note_view = note_view_from(prefs.note_view);
         let models = ModelSettings::from_config(&prefs);
         let model_inputs = ModelInputs {
-            tool_rounds: model_input(window, cx, &models.tool_rounds.to_string(), "6", false),
-            groq_api_key: model_input(window, cx, &models.groq_api_key, "GROQ_API_KEY", true),
-            openai_api_key: model_input(window, cx, &models.openai_api_key, "OPENAI_API_KEY", true),
+            tool_rounds: model_input(window, cx, &models.tool_rounds.to_string(), "250", false),
+            groq_api_key: model_input(
+                window,
+                cx,
+                &models::field_secret(&models.groq_api_key, models::GROQ_KEY_ENVS),
+                "GROQ_API_KEY",
+                true,
+            ),
+            openai_api_key: model_input(
+                window,
+                cx,
+                &models::field_secret(&models.openai_api_key, models::OPENAI_KEY_ENVS),
+                "OPENAI_API_KEY",
+                true,
+            ),
             openai_base_url: model_input(
                 window,
                 cx,
@@ -503,12 +515,7 @@ impl EditorPane {
             self.models.groq_api_key.clone(),
             self.models.openai_api_key.clone(),
         ];
-        if let Some(key) = models::env_var("GROQ_API_KEY") {
-            secrets.push(key);
-        }
-        if let Some(key) = models::env_var("OPENAI_API_KEY") {
-            secrets.push(key);
-        }
+        secrets.extend(models::env_secrets());
         models::redact_secrets(text, secrets.iter().map(String::as_str))
     }
 

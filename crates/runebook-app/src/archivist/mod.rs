@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use gpui_kit::component::input::InputState;
-use gpui_kit::{AppContext, Context, Entity, SharedString, Window};
+use gpui_kit::{AppContext, Context, Entity, ScrollHandle, SharedString, Window};
 use runebook::{FolderId, NoteId, Vault};
 use superglue::agents::AgentSpec;
 use superglue::providers::ProviderId;
@@ -95,6 +95,7 @@ pub(crate) struct Panel {
     live: LiveText,
     live_rendered: RenderedMarkdown,
     draft: Entity<InputState>,
+    log_scroll: ScrollHandle,
     session: Option<Session>,
     drop_session: bool,
     turn: u64,
@@ -118,6 +119,7 @@ impl Panel {
             live: LiveText::default(),
             live_rendered: RenderedMarkdown::default(),
             draft,
+            log_scroll: ScrollHandle::new(),
             session: None,
             drop_session: false,
             turn: 0,
@@ -199,6 +201,7 @@ impl Panel {
         self.live_rendered = RenderedMarkdown::default();
         self.lines.push(Line::User(text));
         self.turn = self.turn.wrapping_add(1);
+        self.log_scroll.scroll_to_bottom();
         (self.session.take(), self.turn)
     }
 
@@ -273,6 +276,7 @@ impl Panel {
             body: SharedString::from(next.body.as_str()),
         };
         self.live = next;
+        self.follow_log();
         true
     }
 
@@ -307,7 +311,38 @@ impl Panel {
         if let Some(err) = done.error {
             self.lines.push(Line::Error(err));
         }
+        self.follow_log();
         done.changes
+    }
+}
+
+impl Panel {
+    /// Keep the latest text in view while the log is already at the bottom.
+    fn follow_log(&self) {
+        if log_follows(
+            self.log_scroll.offset().y.as_f32(),
+            self.log_scroll.max_offset().y.as_f32(),
+        ) {
+            self.log_scroll.scroll_to_bottom();
+        }
+    }
+}
+
+/// `true` when the viewport is at, or near, the bottom of the log.
+fn log_follows(offset_y: f32, max_y: f32) -> bool {
+    offset_y + max_y < 48.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::log_follows;
+
+    #[test]
+    fn the_log_follows_while_it_is_near_the_bottom() {
+        assert!(log_follows(0., 0.));
+        assert!(log_follows(-200., 200.));
+        assert!(log_follows(-170., 200.));
+        assert!(!log_follows(-100., 200.));
     }
 }
 
@@ -406,7 +441,7 @@ async fn open_session(vault: Vault, access: &ModelAccess) -> Result<Session, Str
         return Err(MISSING_KEY.to_string());
     }
     let rounds = if access.tool_rounds < 1 {
-        6
+        runebook::DEFAULT_TOOL_ROUNDS
     } else {
         access.tool_rounds
     };
@@ -461,8 +496,9 @@ fn archivist_prompt(rounds: u32) -> String {
 }
 
 fn redact(text: String, key: &str) -> String {
-    let env_key = std::env::var("GROQ_API_KEY").unwrap_or_default();
-    let text = crate::models::redact_secrets(&text, [key, env_key.trim()]);
+    let mut secrets = crate::models::env_secrets();
+    secrets.push(key.to_string());
+    let text = crate::models::redact_secrets(&text, secrets.iter().map(String::as_str));
     const MAX: usize = 400;
     if text.chars().count() <= MAX {
         return text;

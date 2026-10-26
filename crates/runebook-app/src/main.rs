@@ -252,20 +252,19 @@ impl Root {
             return Err("Open a note first".to_string());
         };
         let path = pane.media_path(href)?;
-        let mut command = std::process::Command::new("xdg-open");
-        command
-            .arg(&path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        match command.spawn() {
+        let program = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        match crate::markdown_view::spawn_desktop_open(&path) {
             Ok(mut child) => match child.wait() {
                 Ok(status) if status.success() => Ok(()),
                 Ok(_) => Err("Could not open the media file".to_string()),
                 Err(err) => Err(format!("Could not open the media file: {err}")),
             },
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                Err("xdg-open is not installed".to_string())
+                Err(format!("{program} is not installed"))
             }
             Err(err) => Err(format!("Could not open the media file: {err}")),
         }

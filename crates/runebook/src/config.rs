@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::fsutil::atomic_write;
 
 /// Tool rounds used when a saved value is missing or below 1.
-pub const DEFAULT_TOOL_ROUNDS: u32 = 6;
+pub const DEFAULT_TOOL_ROUNDS: u32 = 250;
 
 /// OpenAI-compatible host used when Settings and `OPENAI_BASE_URL` are empty.
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com";
@@ -49,7 +49,7 @@ pub struct AppConfig {
     /// Groq key. Empty uses `GROQ_API_KEY`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub groq_api_key: String,
-    /// OpenAI-compatible key. Empty uses `OPENAI_API_KEY`.
+    /// OpenAI-compatible key. Empty uses `OPENAI_API_KEY`, then the other gateway keys.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub openai_api_key: String,
     /// OpenAI-compatible host. Empty uses `OPENAI_BASE_URL`, then [`DEFAULT_OPENAI_BASE_URL`].

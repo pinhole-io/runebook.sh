@@ -27,6 +27,16 @@ sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1
 
 Use a Wayland or X11 session. The app does not target Windows in this version.
 
+## macOS packages
+
+Install the Xcode command line tools and Homebrew. Then install:
+
+```bash
+brew install ffmpeg pkgconf
+```
+
+Screen recording captures the full display. Playback needs `ffmpeg`. A click on a vault file uses `open`.
+
 ## Voice and screen
 
 A Speech note stores a transcript. Record voice only while a Speech note is open. Set `GROQ_API_KEY` before you start the app. The audio clip is sent to Groq. The app does not save the audio file.
@@ -74,7 +84,7 @@ Use `speech`, `sight`, `deed`, or `research`. The editor shows the body. Save wr
 
 A Research rune asks for a question, then for a few clarifying answers. Charlotte writes a plan first. When that plan needs facts that are not in the question, Charlotte gathers those facts and revises the plan. The note shows that plan. The investigation then searches, reads, and writes. The file tree shows that run above Settings until the findings land in the note.
 
-Set the OpenAI key, hostname, and model in Settings. An empty field uses `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`. The default model is `gpt-5.6-luna`. Tool rounds default to 6. Search and read use that cap. Plan stays at 1 round. Write stays at 2 rounds. The Archivist and voice use the Groq key in Settings, then `GROQ_API_KEY`.
+Set the OpenAI key, hostname, and model in Settings. An empty OpenAI key uses `OPENAI_API_KEY`, then `OPENROUTER_API_KEY`, `OPENROUTER_GATEWAY_KEY`, `XAI_API_KEY`, `RUNINFRA_GATEWAY_KEY`, or `VERCEL_GATEWAY_KEY`. An empty host uses `OPENAI_BASE_URL`. An empty model uses `OPENAI_MODEL`. The default model is `gpt-5.6-luna`. Tool rounds default to 250. Search and read use that cap. Plan stays at 1 round. Write stays at 2 rounds. The Archivist and voice use the Groq key in Settings, then `GROQ_API_KEY`. The key fields open with the environment value.
 
 Search uses SearXNG at `http://127.0.0.1:18088` unless `CHARLOTTE_SEARCH_BACKEND` or `CHARLOTTE_SEARXNG_URL` says otherwise. The read step opens a headless browser. Install Playwright's Chromium for that step. The run blocks private hosts. There is no switch to turn that block off.
 

@@ -1,6 +1,6 @@
 #!/bin/sh
-# Install the Runebook desktop app on Linux.
-# The source is private. GitHub SSH access to pinhole-io/root is required.
+# Install the Runebook desktop app on Linux or macOS.
+# The script downloads a published binary. It does not clone the source.
 set -eu
 
 if [ "$(id -u)" -eq 0 ]; then
@@ -8,15 +8,37 @@ if [ "$(id -u)" -eq 0 ]; then
   exit 1
 fi
 
-if [ "$(uname -s)" != "Linux" ]; then
-  echo "error: this install supports Linux" >&2
+base="https://runebook.sh"
+
+pick_apt() {
+  for name in "$@"; do
+    if apt-cache show "$name" >/dev/null 2>&1; then
+      echo "$name"
+      return 0
+    fi
+  done
+  echo "error: none of these packages are available: $*" >&2
   exit 1
-fi
+}
 
-echo "Installing Runebook."
-
-if command -v apt-get >/dev/null 2>&1; then
-  packages="build-essential pkg-config libssl-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1 libvulkan-dev libasound2-dev ffmpeg x11-utils git ca-certificates curl"
+install_linux_packages() {
+  if ! command -v apt-get >/dev/null 2>&1; then
+    for cmd in curl ffmpeg ffprobe; do
+      if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "error: missing command: $cmd" >&2
+        exit 1
+      fi
+    done
+    return 0
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "error: sudo is required to install packages" >&2
+    exit 1
+  fi
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get update
+  alsa="$(pick_apt libasound2t64 libasound2)"
+  ssl="$(pick_apt libssl3t64 libssl3)"
+  packages="libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libwayland-cursor0 libvulkan1 libxcb1 ${alsa} ${ssl} ffmpeg x11-utils ca-certificates curl"
   missing=""
   # The package names are a fixed list. Word splitting is intentional.
   # shellcheck disable=SC2086
@@ -26,85 +48,74 @@ if command -v apt-get >/dev/null 2>&1; then
     fi
   done
   if [ -n "$missing" ]; then
-    if ! command -v sudo >/dev/null 2>&1; then
-      echo "error: sudo is required to install packages" >&2
-      exit 1
-    fi
-    sudo env DEBIAN_FRONTEND=noninteractive apt-get update
     # shellcheck disable=SC2086
     sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y $missing
   fi
-else
-  for cmd in git curl cc pkg-config; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-      echo "error: missing command: $cmd" >&2
-      exit 1
-    fi
-  done
-fi
+}
 
+install_mac_packages() {
+  if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v brew >/dev/null 2>&1; then
+    echo "error: ffmpeg is required. Install Homebrew from https://brew.sh and rerun." >&2
+    exit 1
+  fi
+  brew install ffmpeg
+}
+
+case "$(uname -s)" in
+  Linux)
+    os="linux"
+    echo "Installing Runebook on Linux."
+    install_linux_packages
+    ;;
+  Darwin)
+    os="macos"
+    echo "Installing Runebook on macOS."
+    install_mac_packages
+    ;;
+  *)
+    echo "error: this install supports Linux and macOS" >&2
+    exit 1
+    ;;
+esac
+
+case "$(uname -m)" in
+  x86_64 | amd64) arch="x86_64" ;;
+  aarch64 | arm64) arch="arm64" ;;
+  *)
+    echo "error: this install supports x86_64 and arm64" >&2
+    exit 1
+    ;;
+esac
+
+name="runebook-${os}-${arch}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-if ! command -v cargo >/dev/null 2>&1; then
-  curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o "$work/rustup.sh"
-  sh "$work/rustup.sh" -y --default-toolchain stable --profile minimal
+echo "Downloading ${name}."
+if ! curl --proto '=https' --tlsv1.2 -fsSL "${base}/dl/${name}" -o "${work}/${name}"; then
+  echo "error: no binary is published for ${os}-${arch}" >&2
+  exit 1
 fi
-
-if [ -f "${HOME}/.cargo/env" ]; then
-  # shellcheck disable=SC1091
-  . "${HOME}/.cargo/env"
-fi
-
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "error: cargo is not on PATH" >&2
+if ! curl --proto '=https' --tlsv1.2 -fsSL "${base}/dl/${name}.sha256" -o "${work}/${name}.sha256"; then
+  echo "error: no checksum is published for ${os}-${arch}" >&2
   exit 1
 fi
 
-printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$work/known_hosts"
-cat > "$work/ssh" <<EOF
-#!/bin/sh
-exec ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile='$work/known_hosts' "\$@"
-EOF
-chmod 755 "$work/ssh"
-export GIT_SSH_COMMAND="$work/ssh"
-
-src="${XDG_DATA_HOME:-${HOME}/.local/share}/runebook/src"
-mkdir -p "$(dirname "$src")"
-
-if [ ! -d "${src}/.git" ]; then
-  echo "Cloning the source into ${src}."
-  if ! git clone git@github.com:pinhole-io/root.git "$src"; then
-    echo "error: GitHub SSH access to pinhole-io/root is required" >&2
-    exit 1
-  fi
+if command -v sha256sum >/dev/null 2>&1; then
+  (cd "$work" && sha256sum -c "${name}.sha256")
+elif command -v shasum >/dev/null 2>&1; then
+  (cd "$work" && shasum -a 256 -c "${name}.sha256")
 else
-  echo "Updating ${src}."
-  git -C "$src" fetch origin
-  git -C "$src" pull --ff-only
-fi
-
-if ! git -C "$src" submodule update --init \
-  projects/runebook.sh projects/charlotte projects/superglue projects/notepad; then
-  echo "error: GitHub SSH access to the Runebook submodules is required" >&2
-  exit 1
-fi
-
-echo "Building the release binary. This can take several minutes."
-(
-  cd "${src}/projects/runebook.sh"
-  cargo build --release -p runebook-app
-)
-
-bin="${src}/projects/runebook.sh/target/release/runebook"
-if [ ! -x "$bin" ]; then
-  echo "error: build did not produce ${bin}" >&2
+  echo "error: sha256sum or shasum is required" >&2
   exit 1
 fi
 
 bindir="${HOME}/.local/bin"
 mkdir -p "$bindir"
-install -m 755 "$bin" "${bindir}/runebook"
+install -m 755 "${work}/${name}" "${bindir}/runebook"
 
 case ":${PATH}:" in
   *":${bindir}:"*) ;;

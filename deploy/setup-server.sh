@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_FILE="${HOME}/.runebook/install-host.env"
-DOMAIN="${RUNEBOOK_DOMAIN:-runbook.sh}"
+DOMAIN="${RUNEBOOK_DOMAIN:-runebook.sh}"
 
 if [[ ! -f "${STATE_FILE}" ]]; then
   echo "error: missing ${STATE_FILE}. Run ./deploy/provision.sh first." >&2
@@ -54,16 +54,28 @@ sudo mkdir -p /srv/runebook
 REMOTE_DEPS
 
 CADDY_TMP="$(mktemp)"
-sed "s|runbook.sh|${DOMAIN}|g" "${SCRIPT_DIR}/Caddyfile" > "${CADDY_TMP}"
+sed "s|runebook.sh|${DOMAIN}|g" "${SCRIPT_DIR}/Caddyfile" > "${CADDY_TMP}"
 
 "${SCP[@]}" "${SCRIPT_DIR}/install.sh" "${REMOTE}:/tmp/install.sh"
+"${SCP[@]}" "${SCRIPT_DIR}/uninstall.sh" "${REMOTE}:/tmp/uninstall.sh"
 "${SCP[@]}" "${CADDY_TMP}" "${REMOTE}:/tmp/Caddyfile"
 rm -f "${CADDY_TMP}"
+
+if compgen -G "${SCRIPT_DIR}/dist/*" >/dev/null; then
+  "${SSH[@]}" "${REMOTE}" "rm -rf /tmp/runebook-dl && mkdir -p /tmp/runebook-dl"
+  "${SCP[@]}" "${SCRIPT_DIR}/dist/"* "${REMOTE}:/tmp/runebook-dl/"
+fi
 
 "${SSH[@]}" "${REMOTE}" bash -s <<'REMOTE_INSTALL'
 set -euo pipefail
 sudo install -m 644 /tmp/install.sh /srv/runebook/install.sh
-rm -f /tmp/install.sh
+sudo install -m 644 /tmp/uninstall.sh /srv/runebook/uninstall.sh
+rm -f /tmp/install.sh /tmp/uninstall.sh
+if [ -d /tmp/runebook-dl ]; then
+  sudo mkdir -p /srv/runebook/dl
+  sudo install -m 644 /tmp/runebook-dl/* /srv/runebook/dl/
+  rm -rf /tmp/runebook-dl
+fi
 sudo install -m 640 -o root -g caddy /tmp/Caddyfile /etc/caddy/Caddyfile
 rm -f /tmp/Caddyfile
 sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
@@ -120,6 +132,29 @@ if [[ "${plain}" != "${expected}" ]]; then
   exit 1
 fi
 
+uninstall="$(curl -fsSL --max-time 15 -A "curl/8.0.0" "https://${DOMAIN}/uninstall")"
+if [[ "${uninstall}" != "#!/bin/sh"* ]]; then
+  echo "error: https://${DOMAIN}/uninstall did not return the uninstall script" >&2
+  exit 1
+fi
+
+artifact="runebook-linux-x86_64"
+check="$(mktemp -d)"
+if ! curl --proto '=https' --tlsv1.2 -fsSL "https://${DOMAIN}/dl/${artifact}" -o "${check}/${artifact}"; then
+  echo "error: https://${DOMAIN}/dl/${artifact} is missing" >&2
+  exit 1
+fi
+if ! curl --proto '=https' --tlsv1.2 -fsSL "https://${DOMAIN}/dl/${artifact}.sha256" -o "${check}/${artifact}.sha256"; then
+  echo "error: https://${DOMAIN}/dl/${artifact}.sha256 is missing" >&2
+  exit 1
+fi
+if ! (cd "${check}" && sha256sum -c "${artifact}.sha256"); then
+  echo "error: checksum failed for ${artifact}" >&2
+  exit 1
+fi
+rm -rf "${check}"
+
 echo ""
 echo "Install host is live."
 echo "  curl -fsSL https://${DOMAIN} | sh"
+echo "  curl -fsSL https://${DOMAIN}/uninstall | sh"

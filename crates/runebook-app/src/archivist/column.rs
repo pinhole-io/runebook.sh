@@ -3,7 +3,7 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Enter, Input};
-use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, ClickEvent, Hsla, SharedString, WeakEntity, div, px};
@@ -74,37 +74,64 @@ fn transcript(
     let muted = muted.into();
     let danger = danger.into();
     let empty = panel.lines.is_empty();
+    let scroll = panel.log_scroll.clone();
     div()
         .id("archivist-log")
         .flex_1()
         .min_h(px(0.))
-        .py_2()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .overflow_y_scrollbar()
-        .when(empty, |log| {
-            log.child(
-                div()
-                    .px_3()
-                    .text_sm()
-                    .text_color(muted)
-                    .child("Ask the Archivist to add, change, or delete a note."),
-            )
-        })
-        .children(
-            panel
-                .lines
-                .iter()
-                .enumerate()
-                .map(|(index, line)| line_block(index, line, muted, danger)),
+        .overflow_hidden()
+        .relative()
+        .child(
+            div()
+                .id("archivist-log-area")
+                .size_full()
+                .flex()
+                .flex_col()
+                .overflow_y_scroll()
+                .track_scroll(&scroll)
+                .child(
+                    div()
+                        .id("archivist-log-content")
+                        .w_full()
+                        .flex_none()
+                        .h_auto()
+                        .min_h_full()
+                        .pt_2()
+                        .pb_4()
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .when(empty, |log| {
+                            log.child(
+                                div()
+                                    .px_3()
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .child("Ask the Archivist to add, change, or delete a note."),
+                            )
+                        })
+                        .children(
+                            panel
+                                .lines
+                                .iter()
+                                .enumerate()
+                                .map(|(index, line)| line_block(index, line, muted, danger)),
+                        )
+                        .when(busy && live_visible(&panel.live), |log| {
+                            log.child(live_block(&panel.live_rendered, muted))
+                        })
+                        .when(busy, |log| {
+                            log.child(div().px_3().text_sm().text_color(muted).child("Working…"))
+                        }),
+                ),
         )
-        .when(busy && live_visible(&panel.live), |log| {
-            log.child(live_block(&panel.live_rendered, muted))
-        })
-        .when(busy, |log| {
-            log.child(div().px_3().text_sm().text_color(muted).child("Working…"))
-        })
+        .child(
+            div().absolute().inset_0().child(
+                Scrollbar::vertical(&scroll)
+                    .id("archivist-log-bar")
+                    .viewport_from_layout(),
+            ),
+        )
 }
 
 fn live_visible(live: &super::LiveText) -> bool {
@@ -126,7 +153,7 @@ fn line_block(index: usize, line: &super::Line, muted: Hsla, danger: Hsla) -> An
                 .min_w(px(0.))
                 .flex()
                 .flex_col()
-                .gap_2()
+                .gap_3()
                 .when(!thinking.trim().is_empty(), |block| {
                     block.child(thinking_block(
                         SharedString::from(format!("archivist-{index}-thinking")),
@@ -161,7 +188,7 @@ fn live_block(live: &super::RenderedMarkdown, muted: Hsla) -> impl IntoElement {
         .min_w(px(0.))
         .flex()
         .flex_col()
-        .gap_2()
+        .gap_3()
         .when(!thinking.trim().is_empty(), |block| {
             block.child(thinking_block(
                 SharedString::from("archivist-live-thinking"),
@@ -201,6 +228,7 @@ fn markdown_block(id: SharedString, source: SharedString) -> impl IntoElement {
         .w_full()
         .min_w(px(0.))
         .text_sm()
+        .line_height(px(20.))
         .child(crate::mermaid::view(id, source))
 }
 
@@ -220,6 +248,8 @@ fn plain_block(
             div()
                 .text_sm()
                 .w_full()
+                .min_w(px(0.))
+                .line_height(px(20.))
                 .whitespace_normal()
                 .text_color(body_color)
                 .child(body.to_string()),

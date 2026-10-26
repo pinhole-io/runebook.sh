@@ -1,6 +1,26 @@
 # Public install host. curl receives the script. Every other client receives the command.
-runbook.sh {
+runebook.sh {
+	handle /dl/* {
+		root * /srv/runebook
+		header Cache-Control "no-cache"
+		file_server
+	}
+
+	@uninstall {
+		header User-Agent *curl*
+		path /uninstall
+	}
 	@curl header User-Agent *curl*
+
+	handle @uninstall {
+		root * /srv/runebook
+		rewrite * /uninstall.sh
+		header {
+			Content-Type "text/x-shellscript; charset=utf-8"
+			Cache-Control "no-store"
+		}
+		file_server
+	}
 
 	handle @curl {
 		root * /srv/runebook
@@ -17,6 +37,6 @@ runbook.sh {
 			Content-Type "text/plain; charset=utf-8"
 			Cache-Control "no-store"
 		}
-		respond "curl -fsSL https://runbook.sh | sh" 200
+		respond "curl -fsSL https://runebook.sh | sh" 200
 	}
 }

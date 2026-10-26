@@ -397,7 +397,7 @@ pub(crate) fn files(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl
         .id("file-tree")
         .size_full()
         .min_h(px(0.))
-        .min_w(px(0.))
+        .min_w(crate::chrome::SIDEBAR_MIN_WIDTH)
         .overflow_hidden()
         .flex()
         .flex_col()
@@ -601,42 +601,51 @@ fn note_view_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
 
 fn create_actions(view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let border = cx.theme().sidebar_border;
-    panel_header(div().id("tree-header").justify_center().px_1(), border)
-        .child(
-            Button::new("new-note")
-                .ghost()
-                .small()
-                .cursor_pointer()
-                .icon(IconName::FilePlus)
-                .label("New note")
-                .tooltip_with_action("New note", &NewNote, None)
-                .dropdown_menu({
-                    let view = view.clone();
-                    move |menu, _, _| {
-                        menu.item(new_kind_item(view.clone(), NoteKind::Book))
-                            .item(new_kind_item(view.clone(), NoteKind::Speech))
-                            .item(new_kind_item(view.clone(), NoteKind::Sight))
-                            .item(new_kind_item(view.clone(), NoteKind::Deed))
-                            .item(new_kind_item(view.clone(), NoteKind::Research))
-                    }
-                }),
-        )
-        .child(div().mx_2().h(px(16.)).w(px(1.)).flex_shrink_0().bg(border))
-        .child(
-            Button::new("new-folder")
-                .ghost()
-                .small()
-                .cursor_pointer()
-                .icon(IconName::FolderPlus)
-                .label("New folder")
-                .tooltip("New folder")
-                .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
-                    if let Some(pane) = this.pane.as_mut() {
-                        pane.begin_create_folder(window, cx);
-                    }
-                    cx.notify();
-                })),
-        )
+    panel_header(
+        div()
+            .id("tree-header")
+            .justify_center()
+            .px_1()
+            .whitespace_nowrap(),
+        border,
+    )
+    .child(
+        Button::new("new-note")
+            .ghost()
+            .small()
+            .flex_shrink_0()
+            .cursor_pointer()
+            .icon(IconName::FilePlus)
+            .accessibility_label("New note")
+            .tooltip_with_action("New note", &NewNote, None)
+            .dropdown_menu({
+                let view = view.clone();
+                move |menu, _, _| {
+                    menu.item(new_kind_item(view.clone(), NoteKind::Book))
+                        .item(new_kind_item(view.clone(), NoteKind::Speech))
+                        .item(new_kind_item(view.clone(), NoteKind::Sight))
+                        .item(new_kind_item(view.clone(), NoteKind::Deed))
+                        .item(new_kind_item(view.clone(), NoteKind::Research))
+                }
+            }),
+    )
+    .child(div().mx_2().h(px(16.)).w(px(1.)).flex_shrink_0().bg(border))
+    .child(
+        Button::new("new-folder")
+            .ghost()
+            .small()
+            .flex_shrink_0()
+            .cursor_pointer()
+            .icon(IconName::FolderPlus)
+            .accessibility_label("New folder")
+            .tooltip("New folder")
+            .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
+                if let Some(pane) = this.pane.as_mut() {
+                    pane.begin_create_folder(window, cx);
+                }
+                cx.notify();
+            })),
+    )
 }
 
 fn new_kind_item(view: gpui_kit::WeakEntity<Root>, kind: NoteKind) -> PopupMenuItem {
@@ -690,8 +699,9 @@ fn render_entry(
                         .group(SharedString::from(format!("row-{key}")))
                         .pl(pad)
                         .pr_2()
-                        .py(px(4.))
+                        .min_h(px(28.))
                         .w_full()
+                        .min_w(px(0.))
                         .flex()
                         .items_center()
                         .gap_2()
@@ -771,8 +781,9 @@ fn render_entry(
                 .group(SharedString::from(format!("row-{key}")))
                 .pl(pad)
                 .pr_2()
-                .py(px(4.))
+                .min_h(px(28.))
                 .w_full()
+                .min_w(px(0.))
                 .flex()
                 .items_center()
                 .gap_2()
@@ -844,6 +855,8 @@ fn row_label(
             .flex_1()
             .min_w(px(0.))
             .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis_middle()
             .child(name)
             .into_any_element()
     }

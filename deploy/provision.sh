@@ -10,7 +10,7 @@ VOLUME_SIZE="${RUNEBOOK_EC2_VOLUME_GB:-8}"
 KEY_NAME="${RUNEBOOK_EC2_KEY_NAME:-runebook-install}"
 SG_NAME="${RUNEBOOK_EC2_SG_NAME:-runebook-install-sg}"
 INSTANCE_NAME="${RUNEBOOK_EC2_INSTANCE_NAME:-runebook-install}"
-DOMAIN="${RUNEBOOK_DOMAIN:-runbook.sh}"
+DOMAIN="${RUNEBOOK_DOMAIN:-runebook.sh}"
 PUB_KEY="${RUNEBOOK_EC2_PUBLIC_KEY:-${HOME}/.ssh/default.pub}"
 STATE_FILE="${HOME}/.runebook/install-host.env"
 

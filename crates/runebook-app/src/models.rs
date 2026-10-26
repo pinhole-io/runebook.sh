@@ -104,12 +104,60 @@ pub(crate) fn resolve_archivist_model(saved: &str) -> String {
     )
 }
 
+/// Environment names for the Groq key. The first non-empty value wins.
+pub(crate) const GROQ_KEY_ENVS: &[&str] = &["GROQ_API_KEY"];
+
+/// Environment names for the OpenAI-compatible key. The first non-empty value wins.
+pub(crate) const OPENAI_KEY_ENVS: &[&str] = &[
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_GATEWAY_KEY",
+    "XAI_API_KEY",
+    "RUNINFRA_GATEWAY_KEY",
+    "VERCEL_GATEWAY_KEY",
+];
+
+/// First non-empty environment value from `names`.
+pub(crate) fn first_env(names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| env_var(name))
+}
+
+/// Saved key, or the first matching environment value.
+pub(crate) fn field_secret(saved: &str, names: &[&str]) -> String {
+    let saved = saved.trim();
+    if !saved.is_empty() {
+        return saved.to_string();
+    }
+    first_env(names).unwrap_or_default()
+}
+
 pub(crate) fn resolve_groq_key(saved: &str) -> Option<String> {
-    resolve_secret(saved, env_var("GROQ_API_KEY").as_deref())
+    let value = field_secret(saved, GROQ_KEY_ENVS);
+    if value.is_empty() { None } else { Some(value) }
 }
 
 pub(crate) fn resolve_openai_key(saved: &str) -> Option<String> {
-    resolve_secret(saved, env_var("OPENAI_API_KEY").as_deref())
+    let value = field_secret(saved, OPENAI_KEY_ENVS);
+    if value.is_empty() { None } else { Some(value) }
+}
+
+/// Every key currently set in the environment.
+pub(crate) fn env_secrets() -> Vec<String> {
+    GROQ_KEY_ENVS
+        .iter()
+        .chain(OPENAI_KEY_ENVS.iter())
+        .filter_map(|name| env_var(name))
+        .collect()
+}
+
+/// First matching name in `values`. An empty value is skipped.
+pub(crate) fn pick_env<'a>(names: &[&str], values: &[(&'a str, &'a str)]) -> Option<&'a str> {
+    names.iter().find_map(|name| {
+        values
+            .iter()
+            .find(|(key, value)| key == name && !value.trim().is_empty())
+            .map(|(_, value)| value.trim())
+    })
 }
 
 /// Replace each secret of 8 characters or more with `[redacted]`.
@@ -126,7 +174,7 @@ pub(crate) fn redact_secrets<'a>(text: &str, secrets: impl IntoIterator<Item = &
 
 #[cfg(test)]
 mod tests {
-    use super::{accept_tool_rounds, redact_secrets, resolve_secret};
+    use super::{OPENAI_KEY_ENVS, accept_tool_rounds, pick_env, redact_secrets, resolve_secret};
 
     #[test]
     fn an_empty_saved_key_uses_the_environment_value() {
@@ -145,6 +193,18 @@ mod tests {
         assert_eq!(accept_tool_rounds("0"), None);
         assert_eq!(accept_tool_rounds(""), None);
         assert_eq!(accept_tool_rounds("6"), Some(6));
+    }
+
+    #[test]
+    fn an_empty_openai_key_uses_the_next_gateway_name() {
+        let value = pick_env(
+            OPENAI_KEY_ENVS,
+            &[
+                ("OPENAI_API_KEY", ""),
+                ("OPENROUTER_API_KEY", "router-key-value"),
+            ],
+        );
+        assert_eq!(value, Some("router-key-value"));
     }
 
     #[test]

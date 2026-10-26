@@ -1,8 +1,11 @@
 //! Screen recording through `ffmpeg`.
 //!
-//! X11 uses `x11grab`. Wayland copies frames from the compositor.
+//! Linux X11 uses `x11grab`. Linux Wayland copies frames from the compositor.
+//! macOS records the full display with `avfoundation`.
 //! Arguments are a list. The Groq API key is never passed to this process.
+#![cfg_attr(target_os = "macos", allow(dead_code))]
 
+#[cfg(target_os = "linux")]
 mod wayland;
 
 use std::path::{Path, PathBuf};
@@ -46,6 +49,7 @@ pub(crate) struct ScreenCapture {
     child: Option<Child>,
     output: PathBuf,
     pub(crate) file_name: String,
+    #[cfg(target_os = "linux")]
     grab: Option<wayland::Grab>,
 }
 
@@ -55,6 +59,7 @@ impl ScreenCapture {
         file_name: String,
         target: ScreenTarget,
     ) -> Result<Self, String> {
+        #[cfg(target_os = "linux")]
         if wayland_session() {
             let grab = wayland::Grab::start(output.clone(), target)?;
             return Ok(Self {
@@ -64,30 +69,24 @@ impl ScreenCapture {
                 grab: Some(grab),
             });
         }
-        if matches!(target, ScreenTarget::Region { .. }) {
-            return Err("That window is not on this display".to_string());
-        }
-        let display_var = std::env::var("DISPLAY").ok();
-        let display = require_display(display_var.as_deref())?;
-        let args = ffmpeg_args(display, &output, &target);
-        let mut cmd = Command::new("ffmpeg");
-        cmd.args(&args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Err("ffmpeg is not installed".to_string());
+        #[cfg(target_os = "macos")]
+        {
+            if !matches!(target, ScreenTarget::Display) {
+                return Err("macOS records the full display".to_string());
             }
-            Err(err) => return Err(format!("Could not start ffmpeg: {err}")),
-        };
-        Ok(Self {
-            child: Some(child),
-            output,
-            file_name,
-            grab: None,
-        })
+            let args = ffmpeg_args_macos(&output);
+            return spawn_ffmpeg(output, file_name, &args);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            if matches!(target, ScreenTarget::Region { .. }) {
+                return Err("That window is not on this display".to_string());
+            }
+            let display_var = std::env::var("DISPLAY").ok();
+            let display = require_display(display_var.as_deref())?;
+            let args = ffmpeg_args(display, &output, &target);
+            spawn_ffmpeg(output, file_name, &args)
+        }
     }
 
     pub(crate) fn stop(mut self) -> Result<(), String> {
@@ -103,6 +102,7 @@ impl ScreenCapture {
 
 impl ScreenCapture {
     fn stop_process(&mut self) {
+        #[cfg(target_os = "linux")]
         if let Some(grab) = self.grab.take() {
             grab.finish();
         }
@@ -159,6 +159,56 @@ pub(crate) fn ffmpeg_args(display: &str, output: &Path, target: &ScreenTarget) -
     args
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn ffmpeg_args_macos(output: &Path) -> Vec<String> {
+    vec![
+        "-y".to_string(),
+        "-f".to_string(),
+        "avfoundation".to_string(),
+        "-framerate".to_string(),
+        "30".to_string(),
+        "-pixel_format".to_string(),
+        "uyvy422".to_string(),
+        "-i".to_string(),
+        "Capture screen 0:none".to_string(),
+        "-c:v".to_string(),
+        "libx264".to_string(),
+        "-crf".to_string(),
+        "23".to_string(),
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+        "-preset".to_string(),
+        "ultrafast".to_string(),
+        output.display().to_string(),
+    ]
+}
+
+fn spawn_ffmpeg(
+    output: PathBuf,
+    file_name: String,
+    args: &[String],
+) -> Result<ScreenCapture, String> {
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err("ffmpeg is not installed".to_string());
+        }
+        Err(err) => return Err(format!("Could not start ffmpeg: {err}")),
+    };
+    Ok(ScreenCapture {
+        child: Some(child),
+        output,
+        file_name,
+        #[cfg(target_os = "linux")]
+        grab: None,
+    })
+}
+
 /// Read the open windows from `xprop` and `xwininfo`.
 ///
 /// # Errors
@@ -173,25 +223,34 @@ pub(crate) fn list_windows() -> Result<Vec<RecordWindow>, String> {
 /// Windows the record menu can offer.
 ///
 /// On X11 the rows come from the window manager. On Wayland they come from
-/// `swaymsg` when Sway is running.
+/// `swaymsg` when Sway is running. macOS returns no rows. The menu still
+/// offers the full display.
 ///
 /// # Errors
 ///
 /// Returns [`WINDOW_LIST_ERROR`] when the list cannot be read.
 pub(crate) fn list_record_sources() -> Result<Vec<RecordSource>, String> {
-    if wayland_session() {
-        let tree = command_stdout("swaymsg", &["-t", "get_tree"])?;
-        return sources_from_sway(&tree);
+    #[cfg(target_os = "macos")]
+    {
+        return Ok(Vec::new());
     }
-    Ok(list_windows()?
-        .into_iter()
-        .map(|window| RecordSource {
-            title: window.title,
-            target: ScreenTarget::Window(window.id),
-        })
-        .collect())
+    #[cfg(not(target_os = "macos"))]
+    {
+        if wayland_session() {
+            let tree = command_stdout("swaymsg", &["-t", "get_tree"])?;
+            return sources_from_sway(&tree);
+        }
+        Ok(list_windows()?
+            .into_iter()
+            .map(|window| RecordSource {
+                title: window.title,
+                target: ScreenTarget::Window(window.id),
+            })
+            .collect())
+    }
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn focused_output_name() -> Option<String> {
     let text = command_stdout("swaymsg", &["-t", "get_outputs"]).ok()?;
     focused_output(&text)
@@ -455,9 +514,11 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
+    #[cfg(target_os = "linux")]
+    use super::wayland;
     use super::{
-        ScreenTarget, ffmpeg_args, focused_output, require_display, sources_from_sway, wayland,
-        windows_from_text,
+        ScreenTarget, ffmpeg_args, ffmpeg_args_macos, focused_output, require_display,
+        sources_from_sway, windows_from_text,
     };
 
     #[test]
@@ -493,6 +554,18 @@ mod tests {
         assert!(require_display(Some("")).is_err());
         assert!(require_display(Some("  ")).is_err());
         assert_eq!(require_display(Some(":0")).unwrap(), ":0");
+    }
+
+    #[test]
+    fn ffmpeg_args_macos_use_avfoundation_and_do_not_spawn() {
+        let args = ffmpeg_args_macos(Path::new("/tmp/note.mp4"));
+        let format = args.iter().position(|arg| arg == "-f").unwrap();
+        let input = args.iter().position(|arg| arg == "-i").unwrap();
+        assert!(format < input);
+        assert_eq!(args[format + 1], "avfoundation");
+        assert_eq!(args[input + 1], "Capture screen 0:none");
+        assert_eq!(args.last().map(String::as_str), Some("/tmp/note.mp4"));
+        assert!(!args.iter().any(|arg| arg.contains("Firefox")));
     }
 
     #[test]
@@ -572,6 +645,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn wayland_smoke_writes_a_short_video() {
         if std::env::var_os("RUNEBOOK_WAYLAND_SMOKE").is_none() {

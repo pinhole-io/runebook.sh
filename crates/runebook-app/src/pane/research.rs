@@ -1156,15 +1156,9 @@ fn research_slug(query: &str) -> String {
 }
 
 fn redact_research(text: String, saved: &[String]) -> String {
+    let env = crate::models::env_secrets();
     let mut secrets: Vec<&str> = saved.iter().map(String::as_str).collect();
-    let openai = std::env::var("OPENAI_API_KEY").unwrap_or_default();
-    let groq = std::env::var("GROQ_API_KEY").unwrap_or_default();
-    if openai.trim().len() >= 8 {
-        secrets.push(openai.trim());
-    }
-    if groq.trim().len() >= 8 {
-        secrets.push(groq.trim());
-    }
+    secrets.extend(env.iter().map(String::as_str));
     let text = crate::models::redact_secrets(&text, secrets);
     let mut out = String::new();
     for word in text.split_whitespace() {
