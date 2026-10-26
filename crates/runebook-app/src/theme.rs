@@ -109,8 +109,8 @@ mod tests {
         assert!(set.themes.iter().any(|theme| theme.mode.is_dark()));
         assert!(set.themes.iter().any(|theme| !theme.mode.is_dark()));
         for theme in &set.themes {
-            assert_eq!(theme.font_family.as_deref(), Some("DejaVu Sans"));
-            assert_eq!(theme.mono_font_family.as_deref(), Some("DejaVu Sans Mono"));
+            assert_eq!(theme.font_family.as_deref(), Some("Noto Sans"));
+            assert_eq!(theme.mono_font_family.as_deref(), Some("Noto Sans Mono"));
             assert_eq!(theme.font_size, Some(14.));
             assert_eq!(theme.mono_font_size, Some(13.));
             assert_eq!(theme.radius, Some(6));
