@@ -57,6 +57,7 @@ Resolve `[[target]]` in this order:
 - Call `gpui_kit::init` before any GPUI Kit control.
 - The window uses a Kit `TitleBar`. The toolbar sits in that bar.
 - The file tree, the note, and the Archivist column sit in a Kit `DockArea`.
+- The Archivist can attach up to 8 files. An image or a PDF goes to the model. UTF-8 text (`txt`, `md`, `csv`, `json`, `html`) stays in the message. Each file must be 8 MiB or smaller. The transcript shows the file name.
 - Search lists notes whose body contains the query, and a click opens that note.
 - The dock panel names are `files`, `note`, and `archivist`.
 - `dock_layout` stores the dock JSON. A bad value uses the default split.

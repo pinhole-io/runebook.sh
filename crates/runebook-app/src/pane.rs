@@ -25,8 +25,8 @@ use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectState};
 use gpui_kit::component::{ActiveTheme, IndexPath, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AppContext, ClickEvent, Context, Entity, Focusable, Image, ImageFormat, RenderImage,
-    SharedString, Subscription, Window, div, px,
+    AppContext, ClickEvent, Context, Entity, Focusable, Image, ImageFormat, PathPromptOptions,
+    RenderImage, SharedString, Subscription, Window, div, px,
 };
 use runebook::{
     AppConfig, Error, FolderId, NoteId, NoteKind, NoteViewChoice, SearchHit, ThemeChoice, Vault,
@@ -2035,10 +2035,30 @@ impl EditorPane {
             return;
         }
         let draft = self.archivist.draft_text(cx);
-        if draft.is_empty() && !self.archivist.has_held() {
+        if draft.is_empty() && !self.archivist.has_held() && !self.archivist.has_files() {
             return;
         }
         if !self.flush_edits(cx) {
+            return;
+        }
+        let Some(access) = self.archivist_access() else {
+            return;
+        };
+        let vault = self.vault.clone();
+        let epoch = self.epoch;
+        if self.archivist.has_files() {
+            let held = self.archivist.held_pairs();
+            let pairs: Vec<(&str, &str)> = held
+                .iter()
+                .map(|(note_id, source)| (note_id.as_str(), source.as_str()))
+                .collect();
+            let instruction = context_message(pairs, &draft).unwrap_or_default();
+            let paths = self.archivist.file_paths();
+            if !self.archivist.begin_read() {
+                return;
+            }
+            self.archivist
+                .launch_files(instruction, draft, held, paths, vault, epoch, access, cx);
             return;
         }
         let held = self.archivist.take_held();
@@ -2053,12 +2073,82 @@ impl EditorPane {
             return;
         };
         self.archivist.clear_draft(window, cx);
-        let Some(access) = self.archivist_access() else {
-            return;
-        };
-        let vault = self.vault.clone();
-        let epoch = self.epoch;
         self.archivist.launch(text, vault, epoch, access, cx);
+    }
+
+    /// Open the file picker and park the chosen files.
+    pub(crate) fn pick_archivist_files(&mut self, cx: &mut Context<Root>) {
+        if self.archivist.is_busy() {
+            return;
+        }
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some(SharedString::from("Add file")),
+        });
+        cx.spawn(async move |this, cx| {
+            let picked = match receiver.await {
+                Ok(Ok(Some(paths))) => Some(paths),
+                Ok(Err(err)) => {
+                    this.update(cx, |root, cx| {
+                        if let Some(pane) = root.pane.as_mut() {
+                            pane.archivist.note_error(err.to_string());
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+                _ => None,
+            };
+            let Some(paths) = picked else {
+                return;
+            };
+            this.update(cx, |root, cx| {
+                if let Some(pane) = root.pane.as_mut()
+                    && let Err(err) = pane.archivist.hold_files(paths)
+                {
+                    pane.archivist.note_error(err);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn dismiss_archivist_file(&mut self, index: usize) {
+        self.archivist.dismiss_file(index);
+    }
+
+    pub(crate) fn cancel_archivist_read(&mut self) {
+        self.archivist.cancel_read();
+    }
+
+    pub(crate) fn fail_archivist_read(&mut self, error: String) {
+        self.archivist.fail_read(error);
+    }
+
+    /// The file read succeeded. Drop the sent files and start the model turn.
+    pub(crate) fn accept_archivist_files(
+        &mut self,
+        display: String,
+        message: superglue::openai::ChatMessage,
+        held: &[(String, String)],
+        paths: &[std::path::PathBuf],
+        draft: &str,
+        vault: Vault,
+        epoch: u64,
+        access: crate::archivist::ModelAccess,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) {
+        self.archivist.drop_sent_held(held);
+        self.archivist.drop_sent_files(paths);
+        self.archivist.clear_draft_if(draft, window, cx);
+        self.archivist
+            .launch_message(display, message, vault, epoch, access, cx);
     }
 
     fn press_note_row(&mut self, index: usize, shift: bool) {

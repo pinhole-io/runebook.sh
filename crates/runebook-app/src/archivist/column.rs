@@ -46,6 +46,9 @@ pub(crate) fn column(
         .when(!panel.held.is_empty(), |column| {
             column.child(held_rows(panel, view.clone(), cx))
         })
+        .when(!panel.files.is_empty(), |column| {
+            column.child(file_rows(panel, view.clone(), cx))
+        })
         .child(composer(panel, ready, busy, danger, view, cx))
 }
 
@@ -331,6 +334,72 @@ fn held_card(
         )
 }
 
+fn file_rows(panel: &Panel, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
+    let muted = cx.theme().muted_foreground;
+    let border = cx.theme().border;
+    let busy = panel.busy;
+    let cards: Vec<AnyElement> = panel
+        .files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| {
+            file_card(index, &file.name, busy, muted, view.clone()).into_any_element()
+        })
+        .collect();
+    div()
+        .flex_shrink_0()
+        .border_t_1()
+        .border_color(border)
+        .px_2()
+        .py_2()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .children(cards)
+        .child(
+            div()
+                .text_base()
+                .text_color(muted)
+                .child("Send includes these files."),
+        )
+}
+
+fn file_card(
+    index: usize,
+    name: &str,
+    busy: bool,
+    muted: Hsla,
+    view: WeakEntity<Root>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .text_base()
+                .text_color(muted)
+                .child(name.to_string()),
+        )
+        .child(
+            Button::new(SharedString::from(format!("file-remove-{index}")))
+                .ghost()
+                .small()
+                .compact()
+                .cursor_pointer()
+                .disabled(busy)
+                .label("Remove")
+                .on_click(on_root(&view, move |this, _: &ClickEvent, _, cx| {
+                    if let Some(pane) = this.pane.as_mut() {
+                        pane.dismiss_archivist_file(index);
+                    }
+                    cx.notify();
+                })),
+        )
+}
+
 fn held_excerpt(source: &str) -> String {
     let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut chars = flat.chars();
@@ -376,17 +445,37 @@ fn composer(
                 .child(Input::new(&panel.draft).w_full()),
         )
         .child(
-            Button::new("archivist-send")
-                .small()
-                .primary()
-                .cursor_pointer()
-                .disabled(!ready || busy)
-                .label("Send")
-                .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
-                    if let Some(pane) = this.pane.as_mut() {
-                        pane.send_archivist(window, cx);
-                    }
-                    cx.notify();
-                })),
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    Button::new("archivist-add-file")
+                        .small()
+                        .cursor_pointer()
+                        .disabled(busy)
+                        .label("Add file")
+                        .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
+                            if let Some(pane) = this.pane.as_mut() {
+                                pane.pick_archivist_files(cx);
+                            }
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("archivist-send")
+                        .small()
+                        .primary()
+                        .cursor_pointer()
+                        .flex_1()
+                        .disabled(!ready || busy)
+                        .label("Send")
+                        .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
+                            if let Some(pane) = this.pane.as_mut() {
+                                pane.send_archivist(window, cx);
+                            }
+                            cx.notify();
+                        })),
+                ),
         )
 }

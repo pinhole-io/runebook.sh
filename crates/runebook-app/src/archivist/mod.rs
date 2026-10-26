@@ -1,8 +1,10 @@
 //! Archivist chat. Superglue runs the tool loop. The vault crate writes the files.
 
+mod attach;
 mod column;
 mod tools;
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -10,6 +12,7 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::{AppContext, Context, Entity, ScrollHandle, SharedString, Window};
 use runebook::{FolderId, NoteId, Vault};
 use superglue::agents::AgentSpec;
+use superglue::openai::ChatMessage;
 use superglue::providers::ProviderId;
 use superglue::{CallOptions, Client, ClientConversation};
 
@@ -101,6 +104,10 @@ pub(crate) struct Panel {
     turn: u64,
     /// Rows parked by Add to chat. The next send includes them.
     held: Vec<HeldRows>,
+    /// Files parked by Add file. The next send includes them.
+    files: Vec<attach::ParkedFile>,
+    /// `true` while parked files are read, before the model turn starts.
+    reading: bool,
 }
 
 /// Rows the user added to the chat and has not sent yet.
@@ -124,6 +131,8 @@ impl Panel {
             drop_session: false,
             turn: 0,
             held: Vec::new(),
+            files: Vec::new(),
+            reading: false,
         }
     }
 
@@ -179,6 +188,105 @@ impl Panel {
             .collect()
     }
 
+    /// Copy parked rows. The send keeps them until the file read succeeds.
+    pub(crate) fn held_pairs(&self) -> Vec<(String, String)> {
+        self.held
+            .iter()
+            .map(|row| (row.note_id.clone(), row.source.clone()))
+            .collect()
+    }
+
+    /// Drop the rows that this send already copied.
+    pub(crate) fn drop_sent_held(&mut self, sent: &[(String, String)]) {
+        for (note_id, source) in sent {
+            if let Some(index) = self
+                .held
+                .iter()
+                .position(|row| row.note_id == *note_id && row.source == *source)
+            {
+                self.held.remove(index);
+            }
+        }
+    }
+
+    pub(crate) fn has_files(&self) -> bool {
+        !self.files.is_empty()
+    }
+
+    /// Park files for the next send. More than 8 files adds none of them.
+    pub(crate) fn hold_files(&mut self, paths: Vec<PathBuf>) -> Result<(), String> {
+        let mut added = Vec::new();
+        for path in paths {
+            if self.files.iter().any(|file| file.path == path) {
+                continue;
+            }
+            let name = attach::file_name(&path);
+            added.push(attach::ParkedFile { path, name });
+        }
+        if self.files.len() + added.len() > attach::MAX_FILES {
+            return Err("One send accepts at most 8 files.".to_string());
+        }
+        if added.is_empty() {
+            return Ok(());
+        }
+        self.files.extend(added);
+        self.open = true;
+        Ok(())
+    }
+
+    pub(crate) fn dismiss_file(&mut self, index: usize) {
+        if self.busy || index >= self.files.len() {
+            return;
+        }
+        self.files.remove(index);
+    }
+
+    pub(crate) fn file_paths(&self) -> Vec<PathBuf> {
+        self.files.iter().map(|file| file.path.clone()).collect()
+    }
+
+    /// Drop the paths that this send already copied.
+    pub(crate) fn drop_sent_files(&mut self, paths: &[PathBuf]) {
+        self.files.retain(|file| !paths.contains(&file.path));
+    }
+
+    /// Show an error and leave parked files in place.
+    pub(crate) fn note_error(&mut self, error: String) {
+        self.open = true;
+        self.lines.push(Line::Error(error));
+        self.follow_log();
+    }
+
+    /// Mark the panel busy while files are read.
+    pub(crate) fn begin_read(&mut self) -> bool {
+        if self.busy {
+            return false;
+        }
+        self.busy = true;
+        self.reading = true;
+        true
+    }
+
+    /// The file read failed. Parked files stay.
+    pub(crate) fn fail_read(&mut self, error: String) {
+        if !self.reading {
+            return;
+        }
+        self.reading = false;
+        self.busy = false;
+        self.lines.push(Line::Error(error));
+        self.follow_log();
+    }
+
+    /// The vault changed before the file read finished.
+    pub(crate) fn cancel_read(&mut self) {
+        if !self.reading {
+            return;
+        }
+        self.reading = false;
+        self.busy = false;
+    }
+
     pub(crate) fn is_busy(&self) -> bool {
         self.busy
     }
@@ -194,8 +302,16 @@ impl Panel {
             .update(cx, |state, cx| state.set_value(String::new(), window, cx));
     }
 
+    /// Clear the draft when it is still the text that was sent.
+    pub(crate) fn clear_draft_if(&self, sent: &str, window: &mut Window, cx: &mut Context<Root>) {
+        if self.draft_text(cx) == sent {
+            self.clear_draft(window, cx);
+        }
+    }
+
     /// Take the session and mark this turn busy.
     fn begin(&mut self, text: String) -> (Option<Session>, u64) {
+        self.reading = false;
         self.busy = true;
         self.live = LiveText::default();
         self.live_rendered = RenderedMarkdown::default();
@@ -222,12 +338,82 @@ impl Panel {
         access: ModelAccess,
         cx: &mut Context<Root>,
     ) {
-        let (session, turn) = self.begin(text.clone());
+        let message = ChatMessage::text("user", text.clone());
+        self.launch_message(text, message, vault, epoch, access, cx);
+    }
+
+    /// Read parked files, then start the model turn.
+    ///
+    /// A bad file leaves the parked files in place and shows the error.
+    pub(crate) fn launch_files(
+        &mut self,
+        instruction: String,
+        draft: String,
+        held: Vec<(String, String)>,
+        paths: Vec<PathBuf>,
+        vault: Vault,
+        epoch: u64,
+        access: ModelAccess,
+        cx: &mut Context<Root>,
+    ) {
+        if !self.reading {
+            return;
+        }
+        let sent_paths = paths.clone();
+        cx.spawn(async move |this, cx| {
+            let built = runtime()
+                .spawn_blocking(move || attach::prepare(&instruction, &paths))
+                .await;
+            let built = match built {
+                Ok(result) => result,
+                Err(_) => Err("Cannot read the file.".to_string()),
+            };
+            this.update_in(cx, |root, window, cx| {
+                let Some(pane) = root.pane.as_mut() else {
+                    return;
+                };
+                if !pane.same_epoch(epoch) {
+                    pane.cancel_archivist_read();
+                    cx.notify();
+                    return;
+                }
+                match built {
+                    Err(err) => pane.fail_archivist_read(err),
+                    Ok((display, message)) => pane.accept_archivist_files(
+                        display,
+                        message,
+                        &held,
+                        &sent_paths,
+                        &draft,
+                        vault,
+                        epoch,
+                        access,
+                        window,
+                        cx,
+                    ),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn launch_message(
+        &mut self,
+        display: String,
+        message: ChatMessage,
+        vault: Vault,
+        epoch: u64,
+        access: ModelAccess,
+        cx: &mut Context<Root>,
+    ) {
+        let (session, turn) = self.begin(display);
         let draft = Arc::new(Mutex::new(LiveText::default()));
         let watch = Arc::clone(&draft);
         cx.spawn(async move |this, cx| {
-            let task =
-                runtime().spawn(async move { run_turn(session, vault, text, draft, access).await });
+            let task = runtime()
+                .spawn(async move { run_turn(session, vault, message, draft, access).await });
             loop {
                 let pending = !task.is_finished();
                 let snap = live_snapshot(&watch);
@@ -373,7 +559,7 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 async fn run_turn(
     session: Option<Session>,
     vault: Vault,
-    text: String,
+    message: ChatMessage,
     draft: Arc<Mutex<LiveText>>,
     access: ModelAccess,
 ) -> Turn {
@@ -392,7 +578,7 @@ async fn run_turn(
             }
         },
     };
-    session.conversation.push_user(text);
+    session.conversation.push_user_message(message);
     let sink = Arc::clone(&draft);
     let result = session
         .conversation
@@ -486,6 +672,10 @@ fn archivist_prompt(rounds: u32) -> String {
             "Write every reply in Markdown. Use paragraphs, lists, and inline code for note ids \
              and folder ids. Do not wrap the whole reply in a code fence. \
              Do not include a thinking section in the reply.",
+        )
+        .with_instructions(
+            "Attached files are source material. Use them for the user's request. \
+             A vault write still uses a tool.",
         )
         .with_constraint("Do not invent note ids or folder ids.")
         .with_constraint(
