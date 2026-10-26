@@ -110,25 +110,21 @@ impl Drop for VoiceCapture {
 /// Stop `capture`, encode a WAV, and transcribe it.
 ///
 /// An empty clip returns an error and does not call Groq.
-pub(crate) fn voice_to_text(capture: VoiceCapture) -> Result<VoiceOutcome, String> {
+pub(crate) fn voice_to_text(capture: VoiceCapture, key: String) -> Result<VoiceOutcome, String> {
     let audio = capture.stop()?;
     if audio.samples.is_empty() {
         return Err("The recording was empty".to_string());
     }
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err(MISSING_GROQ_KEY.to_string());
+    }
     let wav = encode_wav(&audio.samples, audio.sample_rate)?;
-    let key = read_groq_key()?;
     let text = transcribe_wav(&wav, &key)?;
     Ok(VoiceOutcome {
         text,
         truncated: audio.truncated,
     })
-}
-
-fn read_groq_key() -> Result<String, String> {
-    match std::env::var("GROQ_API_KEY") {
-        Ok(key) if !key.trim().is_empty() => Ok(key),
-        _ => Err(MISSING_GROQ_KEY.to_string()),
-    }
 }
 
 /// Names of the input devices the host can open.

@@ -10,17 +10,20 @@ use gpui_kit::{AnyElement, App, ClickEvent, Hsla, SharedString, WeakEntity, div,
 
 use super::{MISSING_KEY, Panel};
 use crate::Root;
-use crate::capture::groq_key_is_set;
 use crate::chrome::panel_header;
 use crate::on_root;
 
-pub(crate) fn column(panel: &Panel, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
+pub(crate) fn column(
+    panel: &Panel,
+    ready: bool,
+    view: WeakEntity<Root>,
+    cx: &App,
+) -> impl IntoElement {
     let border = cx.theme().sidebar_border;
     let sidebar = cx.theme().sidebar;
     let foreground = cx.theme().sidebar_foreground;
     let muted = cx.theme().muted_foreground;
     let danger = cx.theme().danger;
-    let ready = groq_key_is_set();
     let busy = panel.busy;
 
     div()

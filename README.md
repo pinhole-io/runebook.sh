@@ -74,7 +74,7 @@ Use `speech`, `sight`, `deed`, or `research`. The editor shows the body. Save wr
 
 A Research rune asks for a question, then for a few clarifying answers. Charlotte writes a plan first. When that plan needs facts that are not in the question, Charlotte gathers those facts and revises the plan. The note shows that plan. The investigation then searches, reads, and writes. The file tree shows that run above Settings until the findings land in the note.
 
-Set `OPENAI_API_KEY` before you start a Research rune. `OPENAI_BASE_URL` and `OPENAI_MODEL` are optional. The default model is `gpt-5.6-luna`.
+Set the OpenAI key, hostname, and model in Settings. An empty field uses `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`. The default model is `gpt-5.6-luna`. Tool rounds default to 6. Search and read use that cap. Plan stays at 1 round. Write stays at 2 rounds. The Archivist and voice use the Groq key in Settings, then `GROQ_API_KEY`.
 
 Search uses SearXNG at `http://127.0.0.1:18088` unless `CHARLOTTE_SEARCH_BACKEND` or `CHARLOTTE_SEARXNG_URL` says otherwise. The read step opens a headless browser. Install Playwright's Chromium for that step. The run blocks private hosts. There is no switch to turn that block off.
 

@@ -10,6 +10,7 @@ mod dock;
 mod html_style;
 mod markdown_view;
 mod mermaid;
+mod models;
 mod pane;
 mod playback;
 

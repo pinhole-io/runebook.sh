@@ -69,6 +69,22 @@ impl ResearchDesk {
 }
 
 impl EditorPane {
+    fn research_chat(
+        &self,
+        cancel: CancellationToken,
+    ) -> Result<superglue::chat::ChatOptions, charlotte::CharlotteError> {
+        let Some(key) = crate::models::resolve_openai_key(&self.models.openai_api_key) else {
+            return Err(charlotte::CharlotteError::msg("Set OPENAI_API_KEY."));
+        };
+        charlotte::research_chat_options_from(
+            &key,
+            &crate::models::resolve_openai_base(&self.models.openai_base_url),
+            &crate::models::resolve_openai_model(&self.models.openai_model),
+            self.models.tool_rounds,
+            Some(cancel),
+        )
+    }
+
     pub(super) fn open_research_wizard(&mut self, window: &mut Window, cx: &mut Context<Root>) {
         self.settings_open = false;
         self.research.asking = false;
@@ -100,16 +116,24 @@ impl EditorPane {
             self.notice = Some("Enter a question.".to_string());
             return;
         }
+        let cancel = CancellationToken::new();
+        let options = match self.research_chat(cancel) {
+            Ok(options) => options,
+            Err(err) => {
+                self.notice = Some(self.redact_notice(&err.to_string()));
+                return;
+            }
+        };
         self.research.asking = true;
         self.research.epoch = self.research.epoch.wrapping_add(1);
         self.notice = None;
         let epoch = self.research.epoch;
         let vault_epoch = self.epoch;
-        let cancel = CancellationToken::new();
         let asked = query.clone();
+        let secrets = self.saved_secrets();
         cx.spawn(async move |this, cx| {
             let task =
-                runtime().spawn(async move { ask_clarifying_questions(&asked, cancel).await });
+                runtime().spawn(async move { ask_clarifying_questions(&asked, &options).await });
             let raw = task.await.unwrap_or(Err(charlotte::CharlotteError::msg(
                 "the question call stopped",
             )));
@@ -131,7 +155,7 @@ impl EditorPane {
                         }
                     }
                     Err(err) => {
-                        pane.notice = Some(redact_research(err.to_string()));
+                        pane.notice = Some(redact_research(err.to_string(), &secrets));
                     }
                 }
                 cx.notify();
@@ -238,10 +262,10 @@ impl EditorPane {
             cancel: CancellationToken::new(),
             running: false,
         });
-        self.pump_research(cx);
+        self.pump_research(window, cx);
     }
 
-    fn pump_research(&mut self, cx: &mut Context<Root>) {
+    fn pump_research(&mut self, window: &mut Window, cx: &mut Context<Root>) {
         if self.research.jobs.iter().any(|job| job.running) {
             return;
         }
@@ -258,12 +282,24 @@ impl EditorPane {
         let phase = Arc::clone(&job.phase);
         let plan = Arc::clone(&job.plan);
         let vault_epoch = self.epoch;
+        let secrets = self.saved_secrets();
+        let rounds = self.models.tool_rounds;
+        let options = match self.research_chat(cancel.clone()) {
+            Ok(options) => options,
+            Err(err) => {
+                let message = redact_research(err.to_string(), &secrets);
+                self.finish_research(&note, RunEnd::Failed(message), window, cx);
+                return;
+            }
+        };
         cx.spawn(async move |this, cx| {
             let task = runtime().spawn(async move {
                 let end = run_research_graph(
                     &query,
                     &answers,
                     cancel.clone(),
+                    options,
+                    rounds,
                     {
                         let phase = Arc::clone(&phase);
                         move |node| {
@@ -282,7 +318,7 @@ impl EditorPane {
                     Ok(_) if cancel.is_cancelled() => RunEnd::Stopped,
                     Ok(text) => RunEnd::Findings(text),
                     Err(_) if cancel.is_cancelled() => RunEnd::Stopped,
-                    Err(err) => RunEnd::Failed(redact_research(err.to_string())),
+                    Err(err) => RunEnd::Failed(redact_research(err.to_string(), &secrets)),
                 }
             });
             loop {
@@ -340,7 +376,7 @@ impl EditorPane {
             }
             RunEnd::Stopped => {}
         }
-        self.pump_research(cx);
+        self.pump_research(window, cx);
     }
 
     fn write_research_block(
@@ -1119,16 +1155,17 @@ fn research_slug(query: &str) -> String {
     }
 }
 
-fn redact_research(text: String) -> String {
-    let mut text = text;
-    for key in ["OPENAI_API_KEY", "GROQ_API_KEY"] {
-        if let Ok(value) = std::env::var(key) {
-            let value = value.trim();
-            if value.len() >= 8 {
-                text = text.replace(value, "[redacted]");
-            }
-        }
+fn redact_research(text: String, saved: &[String]) -> String {
+    let mut secrets: Vec<&str> = saved.iter().map(String::as_str).collect();
+    let openai = std::env::var("OPENAI_API_KEY").unwrap_or_default();
+    let groq = std::env::var("GROQ_API_KEY").unwrap_or_default();
+    if openai.trim().len() >= 8 {
+        secrets.push(openai.trim());
     }
+    if groq.trim().len() >= 8 {
+        secrets.push(groq.trim());
+    }
+    let text = crate::models::redact_secrets(&text, secrets);
     let mut out = String::new();
     for word in text.split_whitespace() {
         if word.contains('/') || word.contains('\\') {
@@ -1167,6 +1204,16 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_key_in_a_research_error_is_redacted() {
+        let text = redact_research(
+            "request failed sk-saved-key-value".to_string(),
+            &["sk-saved-key-value".to_string()],
+        );
+        assert!(!text.contains("sk-saved-key-value"));
+        assert!(text.contains("[redacted]"));
+    }
 
     #[test]
     fn card_phase_is_the_node_while_the_job_runs() {

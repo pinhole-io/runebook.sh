@@ -17,10 +17,15 @@ pub(crate) use column::column;
 
 use crate::Root;
 
-/// Notice shown when `GROQ_API_KEY` is unset.
-pub(crate) const MISSING_KEY: &str = "Set GROQ_API_KEY to talk to the Archivist";
+/// Notice shown when the Groq key is unset.
+pub(crate) const MISSING_KEY: &str = "Set the Groq key in Settings.";
 
-const DEFAULT_MODEL: &str = "openai:gpt-6-luna";
+/// Key, model, and tool-round cap for one Archivist session.
+pub(crate) struct ModelAccess {
+    pub(crate) key: String,
+    pub(crate) model: String,
+    pub(crate) tool_rounds: u32,
+}
 
 /// A vault change made by a tool during one turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +96,7 @@ pub(crate) struct Panel {
     live_rendered: RenderedMarkdown,
     draft: Entity<InputState>,
     session: Option<Session>,
+    drop_session: bool,
     turn: u64,
     /// Rows parked by Add to chat. The next send includes them.
     held: Vec<HeldRows>,
@@ -113,6 +119,7 @@ impl Panel {
             live_rendered: RenderedMarkdown::default(),
             draft,
             session: None,
+            drop_session: false,
             turn: 0,
             held: Vec::new(),
         }
@@ -196,18 +203,28 @@ impl Panel {
     }
 
     /// Run one turn on the Archivist runtime and apply vault changes on `epoch`.
+    /// Drop the saved session so the next turn reads Settings again.
+    pub(crate) fn end_session(&mut self) {
+        if self.busy {
+            self.drop_session = true;
+        }
+        self.session = None;
+    }
+
     pub(crate) fn launch(
         &mut self,
         text: String,
         vault: Vault,
         epoch: u64,
+        access: ModelAccess,
         cx: &mut Context<Root>,
     ) {
         let (session, turn) = self.begin(text.clone());
         let draft = Arc::new(Mutex::new(LiveText::default()));
         let watch = Arc::clone(&draft);
         cx.spawn(async move |this, cx| {
-            let task = runtime().spawn(async move { run_turn(session, vault, text, draft).await });
+            let task =
+                runtime().spawn(async move { run_turn(session, vault, text, draft, access).await });
             loop {
                 let pending = !task.is_finished();
                 let snap = live_snapshot(&watch);
@@ -269,7 +286,12 @@ impl Panel {
         self.busy = false;
         self.live = LiveText::default();
         self.live_rendered = RenderedMarkdown::default();
-        self.session = done.session;
+        self.session = if self.drop_session {
+            self.drop_session = false;
+            None
+        } else {
+            done.session
+        };
         let empty = done.thinking.trim().is_empty() && done.body.trim().is_empty();
         if done.error.is_none() && empty {
             self.lines.push(Line::Archivist {
@@ -318,10 +340,11 @@ async fn run_turn(
     vault: Vault,
     text: String,
     draft: Arc<Mutex<LiveText>>,
+    access: ModelAccess,
 ) -> Turn {
     let mut session = match session {
         Some(session) => session,
-        None => match open_session(vault).await {
+        None => match open_session(vault, &access).await {
             Ok(session) => session,
             Err(err) => {
                 return Turn {
@@ -366,7 +389,7 @@ async fn run_turn(
             };
             (body, None)
         }
-        Err(err) => (live.body, Some(redact(err.to_string()))),
+        Err(err) => (live.body, Some(redact(err.to_string(), &access.key))),
     };
     Turn {
         session: Some(session),
@@ -377,37 +400,41 @@ async fn run_turn(
     }
 }
 
-async fn open_session(vault: Vault) -> Result<Session, String> {
-    let key = std::env::var("GROQ_API_KEY").map_err(|_| MISSING_KEY.to_string())?;
-    let key = key.trim().to_string();
+async fn open_session(vault: Vault, access: &ModelAccess) -> Result<Session, String> {
+    let key = access.key.trim();
     if key.is_empty() {
         return Err(MISSING_KEY.to_string());
     }
-    let model = model_name();
-    let (prompt, rounds) = archivist_prompt();
+    let rounds = if access.tool_rounds < 1 {
+        6
+    } else {
+        access.tool_rounds
+    };
+    let prompt = archivist_prompt(rounds);
     let client = Client::builder()
-        .api_key(key.clone())
-        .model(model)
+        .api_key(key.to_string())
+        .model(access.model.clone())
         .system_prompt(prompt)
         .max_tool_rounds(rounds)
         // Chat completions hide this summary: gpt-6-luna rejects tools unless effort is none.
         // The OpenAI turn uses the Responses stream, which keeps tools and returns the summary.
         .reasoning_effort("low")
-        .api_key_for(ProviderId::Groq, key)
+        .api_key_for(ProviderId::Groq, key.to_string())
         .build()
-        .map_err(|err| redact(err.to_string()))?;
+        .map_err(|err| redact(err.to_string(), key))?;
     let changes = Arc::new(Mutex::new(Vec::new()));
     tools::register(&client, vault, Arc::clone(&changes))
         .await
-        .map_err(redact)?;
+        .map_err(|err| redact(err, key))?;
     Ok(Session {
         conversation: client.conversation(),
         changes,
     })
 }
 
-fn archivist_prompt() -> (String, u32) {
+fn archivist_prompt(rounds: u32) -> String {
     let spec = AgentSpec::new("Archivist", "the Archivist of this vault")
+        .with_max_tool_rounds(rounds)
         .with_goal("Keep the notes accurate.")
         .with_goal("Use tools for every file change.")
         .with_goal("Say which note ids and folder ids changed.")
@@ -430,25 +457,12 @@ fn archivist_prompt() -> (String, u32) {
             "Do not delete a note or folder unless the user asked to delete that note or folder.",
         )
         .with_constraint("Do not claim a write that the tool rejected.");
-    let rounds = spec.max_tool_rounds;
-    (spec.compile_system_prompt(), rounds)
+    spec.compile_system_prompt()
 }
 
-fn model_name() -> String {
-    match std::env::var("RUNEBOOK_MODEL") {
-        Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
-        _ => DEFAULT_MODEL.to_string(),
-    }
-}
-
-fn redact(text: String) -> String {
-    let mut text = text;
-    if let Ok(key) = std::env::var("GROQ_API_KEY") {
-        let key = key.trim();
-        if key.len() >= 8 {
-            text = text.replace(key, "[redacted]");
-        }
-    }
+fn redact(text: String, key: &str) -> String {
+    let env_key = std::env::var("GROQ_API_KEY").unwrap_or_default();
+    let text = crate::models::redact_secrets(&text, [key, env_key.trim()]);
     const MAX: usize = 400;
     if text.chars().count() <= MAX {
         return text;

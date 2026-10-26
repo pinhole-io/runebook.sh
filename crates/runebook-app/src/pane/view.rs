@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable;
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
-use gpui_kit::component::input::{Editor, Enter, Escape, Input, InputState};
+use gpui_kit::component::input::{Editor, Enter, Escape, Input, InputContentType, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::radio::{Radio, RadioGroup};
 use gpui_kit::component::scroll::ScrollableElement;
@@ -15,8 +15,8 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Selectable, Sizable, Theme};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, AppContext, ClickEvent, Context, Image, ImageFormat, Render, SharedString, WeakEntity,
-    Window, black, div, img, px, relative, svg,
+    App, AppContext, ClickEvent, Context, Entity, Image, ImageFormat, Render, SharedString,
+    WeakEntity, Window, black, div, img, px, relative, svg,
 };
 
 use super::{EditorPane, NameAction, NoteView, Prompt, TreeSelection};
@@ -238,12 +238,13 @@ pub(crate) fn note(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_
 }
 
 fn note_surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_kit::AnyElement {
-    let body = match pane.note_view {
-        NoteView::Preview if pane.open_note.is_some() && pane.open_kind == NoteKind::Research => {
-            super::research::report(pane, view.clone(), cx).into_any_element()
+    let body = if pane.research_note_open() {
+        super::research::report(pane, view.clone(), cx).into_any_element()
+    } else {
+        match pane.note_view {
+            NoteView::Preview => super::preview::surface(pane, view.clone(), cx).into_any_element(),
+            NoteView::Source => source_surface(pane).into_any_element(),
         }
-        NoteView::Preview => super::preview::surface(pane, view.clone(), cx).into_any_element(),
-        NoteView::Source => source_surface(pane).into_any_element(),
     };
     let border = cx.theme().border;
     div()
@@ -268,7 +269,9 @@ fn note_header(
     panel_header(div().id("note-header").px_2(), border)
         .child(archivist_button(pane, view.clone()))
         .child(div().flex_1())
-        .child(toggle_note_view(pane, view))
+        .when(!pane.research_note_open(), |header| {
+            header.child(toggle_note_view(pane, view))
+        })
 }
 
 fn source_surface(pane: &EditorPane) -> impl IntoElement {
@@ -483,8 +486,32 @@ fn settings_panel(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl I
                 .child(setting_label("Theme", muted))
                 .child(theme_group(pane, view.clone()))
                 .child(setting_label("Note view", muted))
-                .child(note_view_group(pane, view)),
+                .child(note_view_group(pane, view))
+                .child(div().text_sm().child("Models"))
+                .child(setting_label("Tool rounds", muted))
+                .child(text_setting(&pane.model_inputs.tool_rounds))
+                .child(setting_label("Groq API key", muted))
+                .child(secret_setting(&pane.model_inputs.groq_api_key))
+                .child(setting_label("OpenAI-compatible API key", muted))
+                .child(secret_setting(&pane.model_inputs.openai_api_key))
+                .child(setting_label("Hostname", muted))
+                .child(text_setting(&pane.model_inputs.openai_base_url))
+                .child(setting_label("Research model", muted))
+                .child(text_setting(&pane.model_inputs.openai_model))
+                .child(setting_label("Archivist model", muted))
+                .child(text_setting(&pane.model_inputs.archivist_model)),
         )
+}
+
+fn text_setting(state: &Entity<InputState>) -> impl IntoElement {
+    Input::new(state).w_full()
+}
+
+fn secret_setting(state: &Entity<InputState>) -> impl IntoElement {
+    Input::new(state)
+        .w_full()
+        .content_type(InputContentType::Password)
+        .mask_toggle()
 }
 
 fn setting_label(text: &'static str, color: impl Into<gpui_kit::Hsla>) -> impl IntoElement {

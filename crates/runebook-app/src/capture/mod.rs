@@ -65,14 +65,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (year, month as u32, day as u32)
 }
 
-/// `true` when `GROQ_API_KEY` is set to a non-empty value.
-///
-/// The key itself is not returned.
-pub(crate) fn groq_key_is_set() -> bool {
-    std::env::var("GROQ_API_KEY").is_ok_and(|key| !key.trim().is_empty())
-}
-
-pub(crate) const MISSING_GROQ_KEY: &str = "Set GROQ_API_KEY to transcribe voice notes";
+pub(crate) const MISSING_GROQ_KEY: &str = "Set the Groq key in Settings.";
 
 #[cfg(test)]
 mod tests {

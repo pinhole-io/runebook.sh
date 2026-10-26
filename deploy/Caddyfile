@@ -1,0 +1,22 @@
+# Public install host. curl receives the script. Every other client receives the command.
+runbook.sh {
+	@curl header User-Agent *curl*
+
+	handle @curl {
+		root * /srv/runebook
+		rewrite * /install.sh
+		header {
+			Content-Type "text/x-shellscript; charset=utf-8"
+			Cache-Control "no-store"
+		}
+		file_server
+	}
+
+	handle {
+		header {
+			Content-Type "text/plain; charset=utf-8"
+			Cache-Control "no-store"
+		}
+		respond "curl -fsSL https://runbook.sh | sh" 200
+	}
+}

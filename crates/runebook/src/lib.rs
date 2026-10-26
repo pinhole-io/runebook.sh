@@ -18,7 +18,10 @@ mod media;
 mod note;
 mod vault;
 
-pub use config::{AppConfig, NoteViewChoice, ThemeChoice};
+pub use config::{
+    AppConfig, DEFAULT_ARCHIVIST_MODEL, DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
+    DEFAULT_TOOL_ROUNDS, NoteViewChoice, ThemeChoice,
+};
 pub use error::{Error, Result};
 pub use index::VaultIndex;
 pub use kind::{

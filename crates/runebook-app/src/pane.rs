@@ -36,9 +36,9 @@ use runebook::{
 use crate::Root;
 use crate::capture::{
     MISSING_GROQ_KEY, ScreenCapture, ScreenTarget, VoiceCapture, WINDOW_LIST_ERROR, append_block,
-    groq_key_is_set, list_input_devices, list_record_sources, markdown_link, utc_stamp_now,
-    voice_to_text,
+    list_input_devices, list_record_sources, markdown_link, utc_stamp_now, voice_to_text,
 };
+use crate::models::{self, ModelSettings};
 use crate::playback::{self, ClipKind};
 use crate::save_setting;
 
@@ -93,6 +93,9 @@ pub(super) struct EditorPane {
     microphone_watch: Option<Subscription>,
     mic_load: u64,
     theme: ThemeChoice,
+    models: ModelSettings,
+    model_inputs: ModelInputs,
+    _model_watch: Vec<Subscription>,
     editor: Entity<EditorState>,
     saved_text: String,
     latest: String,
@@ -120,6 +123,68 @@ pub(super) struct EditorPane {
     archivist: crate::archivist::Panel,
     epoch: u64,
     research: research::ResearchDesk,
+}
+
+pub(super) struct ModelInputs {
+    pub(super) tool_rounds: Entity<InputState>,
+    pub(super) groq_api_key: Entity<InputState>,
+    pub(super) openai_api_key: Entity<InputState>,
+    pub(super) openai_base_url: Entity<InputState>,
+    pub(super) openai_model: Entity<InputState>,
+    pub(super) archivist_model: Entity<InputState>,
+}
+
+#[derive(Clone, Copy)]
+enum ModelField {
+    ToolRounds,
+    GroqKey,
+    OpenAiKey,
+    OpenAiBase,
+    OpenAiModel,
+    ArchivistModel,
+}
+
+impl ModelInputs {
+    fn get(&self, field: ModelField) -> &Entity<InputState> {
+        match field {
+            ModelField::ToolRounds => &self.tool_rounds,
+            ModelField::GroqKey => &self.groq_api_key,
+            ModelField::OpenAiKey => &self.openai_api_key,
+            ModelField::OpenAiBase => &self.openai_base_url,
+            ModelField::OpenAiModel => &self.openai_model,
+            ModelField::ArchivistModel => &self.archivist_model,
+        }
+    }
+}
+
+fn model_input(
+    window: &mut Window,
+    cx: &mut Context<Root>,
+    value: &str,
+    placeholder: &str,
+    masked: bool,
+) -> Entity<InputState> {
+    cx.new(|cx| {
+        InputState::new(window, cx)
+            .placeholder(placeholder)
+            .default_value(value)
+            .masked(masked)
+    })
+}
+
+fn watch_model(
+    input: &Entity<InputState>,
+    field: ModelField,
+    cx: &mut Context<Root>,
+) -> Subscription {
+    cx.subscribe(input, move |this, _, event: &InputEvent, cx| {
+        if matches!(event, InputEvent::Change)
+            && let Some(pane) = this.pane.as_mut()
+        {
+            pane.apply_model_field(field, cx);
+            cx.notify();
+        }
+    })
 }
 
 enum Capture {
@@ -185,6 +250,39 @@ impl EditorPane {
         let index = vault.notes()?;
         let prefs = AppConfig::load().unwrap_or_default();
         let default_note_view = note_view_from(prefs.note_view);
+        let models = ModelSettings::from_config(&prefs);
+        let model_inputs = ModelInputs {
+            tool_rounds: model_input(window, cx, &models.tool_rounds.to_string(), "6", false),
+            groq_api_key: model_input(window, cx, &models.groq_api_key, "GROQ_API_KEY", true),
+            openai_api_key: model_input(window, cx, &models.openai_api_key, "OPENAI_API_KEY", true),
+            openai_base_url: model_input(
+                window,
+                cx,
+                &models.openai_base_url,
+                "https://api.openai.com",
+                false,
+            ),
+            openai_model: model_input(window, cx, &models.openai_model, "gpt-5.6-luna", false),
+            archivist_model: model_input(
+                window,
+                cx,
+                &models.archivist_model,
+                "openai:gpt-6-luna",
+                false,
+            ),
+        };
+        let model_watch = vec![
+            watch_model(&model_inputs.tool_rounds, ModelField::ToolRounds, cx),
+            watch_model(&model_inputs.groq_api_key, ModelField::GroqKey, cx),
+            watch_model(&model_inputs.openai_api_key, ModelField::OpenAiKey, cx),
+            watch_model(&model_inputs.openai_base_url, ModelField::OpenAiBase, cx),
+            watch_model(&model_inputs.openai_model, ModelField::OpenAiModel, cx),
+            watch_model(
+                &model_inputs.archivist_model,
+                ModelField::ArchivistModel,
+                cx,
+            ),
+        ];
         let open_note = first_note(&index);
         let show_archivist = open_note.is_none();
         let (open_kind, text) = match &open_note {
@@ -226,6 +324,9 @@ impl EditorPane {
             microphone_watch: None,
             mic_load: 0,
             theme: prefs.theme,
+            models,
+            model_inputs,
+            _model_watch: model_watch,
             editor,
             dirty: false,
             notice: None,
@@ -259,8 +360,12 @@ impl EditorPane {
     /// Swap the rendered note and the source editor.
     ///
     /// The editor entity stays alive in both modes. Focusing it on the way to
-    /// the source lets typing start on the next frame.
+    /// the source lets typing start on the next frame. A Research note stays
+    /// on the report.
     pub(super) fn toggle_note_view(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+        if self.research_note_open() {
+            return;
+        }
         self.note_view = match self.note_view {
             NoteView::Preview => NoteView::Source,
             NoteView::Source => NoteView::Preview,
@@ -268,6 +373,10 @@ impl EditorPane {
         if self.note_view == NoteView::Source {
             self.editor.focus_handle(cx).focus(window, cx);
         }
+    }
+
+    fn research_note_open(&self) -> bool {
+        self.open_note.is_some() && self.open_kind == NoteKind::Research
     }
 
     /// Open or close settings in the note area.
@@ -373,6 +482,10 @@ impl EditorPane {
     }
 
     fn show_note_view(&mut self, view: NoteView, window: &mut Window, cx: &mut Context<Root>) {
+        if self.research_note_open() {
+            self.note_view = NoteView::Preview;
+            return;
+        }
         self.note_view = view;
         if view == NoteView::Source {
             self.editor.focus_handle(cx).focus(window, cx);
@@ -381,8 +494,117 @@ impl EditorPane {
 
     fn store_setting(&mut self, change: impl FnOnce(&mut AppConfig)) {
         if let Err(err) = save_setting(change) {
-            self.notice = Some(err);
+            self.notice = Some(self.redact_notice(&err));
         }
+    }
+
+    fn redact_notice(&self, text: &str) -> String {
+        let mut secrets = vec![
+            self.models.groq_api_key.clone(),
+            self.models.openai_api_key.clone(),
+        ];
+        if let Some(key) = models::env_var("GROQ_API_KEY") {
+            secrets.push(key);
+        }
+        if let Some(key) = models::env_var("OPENAI_API_KEY") {
+            secrets.push(key);
+        }
+        models::redact_secrets(text, secrets.iter().map(String::as_str))
+    }
+
+    fn saved_secrets(&self) -> Vec<String> {
+        [
+            self.models.groq_api_key.as_str(),
+            self.models.openai_api_key.as_str(),
+        ]
+        .into_iter()
+        .map(str::trim)
+        .filter(|value| value.len() >= 8)
+        .map(str::to_string)
+        .collect()
+    }
+
+    pub(super) fn groq_ready(&self) -> bool {
+        models::resolve_groq_key(&self.models.groq_api_key).is_some()
+    }
+
+    fn archivist_access(&self) -> Option<crate::archivist::ModelAccess> {
+        let key = self.groq_key()?;
+        Some(crate::archivist::ModelAccess {
+            key,
+            model: models::resolve_archivist_model(&self.models.archivist_model),
+            tool_rounds: self.models.tool_rounds,
+        })
+    }
+
+    fn groq_key(&self) -> Option<String> {
+        models::resolve_groq_key(&self.models.groq_api_key)
+    }
+
+    fn apply_model_field(&mut self, field: ModelField, cx: &mut Context<Root>) {
+        let raw = self.model_inputs.get(field).read(cx).value().to_string();
+        let Some(text) = models::bounded(&raw) else {
+            self.notice = Some("That value is too long.".to_string());
+            return;
+        };
+        match field {
+            ModelField::ToolRounds => {
+                let Some(rounds) = models::accept_tool_rounds(text) else {
+                    self.notice = Some("Tool rounds must be at least 1.".to_string());
+                    return;
+                };
+                if rounds == self.models.tool_rounds {
+                    return;
+                }
+                self.models.tool_rounds = rounds;
+                self.archivist.end_session();
+            }
+            ModelField::GroqKey => {
+                if text == self.models.groq_api_key {
+                    return;
+                }
+                self.models.groq_api_key = text.to_string();
+                self.archivist.end_session();
+            }
+            ModelField::OpenAiKey => {
+                if text == self.models.openai_api_key {
+                    return;
+                }
+                self.models.openai_api_key = text.to_string();
+            }
+            ModelField::OpenAiBase => {
+                if text == self.models.openai_base_url {
+                    return;
+                }
+                self.models.openai_base_url = text.to_string();
+            }
+            ModelField::OpenAiModel => {
+                if text == self.models.openai_model {
+                    return;
+                }
+                self.models.openai_model = text.to_string();
+            }
+            ModelField::ArchivistModel => {
+                if text == self.models.archivist_model {
+                    return;
+                }
+                self.models.archivist_model = text.to_string();
+                self.archivist.end_session();
+            }
+        }
+        self.store_models();
+    }
+
+    fn store_models(&mut self) {
+        let models = self.models.clone();
+        self.store_setting(move |config| {
+            config.tool_rounds = models.tool_rounds;
+            config.groq_api_key = models.groq_api_key.clone();
+            config.openai_api_key = models.openai_api_key.clone();
+            config.openai_base_url = models.openai_base_url.clone();
+            config.openai_model = models.openai_model.clone();
+            config.archivist_model = models.archivist_model.clone();
+        });
     }
 
     pub(super) fn root(&self) -> &Path {
@@ -1067,7 +1289,7 @@ impl EditorPane {
             self.notice = Some("Open a Speech note to record voice".to_string());
             return;
         }
-        if !groq_key_is_set() {
+        if !self.groq_ready() {
             self.notice = Some(MISSING_GROQ_KEY.to_string());
             return;
         }
@@ -1088,12 +1310,17 @@ impl EditorPane {
                 return;
             }
         };
+        let Some(key) = self.groq_key() else {
+            self.capture = Capture::Voice(capture);
+            self.notice = Some(MISSING_GROQ_KEY.to_string());
+            return;
+        };
         self.capture = Capture::Transcribing;
         let note_id = self.open_note.clone();
         cx.spawn(async move |this, cx| {
             let outcome = cx
                 .background_executor()
-                .spawn(async move { voice_to_text(capture) })
+                .spawn(async move { voice_to_text(capture, key) })
                 .await;
             this.update_in(cx, |root, window, cx| {
                 let dirty = root
@@ -1183,7 +1410,7 @@ impl EditorPane {
             }
             Ok(outcome) => outcome,
             Err(err) => {
-                self.notice = Some(err);
+                self.notice = Some(self.redact_notice(&err));
                 return false;
             }
         };
@@ -1719,7 +1946,7 @@ impl EditorPane {
     ///
     /// Held rows are included even when the draft is empty.
     pub(crate) fn send_archivist(&mut self, window: &mut Window, cx: &mut Context<Root>) {
-        if !self.archivist.is_open() || self.archivist.is_busy() || !groq_key_is_set() {
+        if !self.archivist.is_open() || self.archivist.is_busy() || !self.groq_ready() {
             return;
         }
         if let Err(err) = self.require_idle() {
@@ -1745,9 +1972,12 @@ impl EditorPane {
             return;
         };
         self.archivist.clear_draft(window, cx);
+        let Some(access) = self.archivist_access() else {
+            return;
+        };
         let vault = self.vault.clone();
         let epoch = self.epoch;
-        self.archivist.launch(text, vault, epoch, cx);
+        self.archivist.launch(text, vault, epoch, access, cx);
     }
 
     fn press_note_row(&mut self, index: usize, shift: bool) {
@@ -1820,7 +2050,7 @@ impl EditorPane {
         let Some((note_id, source)) = self.selected_note_text() else {
             return;
         };
-        if !groq_key_is_set() {
+        if !self.groq_ready() {
             self.archivist.show();
             self.notice = Some(crate::archivist::MISSING_KEY.to_string());
             return;
@@ -1842,9 +2072,12 @@ impl EditorPane {
         self.archivist.drop_held_note(&note_id);
         self.clear_note_rows();
         self.archivist.show();
+        let Some(access) = self.archivist_access() else {
+            return;
+        };
         let vault = self.vault.clone();
         let epoch = self.epoch;
-        self.archivist.launch(message, vault, epoch, cx);
+        self.archivist.launch(message, vault, epoch, access, cx);
     }
 
     pub(crate) fn same_epoch(&self, epoch: u64) -> bool {

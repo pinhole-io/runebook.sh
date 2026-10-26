@@ -174,7 +174,8 @@ impl DockPanel {
             Slot::Files => crate::pane::files(pane, view, cx).into_any_element(),
             Slot::Note => crate::pane::note(pane, view, cx).into_any_element(),
             Slot::Archivist => {
-                crate::archivist::column(pane.archivist(), view, cx).into_any_element()
+                crate::archivist::column(pane.archivist(), pane.groq_ready(), view, cx)
+                    .into_any_element()
             }
         }
     }
