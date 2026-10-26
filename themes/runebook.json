@@ -11,9 +11,10 @@
       "radius": 6,
       "radius.lg": 8,
       "spacing": {
-        "paragraph_gap": 0.5,
-        "heading.1": 1.15,
-        "heading.2": 1.05
+        "paragraph_gap": 1.0,
+        "heading_before": 1.0,
+        "heading.1": 1.4,
+        "heading.2": 1.2
       },
       "colors": {
         "accent.background": "neutral-100",
@@ -227,9 +228,10 @@
       "radius": 6,
       "radius.lg": 8,
       "spacing": {
-        "paragraph_gap": 0.5,
-        "heading.1": 1.15,
-        "heading.2": 1.05
+        "paragraph_gap": 1.0,
+        "heading_before": 1.0,
+        "heading.1": 1.4,
+        "heading.2": 1.2
       },
       "colors": {
         "accent.background": "neutral-800",

@@ -16,6 +16,8 @@ const RAW: &str = include_str!("../../../themes/runebook.json");
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct NoteSpacing {
     pub paragraph_gap: f32,
+    /// Extra space before a heading that follows text, a table, or another block.
+    pub heading_before: f32,
     pub heading_1: f32,
     pub heading_2: f32,
 }
@@ -53,6 +55,7 @@ fn theme_spacings() -> &'static [NoteSpacing] {
                 let spacing = &theme["spacing"];
                 NoteSpacing {
                     paragraph_gap: spacing_number(spacing, "paragraph_gap"),
+                    heading_before: spacing_number(spacing, "heading_before"),
                     heading_1: spacing_number(spacing, "heading.1"),
                     heading_2: spacing_number(spacing, "heading.2"),
                 }
@@ -132,9 +135,10 @@ mod tests {
         let spacings = theme_spacings();
         assert_eq!(spacings.len(), 2);
         for spacing in spacings {
-            assert_eq!(spacing.paragraph_gap, 0.5);
-            assert_eq!(spacing.heading_1, 1.15);
-            assert_eq!(spacing.heading_2, 1.05);
+            assert_eq!(spacing.paragraph_gap, 1.0);
+            assert_eq!(spacing.heading_before, 1.0);
+            assert_eq!(spacing.heading_1, 1.4);
+            assert_eq!(spacing.heading_2, 1.2);
         }
     }
 
