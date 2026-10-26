@@ -8,6 +8,7 @@ mod capture;
 mod chrome;
 mod dock;
 mod html_style;
+mod http;
 mod markdown_view;
 mod mermaid;
 mod models;
@@ -47,6 +48,7 @@ A wiki link looks like [[inbox]]. Click a missing link to create that note.
 fn main() {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
+        .with_http_client(http::client())
         .run(|cx| {
             gpui_kit::init(cx);
             bind_keys(cx);

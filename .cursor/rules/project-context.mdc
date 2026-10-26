@@ -36,7 +36,7 @@ kind: speech
 - A media file beside a note uses a video, audio, or image extension: `mp4`, `webm`, `mkv`, `mov`, `mp3`, `wav`, `ogg`, `m4a`, `flac`, `png`, `jpg`, `jpeg`, `gif`, `webp`.
 - Folder delete removes those files. Any other non-note file still blocks folder delete.
 - A preview row that is only a video or audio link plays in the note. The picture follows the file frame rate. Pause holds the place. The bar seeks. Mute silences the sound.
-- A preview image shows in the row. A click opens a vault file. A remote image loads from its URL.
+- A preview image shows in the row. A click opens a vault file. A remote image loads from an `http` or `https` address. The file must be 8 MiB or smaller.
 - The alt text shows when that image does not load. The path must stay inside the vault.
 - Skip hidden paths and symlinks. Do not follow a symlink out of the vault.
 - There is no sidecar database. The index is rebuilt from the files.

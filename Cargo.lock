@@ -6524,6 +6524,7 @@ dependencies = [
  "async-trait",
  "charlotte",
  "cpal",
+ "futures",
  "gpui-kit",
  "hound",
  "reqwest 0.12.28",

@@ -2,7 +2,8 @@
 //!
 //! Block images, rules, footnotes, definitions, and `<details>` are drawn here.
 //! A local image path must stay inside the vault. The resolver refuses a
-//! symlink and a file larger than 8 MiB. A failure shows the alt text and
+//! symlink and a file larger than 8 MiB. A remote image uses `http` or
+//! `https`, with the same size limit. A failure shows the alt text and
 //! does not include a path.
 
 use std::collections::{HashMap, HashSet};
