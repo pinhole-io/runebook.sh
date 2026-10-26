@@ -8,6 +8,14 @@ use crate::fsutil::atomic_write;
 /// Tool rounds used when a saved value is missing or below 1.
 pub const DEFAULT_TOOL_ROUNDS: u32 = 250;
 
+fn default_tool_rounds() -> u32 {
+    DEFAULT_TOOL_ROUNDS
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// OpenAI-compatible host used when Settings and `OPENAI_BASE_URL` are empty.
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com";
 
@@ -16,10 +24,6 @@ pub const DEFAULT_OPENAI_MODEL: &str = "gpt-5.6-luna";
 
 /// Archivist model used when Settings and `RUNEBOOK_MODEL` are empty.
 pub const DEFAULT_ARCHIVIST_MODEL: &str = "openai:gpt-6-luna";
-
-fn default_tool_rounds() -> u32 {
-    DEFAULT_TOOL_ROUNDS
-}
 
 /// Last-vault path, window preferences, model settings, and the saved dock layout.
 ///
@@ -31,15 +35,42 @@ pub struct AppConfig {
     /// Vault opened on the last successful launch.
     #[serde(default)]
     pub last_vault: Option<PathBuf>,
+    /// Note id opened last. Used when [`Self::reopen_last_note`] is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_note: Option<String>,
+    /// Open [`Self::last_note`] when that note is still in the vault.
+    #[serde(default = "default_true")]
+    pub reopen_last_note: bool,
     /// Input device name. Absent means the system default.
     #[serde(default)]
     pub microphone: Option<String>,
+    /// Groq transcription model.
+    #[serde(default)]
+    pub speech_model: SpeechModel,
+    /// Spoken language hint. Empty lets Groq detect the language.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub speech_language: String,
     /// Window theme.
     #[serde(default)]
     pub theme: ThemeChoice,
+    /// Body and editor text size. Medium matches the theme file.
+    #[serde(default)]
+    pub text_size: TextSize,
     /// View used when a note opens.
     #[serde(default)]
     pub note_view: NoteViewChoice,
+    /// Show line numbers in the source editor.
+    #[serde(default = "default_true")]
+    pub line_numbers: bool,
+    /// Wrap long lines in the source editor.
+    #[serde(default = "default_true")]
+    pub soft_wrap: bool,
+    /// When an edit is written.
+    #[serde(default)]
+    pub autosave: AutosavePace,
+    /// New clips start muted.
+    #[serde(default)]
+    pub media_muted: bool,
     /// Saved dock layout, as JSON. Absent means the default split.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dock_layout: Option<String>,
@@ -67,9 +98,18 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             last_vault: None,
+            last_note: None,
+            reopen_last_note: true,
             microphone: None,
+            speech_model: SpeechModel::default(),
+            speech_language: String::new(),
             theme: ThemeChoice::default(),
+            text_size: TextSize::default(),
             note_view: NoteViewChoice::default(),
+            line_numbers: true,
+            soft_wrap: true,
+            autosave: AutosavePace::default(),
+            media_muted: false,
             dock_layout: None,
             tool_rounds: DEFAULT_TOOL_ROUNDS,
             groq_api_key: String::new(),
@@ -101,6 +141,69 @@ pub enum NoteViewChoice {
     Preview,
     /// Markdown source.
     Source,
+}
+
+/// Body and editor text size. Medium matches the theme file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TextSize {
+    /// Two pixels below the theme file.
+    Small,
+    /// The size in the theme file.
+    #[default]
+    Medium,
+    /// Four pixels above the theme file.
+    Large,
+}
+
+/// When an edit is written to the note file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutosavePace {
+    /// Write 200 ms after the last edit.
+    Fast,
+    /// Write 400 ms after the last edit.
+    #[default]
+    Normal,
+    /// Write 1 second after the last edit.
+    Slow,
+    /// Write when the note closes or the window closes.
+    Manual,
+}
+
+impl AutosavePace {
+    /// Milliseconds before an edit is written.
+    ///
+    /// [`Self::Manual`] is `None`. The note is still written on leave and close.
+    pub fn delay_ms(self) -> Option<u64> {
+        match self {
+            Self::Fast => Some(200),
+            Self::Normal => Some(400),
+            Self::Slow => Some(1_000),
+            Self::Manual => None,
+        }
+    }
+}
+
+/// Groq model used for a Speech transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeechModel {
+    /// `whisper-large-v3-turbo`.
+    #[default]
+    Fast,
+    /// `whisper-large-v3`.
+    Accurate,
+}
+
+impl SpeechModel {
+    /// Model name sent to Groq.
+    pub fn api_name(self) -> &'static str {
+        match self {
+            Self::Fast => "whisper-large-v3-turbo",
+            Self::Accurate => "whisper-large-v3",
+        }
+    }
 }
 
 impl AppConfig {
@@ -162,6 +265,18 @@ impl AppConfig {
             source,
         })?;
         atomic_write(path, &text)
+    }
+}
+
+fn config_home() -> PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
+    }
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => PathBuf::from(home).join(".config"),
+        _ => PathBuf::from(".config"),
     }
 }
 
@@ -237,16 +352,45 @@ mod tests {
         let config = AppConfig::load_from(&path).unwrap();
         assert_eq!(config.tool_rounds, super::DEFAULT_TOOL_ROUNDS);
     }
-}
 
-fn config_home() -> PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME")
-        && !dir.is_empty()
-    {
-        return PathBuf::from(dir);
+    #[test]
+    fn a_missing_preference_uses_the_current_behavior() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"light\"\n").unwrap();
+        let config = AppConfig::load_from(&path).unwrap();
+        assert!(config.reopen_last_note);
+        assert!(config.last_note.is_none());
+        assert!(config.line_numbers);
+        assert!(config.soft_wrap);
+        assert!(!config.media_muted);
+        assert!(config.speech_language.is_empty());
+        assert_eq!(config.text_size, super::TextSize::Medium);
+        assert_eq!(config.autosave, super::AutosavePace::Normal);
+        assert_eq!(config.speech_model, super::SpeechModel::Fast);
+        assert_eq!(config.autosave.delay_ms(), Some(400));
+        assert_eq!(super::SpeechModel::Accurate.api_name(), "whisper-large-v3");
     }
-    match std::env::var_os("HOME") {
-        Some(home) if !home.is_empty() => PathBuf::from(home).join(".config"),
-        _ => PathBuf::from(".config"),
+
+    #[test]
+    fn window_preferences_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let saved = AppConfig {
+            last_note: Some("journal/today".to_string()),
+            reopen_last_note: false,
+            speech_model: super::SpeechModel::Accurate,
+            speech_language: "en".to_string(),
+            text_size: super::TextSize::Large,
+            line_numbers: false,
+            soft_wrap: false,
+            autosave: super::AutosavePace::Manual,
+            media_muted: true,
+            ..AppConfig::default()
+        };
+        saved.save_to(&path).unwrap();
+        let loaded = AppConfig::load_from(&path).unwrap();
+        assert_eq!(loaded, saved);
+        assert_eq!(loaded.autosave.delay_ms(), None);
     }
 }

@@ -4,7 +4,9 @@ mod screen;
 mod voice;
 
 pub(crate) use screen::{ScreenCapture, ScreenTarget, WINDOW_LIST_ERROR, list_record_sources};
-pub(crate) use voice::{VoiceCapture, VoiceOutcome, list_input_devices, voice_to_text};
+pub(crate) use voice::{
+    SpeechRequest, VoiceCapture, VoiceOutcome, list_input_devices, voice_to_text,
+};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

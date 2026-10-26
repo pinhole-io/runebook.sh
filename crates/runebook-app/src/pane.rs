@@ -3,6 +3,7 @@
 mod preview;
 mod research;
 mod rows;
+mod settings;
 mod view;
 
 pub(crate) use preview::queue_clips;
@@ -29,14 +30,16 @@ use gpui_kit::{
     RenderImage, SharedString, Subscription, Window, div, px,
 };
 use runebook::{
-    AppConfig, Error, FolderId, NoteId, NoteKind, NoteViewChoice, SearchHit, ThemeChoice, Vault,
-    VaultIndex, VaultTree, decode_note, encode_note, toggle_task_line,
+    AppConfig, AutosavePace, Error, FolderId, NoteId, NoteKind, NoteViewChoice, SearchHit,
+    SpeechModel, TextSize, ThemeChoice, Vault, VaultIndex, VaultTree, decode_note, encode_note,
+    toggle_task_line,
 };
 
 use crate::Root;
 use crate::capture::{
-    MISSING_GROQ_KEY, ScreenCapture, ScreenTarget, VoiceCapture, WINDOW_LIST_ERROR, append_block,
-    list_input_devices, list_record_sources, markdown_link, utc_stamp_now, voice_to_text,
+    MISSING_GROQ_KEY, ScreenCapture, ScreenTarget, SpeechRequest, VoiceCapture, WINDOW_LIST_ERROR,
+    append_block, list_input_devices, list_record_sources, markdown_link, utc_stamp_now,
+    voice_to_text,
 };
 use crate::models::{self, ModelSettings};
 use crate::playback::{self, ClipKind};
@@ -93,6 +96,15 @@ pub(super) struct EditorPane {
     microphone_watch: Option<Subscription>,
     mic_load: u64,
     theme: ThemeChoice,
+    text_size: TextSize,
+    line_numbers: bool,
+    soft_wrap: bool,
+    autosave: AutosavePace,
+    start_muted: bool,
+    speech_model: SpeechModel,
+    speech_language: String,
+    reopen_last_note: bool,
+    remembered_note: Option<String>,
     models: ModelSettings,
     model_inputs: ModelInputs,
     _model_watch: Vec<Subscription>,
@@ -136,6 +148,7 @@ pub(super) struct ModelInputs {
     pub(super) openai_base_url: Entity<InputState>,
     pub(super) openai_model: Entity<InputState>,
     pub(super) archivist_model: Entity<InputState>,
+    pub(super) speech_language: Entity<InputState>,
 }
 
 #[derive(Clone, Copy)]
@@ -146,6 +159,7 @@ enum ModelField {
     OpenAiBase,
     OpenAiModel,
     ArchivistModel,
+    SpeechLanguage,
 }
 
 impl ModelInputs {
@@ -157,6 +171,7 @@ impl ModelInputs {
             ModelField::OpenAiBase => &self.openai_base_url,
             ModelField::OpenAiModel => &self.openai_model,
             ModelField::ArchivistModel => &self.archivist_model,
+            ModelField::SpeechLanguage => &self.speech_language,
         }
     }
 }
@@ -288,6 +303,7 @@ impl EditorPane {
                 "openai:gpt-6-luna",
                 false,
             ),
+            speech_language: model_input(window, cx, &prefs.speech_language, "auto", false),
         };
         let model_watch = vec![
             watch_model(&model_inputs.tool_rounds, ModelField::ToolRounds, cx),
@@ -300,8 +316,13 @@ impl EditorPane {
                 ModelField::ArchivistModel,
                 cx,
             ),
+            watch_model(
+                &model_inputs.speech_language,
+                ModelField::SpeechLanguage,
+                cx,
+            ),
         ];
-        let open_note = first_note(&index);
+        let open_note = starting_note(&index, &prefs);
         let show_archivist = open_note.is_none();
         let (open_kind, text) = match &open_note {
             Some(id) => note_body(&vault.read(id)?),
@@ -310,8 +331,8 @@ impl EditorPane {
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language("markdown")
-                .line_number(true)
-                .soft_wrap(true)
+                .line_number(prefs.line_numbers)
+                .soft_wrap(prefs.soft_wrap)
                 .default_value(text.clone())
         });
         let subscription = cx.subscribe(&editor, |this, _, event: &InputEvent, cx| {
@@ -342,6 +363,15 @@ impl EditorPane {
             microphone_watch: None,
             mic_load: 0,
             theme: prefs.theme,
+            text_size: prefs.text_size,
+            line_numbers: prefs.line_numbers,
+            soft_wrap: prefs.soft_wrap,
+            autosave: prefs.autosave,
+            start_muted: prefs.media_muted,
+            speech_model: prefs.speech_model,
+            speech_language: prefs.speech_language,
+            reopen_last_note: prefs.reopen_last_note,
+            remembered_note: prefs.last_note.clone(),
             models,
             model_inputs,
             _model_watch: model_watch,
@@ -351,7 +381,7 @@ impl EditorPane {
             playback: None,
             playback_watch: 0,
             hold: None,
-            media_muted: false,
+            media_muted: prefs.media_muted,
             seek_drag: false,
             seek_preview: None,
             timings: HashMap::new(),
@@ -495,6 +525,80 @@ impl EditorPane {
         self.store_setting(|config| config.theme = choice);
     }
 
+    /// Save the text size. The caller already applied it to the window.
+    fn choose_text_size(&mut self, size: TextSize) {
+        self.text_size = size;
+        self.store_setting(move |config| config.text_size = size);
+    }
+
+    /// Show or hide source line numbers, and save that choice.
+    fn choose_line_numbers(&mut self, on: bool, window: &mut Window, cx: &mut Context<Root>) {
+        if self.line_numbers == on {
+            return;
+        }
+        self.line_numbers = on;
+        self.editor
+            .update(cx, |state, cx| state.set_line_number(on, window, cx));
+        self.store_setting(move |config| config.line_numbers = on);
+    }
+
+    /// Wrap or scroll long source lines, and save that choice.
+    fn choose_soft_wrap(&mut self, on: bool, window: &mut Window, cx: &mut Context<Root>) {
+        if self.soft_wrap == on {
+            return;
+        }
+        self.soft_wrap = on;
+        self.editor
+            .update(cx, |state, cx| state.set_soft_wrap(on, window, cx));
+        self.store_setting(move |config| config.soft_wrap = on);
+    }
+
+    /// Save when edits are written. Manual waits for leave or close.
+    fn choose_autosave(&mut self, pace: AutosavePace) {
+        self.autosave = pace;
+        self.store_setting(move |config| config.autosave = pace);
+    }
+
+    /// Delay before the next autosave. Manual is `None`.
+    pub(super) fn autosave_delay(&self) -> Option<Duration> {
+        self.autosave.delay_ms().map(Duration::from_millis)
+    }
+
+    /// Save the Groq transcription model.
+    fn choose_speech_model(&mut self, model: SpeechModel) {
+        self.speech_model = model;
+        self.store_setting(move |config| config.speech_model = model);
+    }
+
+    /// Start new clips muted, and apply that to the clip that is playing.
+    fn choose_start_muted(&mut self, on: bool) {
+        self.start_muted = on;
+        self.media_muted = on;
+        if let Some(play) = &self.playback {
+            play.set_muted(on);
+        }
+        self.store_setting(move |config| config.media_muted = on);
+    }
+
+    /// Save whether the next launch opens the last note.
+    fn choose_reopen_last_note(&mut self, on: bool) {
+        self.reopen_last_note = on;
+        self.store_setting(move |config| config.reopen_last_note = on);
+        if on && let Some(id) = self.open_note.clone() {
+            self.remember_note(&id);
+        }
+    }
+
+    /// Remember `id` for the next launch.
+    fn remember_note(&mut self, id: &NoteId) {
+        let saved = id.to_string();
+        if self.remembered_note.as_deref() == Some(saved.as_str()) {
+            return;
+        }
+        self.remembered_note = Some(saved.clone());
+        self.store_setting(move |config| config.last_note = Some(saved));
+    }
+
     /// Save the default note view and show that view on the open note.
     fn choose_note_view(&mut self, view: NoteView, window: &mut Window, cx: &mut Context<Root>) {
         self.default_note_view = view;
@@ -608,8 +712,31 @@ impl EditorPane {
                 self.models.archivist_model = text.to_string();
                 self.archivist.end_session();
             }
+            ModelField::SpeechLanguage => {
+                self.apply_speech_language(text);
+                return;
+            }
         }
         self.store_models();
+    }
+
+    fn apply_speech_language(&mut self, text: &str) {
+        let next = match models::accept_language(text) {
+            models::LanguageEdit::Pending => return,
+            models::LanguageEdit::Reject => {
+                self.notice = Some(LANGUAGE_NOTICE.to_string());
+                return;
+            }
+            models::LanguageEdit::Set(value) => value,
+        };
+        if self.notice.as_deref() == Some(LANGUAGE_NOTICE) {
+            self.notice = None;
+        }
+        if next == self.speech_language {
+            return;
+        }
+        self.speech_language = next.clone();
+        self.store_setting(move |config| config.speech_language = next);
     }
 
     fn store_models(&mut self) {
@@ -1334,10 +1461,21 @@ impl EditorPane {
         };
         self.capture = Capture::Transcribing;
         let note_id = self.open_note.clone();
+        let speech = SpeechRequest {
+            model: self.speech_model.api_name().to_string(),
+            language: {
+                let language = self.speech_language.trim();
+                if language.is_empty() {
+                    None
+                } else {
+                    Some(language.to_string())
+                }
+            },
+        };
         cx.spawn(async move |this, cx| {
             let outcome = cx
                 .background_executor()
-                .spawn(async move { voice_to_text(capture, key) })
+                .spawn(async move { voice_to_text(capture, key, speech) })
                 .await;
             this.update_in(cx, |root, window, cx| {
                 let dirty = root
@@ -1572,6 +1710,7 @@ impl EditorPane {
         self.clear_note_rows();
         self.reveal(&id.parent());
         self.open_note = Some(id.clone());
+        self.remember_note(&id);
         self.tree_selection = TreeSelection::Note(id);
         self.apply_file(&text, window, cx);
         self.notice = None;
@@ -1829,6 +1968,7 @@ impl EditorPane {
                     .map_err(|err| err.to_string())?;
                 if self.open_note.as_ref() == Some(&from) {
                     self.open_note = Some(to.clone());
+                    self.remember_note(&to);
                 }
                 self.reload().map_err(|err| err.to_string())?;
                 self.reveal(&to.parent());
@@ -1849,7 +1989,8 @@ impl EditorPane {
                 if let Some(note) = self.open_note.clone()
                     && let Some(next) = rewrite_note_id(&note, &from, &to)
                 {
-                    self.open_note = Some(next);
+                    self.open_note = Some(next.clone());
+                    self.remember_note(&next);
                 }
                 self.rewrite_collapsed(&from, &to);
                 self.reload().map_err(|err| err.to_string())?;
@@ -1961,6 +2102,7 @@ impl EditorPane {
         }
         if self.open_note.as_ref() == Some(from) {
             self.open_note = Some(to.clone());
+            self.remember_note(&to);
         }
         if let Err(err) = self.reload() {
             self.notice = Some(err.to_string());
@@ -2438,6 +2580,18 @@ impl Drop for EditorPane {
 }
 
 const SYSTEM_MICROPHONE: &str = "System default";
+const LANGUAGE_NOTICE: &str = "Use a two-letter language code, or leave the field empty.";
+
+fn starting_note(index: &VaultIndex, prefs: &AppConfig) -> Option<NoteId> {
+    if prefs.reopen_last_note
+        && let Some(raw) = prefs.last_note.as_deref()
+        && let Ok(id) = NoteId::parse(raw)
+        && index.contains(&id)
+    {
+        return Some(id);
+    }
+    first_note(index)
+}
 
 fn saved_microphone(name: Option<String>) -> Option<String> {
     name.filter(|value| !value.trim().is_empty())

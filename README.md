@@ -90,7 +90,11 @@ Search uses SearXNG at `http://127.0.0.1:18088` unless `CHARLOTTE_SEARCH_BACKEND
 
 The app skips hidden files and directories. It also skips symlinks. `[[wiki links]]` point at a note id. A bare stem matches one note when that stem is unique.
 
-The user config is `$XDG_CONFIG_HOME/runebook/config.toml`. When `XDG_CONFIG_HOME` is unset, the path is `~/.config/runebook/config.toml`. It stores the last vault, the microphone, the theme, the default note view, and `dock_layout`.
+The user config is `$XDG_CONFIG_HOME/runebook/config.toml`. When `XDG_CONFIG_HOME` is unset, the path is `~/.config/runebook/config.toml`. It stores the last vault, the last note, the microphone, the theme, the text size, the default note view, the editor choices, the autosave pace, and `dock_layout`.
+
+Settings groups those choices. Appearance holds the theme, the text size, and the note view. Editor holds line numbers, line wrap, and autosave. Capture holds the microphone, the speech model, the language, and mute. Models holds the keys, the host, and the model names. Vault reopens the last note when that note is still in the vault.
+
+Autosave `normal` waits 400 ms. `fast` waits 200 ms. `slow` waits 1 second. `manual` writes the note when you leave it or close the window. Speech `fast` uses `whisper-large-v3-turbo`. Speech `accurate` uses `whisper-large-v3`. An empty language lets Groq detect it.
 
 The file tree, the note, and the Archivist column are dock panels. Their names are `files`, `note`, and `archivist`. `dock_layout` stores that layout as JSON.
 

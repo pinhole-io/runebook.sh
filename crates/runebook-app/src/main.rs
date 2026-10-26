@@ -63,6 +63,7 @@ fn main() {
             let config = AppConfig::load().unwrap_or_default();
             let last = config.last_vault.clone();
             let theme = config.theme;
+            let text_size = config.text_size;
             gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -73,6 +74,7 @@ fn main() {
                 move |window, cx| {
                     theme::apply(cx);
                     Theme::change(theme_mode(theme), Some(window), cx);
+                    theme::apply_text_size(text_size, cx);
                     cx.new(|cx| Root::new(last, window, cx))
                 },
             )
@@ -152,11 +154,12 @@ impl Root {
 
     fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
         self.autosave_gen = self.autosave_gen.wrapping_add(1);
+        let Some(delay) = self.pane.as_ref().and_then(|pane| pane.autosave_delay()) else {
+            return;
+        };
         let generation = self.autosave_gen;
         cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(400))
-                .await;
+            cx.background_executor().timer(delay).await;
             this.update(cx, |this, cx| {
                 if this.autosave_gen == generation {
                     this.flush(cx);

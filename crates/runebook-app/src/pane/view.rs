@@ -5,26 +5,24 @@ use std::sync::{Arc, OnceLock};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable;
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
-use gpui_kit::component::input::{Editor, Enter, Escape, Input, InputContentType, InputState};
+use gpui_kit::component::input::{Editor, Enter, Escape, Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::radio::{Radio, RadioGroup};
 use gpui_kit::component::scroll::ScrollableElement;
-use gpui_kit::component::select::Select;
 use gpui_kit::component::toolbar::Toolbar;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme, Selectable, Sizable, Theme};
+use gpui_kit::component::{ActiveTheme, Selectable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, AppContext, ClickEvent, Context, Entity, Image, ImageFormat, Render, SharedString,
-    WeakEntity, Window, black, div, img, px, relative, svg,
+    App, AppContext, ClickEvent, Context, Image, ImageFormat, Render, SharedString, WeakEntity,
+    Window, black, div, img, px, relative, svg,
 };
 
 use super::{EditorPane, NameAction, NoteView, Prompt, TreeSelection};
 use crate::chrome::panel_header;
-use runebook::{NoteKind, ThemeChoice};
+use runebook::NoteKind;
 
 use crate::capture::{ScreenTarget, list_record_sources};
-use crate::{NewNote, OpenVault, Root, ToggleNoteView, on_root, theme_mode};
+use crate::{NewNote, OpenVault, Root, ToggleNoteView, on_root};
 
 pub(crate) fn toolbar(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
@@ -229,7 +227,7 @@ fn toggle_note_view(pane: &EditorPane, view: WeakEntity<Root>) -> impl IntoEleme
 
 pub(crate) fn note(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_kit::AnyElement {
     if pane.settings_open {
-        return settings_panel(pane, view, cx).into_any_element();
+        return super::settings::panel(pane, view, cx).into_any_element();
     }
     if pane.research.wizard_open() {
         return super::research::wizard(pane, view, cx).into_any_element();
@@ -449,141 +447,6 @@ fn settings_row(view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
                     cx.notify();
                 })),
         )
-}
-
-fn settings_panel(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
-    let muted = cx.theme().muted_foreground;
-    div()
-        .id("settings-panel")
-        .flex_1()
-        .h_full()
-        .min_w(px(0.0))
-        .min_h(px(0.0))
-        .overflow_y_scroll()
-        .p_4()
-        .child(
-            div()
-                .w_full()
-                .max_w(px(420.))
-                .flex()
-                .flex_col()
-                .gap_4()
-                .child(setting_label("Microphone", muted))
-                .child(microphone_field(pane, cx))
-                .child(setting_label("Theme", muted))
-                .child(theme_group(pane, view.clone()))
-                .child(setting_label("Note view", muted))
-                .child(note_view_group(pane, view))
-                .child(div().text_base().child("Models"))
-                .child(setting_label("Tool rounds", muted))
-                .child(text_setting(&pane.model_inputs.tool_rounds))
-                .child(setting_label("Groq API key", muted))
-                .child(secret_setting(&pane.model_inputs.groq_api_key))
-                .child(setting_label("OpenAI-compatible API key", muted))
-                .child(secret_setting(&pane.model_inputs.openai_api_key))
-                .child(setting_label("Hostname", muted))
-                .child(text_setting(&pane.model_inputs.openai_base_url))
-                .child(setting_label("Research model", muted))
-                .child(text_setting(&pane.model_inputs.openai_model))
-                .child(setting_label("Archivist model", muted))
-                .child(text_setting(&pane.model_inputs.archivist_model)),
-        )
-}
-
-fn text_setting(state: &Entity<InputState>) -> impl IntoElement {
-    Input::new(state).w_full()
-}
-
-fn secret_setting(state: &Entity<InputState>) -> impl IntoElement {
-    Input::new(state)
-        .w_full()
-        .content_type(InputContentType::Password)
-        .mask_toggle()
-}
-
-fn setting_label(text: &'static str, color: impl Into<gpui_kit::Hsla>) -> impl IntoElement {
-    div().text_base().text_color(color).child(text)
-}
-
-fn microphone_field(pane: &EditorPane, cx: &App) -> gpui_kit::AnyElement {
-    let Some(select) = pane.microphone_select.as_ref() else {
-        return microphone_loading(cx).into_any_element();
-    };
-    Select::new(select)
-        .id("microphone")
-        .w_full()
-        .cursor_pointer()
-        .into_any_element()
-}
-
-fn microphone_loading(cx: &App) -> impl IntoElement {
-    let border = cx.theme().border;
-    let muted = cx.theme().muted_foreground;
-    div()
-        .id("microphone")
-        .w_full()
-        .h(px(32.))
-        .px_2()
-        .flex()
-        .items_center()
-        .rounded_md()
-        .border_1()
-        .border_color(border)
-        .text_base()
-        .text_color(muted)
-        .child("loading...")
-}
-
-fn theme_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
-    let selected = match pane.theme {
-        ThemeChoice::Dark => 0,
-        ThemeChoice::Light => 1,
-    };
-    RadioGroup::vertical("theme")
-        .selected_index(Some(selected))
-        .child(Radio::new("theme-dark").label("Dark").cursor_pointer())
-        .child(Radio::new("theme-light").label("Light").cursor_pointer())
-        .on_change(move |index, window, app| {
-            let choice = match *index {
-                0 => ThemeChoice::Dark,
-                1 => ThemeChoice::Light,
-                _ => return,
-            };
-            Theme::change(theme_mode(choice), Some(window), app);
-            view.update(app, |root, cx| {
-                if let Some(pane) = root.pane.as_mut() {
-                    pane.choose_theme(choice);
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-}
-
-fn note_view_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
-    let selected = match pane.default_note_view {
-        NoteView::Preview => 0,
-        NoteView::Source => 1,
-    };
-    RadioGroup::vertical("note-view")
-        .selected_index(Some(selected))
-        .child(Radio::new("view-preview").label("Preview").cursor_pointer())
-        .child(Radio::new("view-source").label("Source").cursor_pointer())
-        .on_change(move |index, window, app| {
-            let next = match *index {
-                0 => NoteView::Preview,
-                1 => NoteView::Source,
-                _ => return,
-            };
-            // The click already holds this window. Do not look the window up again.
-            view.update(app, |root, cx| {
-                if let Some(pane) = root.pane.as_mut() {
-                    pane.choose_note_view(next, window, cx);
-                }
-                cx.notify();
-            })
-            .ok();
-        })
 }
 
 fn file_list(

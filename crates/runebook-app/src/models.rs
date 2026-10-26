@@ -55,6 +55,35 @@ pub(crate) fn accept_tool_rounds(text: &str) -> Option<u32> {
     if value < 1 { None } else { Some(value) }
 }
 
+/// What to do with the speech-language field.
+pub(crate) enum LanguageEdit {
+    /// Store this value. Empty means Groq detects the language.
+    Set(String),
+    /// The user is still typing a two-letter code.
+    Pending,
+    /// The text is not a language code.
+    Reject,
+}
+
+/// Accept a speech language. Empty and `auto` clear the hint.
+///
+/// A two-letter code is stored in lowercase. One letter waits.
+pub(crate) fn accept_language(text: &str) -> LanguageEdit {
+    let text = text.trim();
+    if text.is_empty() || text.eq_ignore_ascii_case("auto") {
+        return LanguageEdit::Set(String::new());
+    }
+    let lower = text.to_ascii_lowercase();
+    if !lower.bytes().all(|byte| byte.is_ascii_alphabetic()) {
+        return LanguageEdit::Reject;
+    }
+    match lower.len() {
+        1 => LanguageEdit::Pending,
+        2 => LanguageEdit::Set(lower),
+        _ => LanguageEdit::Reject,
+    }
+}
+
 /// Saved text, then `env_value`, then `fallback`.
 pub(crate) fn resolve_text(saved: &str, env_value: Option<&str>, fallback: &str) -> String {
     let saved = saved.trim();
@@ -174,7 +203,10 @@ pub(crate) fn redact_secrets<'a>(text: &str, secrets: impl IntoIterator<Item = &
 
 #[cfg(test)]
 mod tests {
-    use super::{OPENAI_KEY_ENVS, accept_tool_rounds, pick_env, redact_secrets, resolve_secret};
+    use super::{
+        LanguageEdit, OPENAI_KEY_ENVS, accept_language, accept_tool_rounds, pick_env,
+        redact_secrets, resolve_secret,
+    };
 
     #[test]
     fn an_empty_saved_key_uses_the_environment_value() {
@@ -193,6 +225,16 @@ mod tests {
         assert_eq!(accept_tool_rounds("0"), None);
         assert_eq!(accept_tool_rounds(""), None);
         assert_eq!(accept_tool_rounds("6"), Some(6));
+    }
+
+    #[test]
+    fn a_speech_language_is_a_two_letter_code() {
+        assert!(matches!(accept_language(""), LanguageEdit::Set(value) if value.is_empty()));
+        assert!(matches!(accept_language("auto"), LanguageEdit::Set(value) if value.is_empty()));
+        assert!(matches!(accept_language("e"), LanguageEdit::Pending));
+        assert!(matches!(accept_language("EN"), LanguageEdit::Set(value) if value == "en"));
+        assert!(matches!(accept_language("english"), LanguageEdit::Reject));
+        assert!(matches!(accept_language("e1"), LanguageEdit::Reject));
     }
 
     #[test]

@@ -110,7 +110,17 @@ impl Drop for VoiceCapture {
 /// Stop `capture`, encode a WAV, and transcribe it.
 ///
 /// An empty clip returns an error and does not call Groq.
-pub(crate) fn voice_to_text(capture: VoiceCapture, key: String) -> Result<VoiceOutcome, String> {
+/// Model name and optional language sent with one transcript request.
+pub(crate) struct SpeechRequest {
+    pub model: String,
+    pub language: Option<String>,
+}
+
+pub(crate) fn voice_to_text(
+    capture: VoiceCapture,
+    key: String,
+    speech: SpeechRequest,
+) -> Result<VoiceOutcome, String> {
     let audio = capture.stop()?;
     if audio.samples.is_empty() {
         return Err("The recording was empty".to_string());
@@ -120,7 +130,7 @@ pub(crate) fn voice_to_text(capture: VoiceCapture, key: String) -> Result<VoiceO
         return Err(MISSING_GROQ_KEY.to_string());
     }
     let wav = encode_wav(&audio.samples, audio.sample_rate)?;
-    let text = transcribe_wav(&wav, &key)?;
+    let text = transcribe_wav(&wav, &key, &speech)?;
     Ok(VoiceOutcome {
         text,
         truncated: audio.truncated,
@@ -302,7 +312,7 @@ pub(crate) fn encode_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, S
     Ok(cursor.into_inner())
 }
 
-fn transcribe_wav(wav: &[u8], api_key: &str) -> Result<String, String> {
+fn transcribe_wav(wav: &[u8], api_key: &str, speech: &SpeechRequest) -> Result<String, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
@@ -311,10 +321,23 @@ fn transcribe_wav(wav: &[u8], api_key: &str) -> Result<String, String> {
         .file_name("audio.wav")
         .mime_str("audio/wav")
         .map_err(|_| "Could not encode the recording".to_string())?;
-    let form = multipart::Form::new()
+    let model = if speech.model.trim().is_empty() {
+        GROQ_MODEL
+    } else {
+        speech.model.as_str()
+    };
+    let mut form = multipart::Form::new()
         .part("file", part)
-        .text("model", GROQ_MODEL)
+        .text("model", model.to_string())
         .text("response_format", "json");
+    if let Some(language) = speech
+        .language
+        .as_deref()
+        .map(str::trim)
+        .filter(|language| !language.is_empty())
+    {
+        form = form.text("language", language.to_string());
+    }
     let response = client
         .post(GROQ_URL)
         .bearer_auth(api_key)

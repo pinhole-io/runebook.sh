@@ -6,9 +6,12 @@
 
 use std::rc::Rc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use gpui_kit::App;
 use gpui_kit::component::{Theme, ThemeConfig, ThemeSet};
+use gpui_kit::px;
+use runebook::TextSize;
 
 const RAW: &str = include_str!("../../../themes/runebook.json");
 
@@ -27,13 +30,44 @@ pub(crate) fn theme_set() -> &'static ThemeSet {
     SET.get_or_init(|| serde_json::from_str(RAW).expect("themes/runebook.json is a theme set"))
 }
 
-/// Body size from the theme file, in pixels.
+/// Body size chosen in Settings. `0` means the theme file has not been scaled.
+static NOTE_BODY: AtomicU32 = AtomicU32::new(0);
+
+/// Body and mono sizes for `size`, in pixels.
+///
+/// Medium is the theme file. Small is 2 px smaller. Large is 4 px and 3 px larger.
+pub(crate) fn text_size_px(size: TextSize) -> (f32, f32) {
+    let (body, mono) = theme_font_px();
+    match size {
+        TextSize::Small => ((body - 2.).max(10.), (mono - 2.).max(10.)),
+        TextSize::Medium => (body, mono),
+        TextSize::Large => (body + 4., mono + 3.),
+    }
+}
+
+/// Apply `size` to the window theme and the note preview.
+pub(crate) fn apply_text_size(size: TextSize, cx: &mut App) {
+    let (body, mono) = text_size_px(size);
+    NOTE_BODY.store(body as u32, Ordering::Relaxed);
+    Theme::update(cx, |theme| {
+        theme.font_size = px(body);
+        theme.mono_font_size = px(mono);
+    });
+}
+
+/// Body size from Settings, or from the theme file before Settings applies.
 pub(crate) fn body_font_size() -> f32 {
-    theme_set()
-        .themes
-        .first()
-        .and_then(|theme| theme.font_size)
-        .unwrap_or(14.)
+    match NOTE_BODY.load(Ordering::Relaxed) {
+        0 => theme_font_px().0,
+        size => size as f32,
+    }
+}
+
+fn theme_font_px() -> (f32, f32) {
+    let theme = theme_set().themes.first();
+    let body = theme.and_then(|item| item.font_size).unwrap_or(14.);
+    let mono = theme.and_then(|item| item.mono_font_size).unwrap_or(13.);
+    (body, mono)
 }
 
 /// Note spacing from the first theme. Both modes use the same numbers.
@@ -103,7 +137,8 @@ pub(crate) fn apply(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{drop_missing_fonts, theme_set, theme_spacings};
+    use super::{drop_missing_fonts, text_size_px, theme_set, theme_spacings};
+    use runebook::TextSize;
 
     #[test]
     fn the_theme_file_parses() {
@@ -140,6 +175,14 @@ mod tests {
             assert_eq!(spacing.heading_1, 1.4);
             assert_eq!(spacing.heading_2, 1.2);
         }
+    }
+
+    #[test]
+    fn text_size_scales_around_the_theme_file() {
+        let (body, mono) = text_size_px(TextSize::Medium);
+        assert_eq!((body, mono), (14., 13.));
+        assert_eq!(text_size_px(TextSize::Small), (12., 11.));
+        assert_eq!(text_size_px(TextSize::Large), (18., 16.));
     }
 
     #[test]
