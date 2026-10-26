@@ -124,11 +124,9 @@ if [[ "${ok}" -ne 1 ]]; then
   exit 1
 fi
 
-plain="$(curl -fsSL --max-time 15 -A "Mozilla/5.0" "https://${DOMAIN}" | tr -d '\r\n')"
-expected="curl -fsSL https://${DOMAIN} | sh"
-if [[ "${plain}" != "${expected}" ]]; then
-  echo "error: a browser request did not return the curl command" >&2
-  echo "got: ${plain}" >&2
+page="$(curl -fsSL --max-time 15 -A "Mozilla/5.0" "https://${DOMAIN}")"
+if [[ "${page}" != *"<title>Runebook</title>"* ]] || [[ "${page}" != *"curl -fsSL https://${DOMAIN} | sh"* ]]; then
+  echo "error: a browser request did not return the frontpage" >&2
   exit 1
 fi
 
