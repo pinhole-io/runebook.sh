@@ -14,9 +14,7 @@ use superglue::tools::{Tool, ToolContextPolicy, ToolInvokeError, ToolSpec};
 use super::VaultChange;
 
 const READ_CAP: usize = 32 * 1024;
-const SEARCH_HITS: usize = 20;
 const LIST_CAP: usize = 400;
-const EXCERPT_CAP: usize = 120;
 
 #[derive(Debug)]
 struct ToolOutcome {
@@ -55,7 +53,7 @@ fn operations() -> &'static [Operation] {
         },
         Operation {
             name: "search_notes",
-            description: "Find notes whose text contains the query. Each hit includes a short excerpt.",
+            description: "Find notes whose body contains the query. Each hit includes a short excerpt.",
             schema: || {
                 schema(
                     json!({
@@ -205,25 +203,14 @@ fn search_notes(vault: &Vault, args: &Value) -> Result<ToolOutcome, String> {
     if query.is_empty() {
         return Err("query is empty".to_string());
     }
-    let needle = query.to_lowercase();
-    let mut hits = Vec::new();
-    let mut truncated = false;
-    for id in note_ids(vault)? {
-        let text = vault.read(&id).map_err(tool_error)?;
-        if !text.to_lowercase().contains(&needle) {
-            continue;
-        }
-        if hits.len() == SEARCH_HITS {
-            truncated = true;
-            break;
-        }
-        hits.push(json!({
-            "id": id.as_str(),
-            "excerpt": excerpt(&text, &needle),
-        }));
-    }
+    let found = vault.search(query).map_err(tool_error)?;
+    let hits: Vec<Value> = found
+        .hits
+        .iter()
+        .map(|hit| json!({ "id": hit.id.as_str(), "excerpt": hit.excerpt }))
+        .collect();
     Ok(ToolOutcome {
-        value: json!({ "query": query, "hits": hits, "truncated": truncated }),
+        value: json!({ "query": query, "hits": hits, "truncated": found.truncated }),
         changes: Vec::new(),
     })
 }
@@ -297,22 +284,6 @@ fn delete_folder(vault: &Vault, args: &Value) -> Result<ToolOutcome, String> {
     })
 }
 
-fn note_ids(vault: &Vault) -> Result<Vec<NoteId>, String> {
-    let tree = vault.tree().map_err(tool_error)?;
-    let mut ids = Vec::new();
-    collect_notes(&tree.children, &mut ids);
-    Ok(ids)
-}
-
-fn collect_notes(entries: &[TreeEntry], ids: &mut Vec<NoteId>) {
-    for entry in entries {
-        match entry {
-            TreeEntry::Note { id, .. } => ids.push(id.clone()),
-            TreeEntry::Folder { children, .. } => collect_notes(children, ids),
-        }
-    }
-}
-
 /// Returns true when the walk stopped at [`LIST_CAP`].
 fn push_entries(entries: &[TreeEntry], left: &mut usize, out: &mut Vec<Value>) -> bool {
     for entry in entries {
@@ -341,15 +312,6 @@ fn push_entries(entries: &[TreeEntry], left: &mut usize, out: &mut Vec<Value>) -
         }
     }
     false
-}
-
-fn excerpt(text: &str, needle: &str) -> String {
-    for line in text.lines() {
-        if line.to_lowercase().contains(needle) {
-            return clip_chars(line, EXCERPT_CAP);
-        }
-    }
-    clip_chars(text, EXCERPT_CAP)
 }
 
 fn clip_chars(text: &str, max_chars: usize) -> String {

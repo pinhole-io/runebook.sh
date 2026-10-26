@@ -224,7 +224,7 @@ pub(crate) fn install(
             area.set_center(default_layout(window, cx), window, cx);
         });
     }
-    // The dock floor is 100px. That can hide the New note and New folder icons.
+    // The dock floor is 100px. That can hide the New note, New folder, and Search icons.
     // DockLayout cannot raise one slot's floor, so a finished drag is widened here.
     cx.subscribe_in(&area, window, |_this, area, event, window, cx| {
         if !matches!(event, DockEvent::LayoutChanged) {

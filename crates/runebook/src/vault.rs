@@ -15,6 +15,8 @@ use crate::note::{FolderId, NoteId, validate_relative, vault_join};
 
 const SCHEMA_VERSION: u32 = 1;
 const VAULT_FILE: &str = "runebook.toml";
+const SEARCH_HITS: usize = 20;
+const EXCERPT_CAP: usize = 120;
 
 /// One folder of markdown notes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +30,24 @@ pub struct Vault {
 pub struct VaultTree {
     /// Children of the vault root, folders first.
     pub children: Vec<TreeEntry>,
+}
+
+/// One note whose body contains a search query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    /// Note id.
+    pub id: NoteId,
+    /// First matching line, clipped to 120 characters.
+    pub excerpt: String,
+}
+
+/// Notes that match a body search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteSearch {
+    /// Matching notes. This holds at most 20 hits.
+    pub hits: Vec<SearchHit>,
+    /// `true` when more notes match than [`Self::hits`] holds.
+    pub truncated: bool,
 }
 
 /// A folder or a note in [`VaultTree`].
@@ -183,6 +203,46 @@ impl Vault {
             notes.insert(id, targets);
         }
         Ok(VaultIndex::from_notes(notes))
+    }
+
+    /// Find notes whose body contains `query`.
+    ///
+    /// The match ignores case. The kind header is not part of the body.
+    /// An empty query returns no hits. At most 20 hits are returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] or [`Error::NotUtf8`] when a note cannot be read.
+    pub fn search(&self, query: &str) -> Result<NoteSearch> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(NoteSearch {
+                hits: Vec::new(),
+                truncated: false,
+            });
+        }
+        let needle = query.to_lowercase();
+        let tree = self.tree()?;
+        let mut ids = Vec::new();
+        collect_ids(&tree.children, &mut ids);
+        let mut hits = Vec::new();
+        let mut truncated = false;
+        for id in ids {
+            let text = self.read(&id)?;
+            let (_, body) = kind::decode_note(&text);
+            if !body.to_lowercase().contains(&needle) {
+                continue;
+            }
+            if hits.len() == SEARCH_HITS {
+                truncated = true;
+                break;
+            }
+            hits.push(SearchHit {
+                id,
+                excerpt: excerpt(body, &needle),
+            });
+        }
+        Ok(NoteSearch { hits, truncated })
     }
 
     /// List folders and notes. Hidden paths and symlinks are skipped.
@@ -429,6 +489,28 @@ fn read_note_kind(path: &Path) -> Result<NoteKind> {
         source,
     })?;
     Ok(kind::kind_from_prefix(&buf[..read]))
+}
+
+fn excerpt(text: &str, needle: &str) -> String {
+    for line in text.lines() {
+        if line.to_lowercase().contains(needle) {
+            return clip_chars(line, EXCERPT_CAP);
+        }
+    }
+    clip_chars(text, EXCERPT_CAP)
+}
+
+fn clip_chars(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    let end = text
+        .char_indices()
+        .nth(max_chars)
+        .map(|(index, _)| index)
+        .unwrap_or(text.len());
+    format!("{}…", &text[..end])
 }
 
 fn collect_ids(entries: &[TreeEntry], ids: &mut Vec<NoteId>) {

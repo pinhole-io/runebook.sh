@@ -393,6 +393,10 @@ fn row_actions(
 pub(crate) fn files(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let selected = pane.tree_selection.clone();
     let entries = pane.tree.children.clone();
+    let query_live = pane
+        .search
+        .as_ref()
+        .is_some_and(|input| !input.read(cx).value().trim().is_empty());
     let sidebar = cx.theme().sidebar;
     let foreground = cx.theme().sidebar_foreground;
     div()
@@ -405,37 +409,18 @@ pub(crate) fn files(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl
         .flex_col()
         .bg(sidebar)
         .text_color(foreground)
-        .child(create_actions(view.clone(), cx))
-        .child(
-            div()
-                .id("file-list")
-                .flex_1()
-                .min_h(px(0.))
-                .py_1()
-                .can_drop(|value, _, _| {
-                    value
-                        .downcast_ref::<NoteMove>()
-                        .is_some_and(|drag| !drag.id.parent().is_root())
-                })
-                .on_drop(on_root(&view, |this, drag: &NoteMove, _, cx| {
-                    if let Some(pane) = this.pane.as_mut() {
-                        pane.move_note(&drag.id, &runebook::FolderId::root());
-                    }
-                    cx.notify();
-                }))
-                .children(entries.into_iter().map(|entry| {
-                    render_entry(
-                        entry,
-                        0,
-                        &selected,
-                        &pane.collapsed,
-                        pane.prompt.as_ref(),
-                        view.clone(),
-                        cx,
-                    )
-                }))
-                .overflow_y_scrollbar(),
-        )
+        .child(create_actions(pane, view.clone(), cx))
+        .when_some(pane.search.clone(), |column, input| {
+            column.child(search_field(&input, view.clone()))
+        })
+        .child(file_list(
+            pane,
+            &entries,
+            &selected,
+            query_live,
+            view.clone(),
+            cx,
+        ))
         .child(super::research::cards(pane, view.clone(), cx))
         .child(settings_row(view, cx))
 }
@@ -601,13 +586,131 @@ fn note_view_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
         })
 }
 
-fn create_actions(view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
+fn file_list(
+    pane: &EditorPane,
+    entries: &[runebook::TreeEntry],
+    selected: &TreeSelection,
+    query_live: bool,
+    view: WeakEntity<Root>,
+    cx: &App,
+) -> impl IntoElement {
+    let collapsed = &pane.collapsed;
+    let prompt = pane.prompt.as_ref();
+    div()
+        .id("file-list")
+        .flex_1()
+        .min_h(px(0.))
+        .py_1()
+        .when(!query_live, |list| {
+            list.can_drop(|value, _, _| {
+                value
+                    .downcast_ref::<NoteMove>()
+                    .is_some_and(|drag| !drag.id.parent().is_root())
+            })
+            .on_drop(on_root(&view, |this, drag: &NoteMove, _, cx| {
+                if let Some(pane) = this.pane.as_mut() {
+                    pane.move_note(&drag.id, &runebook::FolderId::root());
+                }
+                cx.notify();
+            }))
+            .children(
+                entries.iter().cloned().map(|entry| {
+                    render_entry(entry, 0, selected, collapsed, prompt, view.clone(), cx)
+                }),
+            )
+        })
+        .when(query_live, |list| {
+            let empty = pane.search_hits.is_empty();
+            let truncated = pane.search_truncated;
+            list.children(
+                pane.search_hits
+                    .iter()
+                    .map(|hit| search_hit(hit, view.clone(), cx)),
+            )
+            .when(empty, |list| {
+                list.child(search_status("No notes match", cx))
+            })
+            .when(truncated, |list| {
+                list.child(search_status("More notes match", cx))
+            })
+        })
+        .overflow_y_scrollbar()
+}
+
+fn search_field(input: &gpui_kit::Entity<InputState>, view: WeakEntity<Root>) -> impl IntoElement {
+    div()
+        .id("vault-search")
+        .px_2()
+        .py_1()
+        .flex_shrink_0()
+        .on_action(on_root(&view, |this, _: &Escape, _, cx| {
+            cx.stop_propagation();
+            if let Some(pane) = this.pane.as_mut() {
+                pane.close_search();
+            }
+            cx.notify();
+        }))
+        .child(Input::new(input).small().cleanable(true).w_full())
+}
+
+fn search_hit(hit: &runebook::SearchHit, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
+    let id = hit.id.clone();
+    let name = hit.id.name().to_string();
+    let excerpt = hit.excerpt.clone();
+    let muted = cx.theme().muted_foreground;
+    let hover = cx.theme().sidebar_accent;
+    let key = SharedString::from(format!("search-hit-{}", id.as_str()));
+    div()
+        .id(key)
+        .px_2()
+        .py_1()
+        .min_h(px(28.))
+        .w_full()
+        .min_w(px(0.))
+        .flex()
+        .flex_col()
+        .justify_center()
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover))
+        .child(
+            div()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis_middle()
+                .child(name),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(muted)
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis_middle()
+                .child(excerpt),
+        )
+        .on_click(on_root(&view, move |this, _: &ClickEvent, window, cx| {
+            this.open_note(id.clone(), window, cx);
+        }))
+}
+
+fn search_status(text: &'static str, cx: &App) -> impl IntoElement {
+    div()
+        .px_2()
+        .py_1()
+        .text_sm()
+        .text_color(cx.theme().muted_foreground)
+        .child(text)
+}
+
+fn create_actions(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let border = cx.theme().sidebar_border;
+    let searching = pane.search.is_some();
     panel_header(
         div()
             .id("tree-header")
+            .px_2()
+            .gap_2()
             .justify_center()
-            .px_1()
             .whitespace_nowrap(),
         border,
     )
@@ -631,7 +734,7 @@ fn create_actions(view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
                 }
             }),
     )
-    .child(div().mx_2().h(px(16.)).w(px(1.)).flex_shrink_0().bg(border))
+    .child(header_rule(border))
     .child(
         Button::new("new-folder")
             .ghost()
@@ -648,6 +751,28 @@ fn create_actions(view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
                 cx.notify();
             })),
     )
+    .child(header_rule(border))
+    .child(
+        Button::new("search-vault")
+            .ghost()
+            .small()
+            .flex_shrink_0()
+            .cursor_pointer()
+            .icon(IconName::Search)
+            .selected(searching)
+            .accessibility_label("Search vault")
+            .tooltip("Search vault")
+            .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
+                if let Some(pane) = this.pane.as_mut() {
+                    pane.toggle_search(window, cx);
+                }
+                cx.notify();
+            })),
+    )
+}
+
+fn header_rule(border: gpui_kit::Hsla) -> impl IntoElement {
+    div().h(px(16.)).w(px(1.)).flex_shrink_0().bg(border)
 }
 
 fn new_kind_item(view: gpui_kit::WeakEntity<Root>, kind: NoteKind) -> PopupMenuItem {

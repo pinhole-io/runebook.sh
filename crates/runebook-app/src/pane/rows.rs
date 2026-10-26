@@ -245,6 +245,23 @@ fn row_end(lines: &[Line<'_>], start: usize) -> usize {
     paragraph_end(lines, start)
 }
 
+/// A heading that follows body text or a table needs room above it.
+///
+/// The preview draws each block as its own row, so the gap lives on the row.
+/// The first row stays flush. A heading that follows a heading stays tight.
+pub(super) fn heading_needs_room(previous: Option<&str>, row: &str) -> bool {
+    let Some(previous) = previous else {
+        return false;
+    };
+    row_is_heading(row) && !row_is_heading(previous)
+}
+
+fn row_is_heading(row: &str) -> bool {
+    row.lines()
+        .next()
+        .is_some_and(|line| is_heading(line.trim_end_matches('\r')))
+}
+
 /// Left padding, in pixels, for a nested list item.
 pub(super) fn list_pad(row: &str) -> f32 {
     let Some(line) = row.lines().next() else {
@@ -873,6 +890,28 @@ mod tests {
     fn empty_note_has_no_rows() {
         assert!(split_rows("").is_empty());
         assert!(split_rows("\n\n").is_empty());
+    }
+
+    #[test]
+    fn a_heading_after_a_table_needs_room() {
+        let source = "| A | B |\n| --- | --- |\n\n## Next\n";
+        let rows = row_texts(source);
+        assert!(heading_needs_room(Some(rows[0]), rows[1]));
+    }
+
+    #[test]
+    fn a_heading_after_text_needs_room() {
+        assert!(heading_needs_room(Some("A paragraph."), "## Next"));
+    }
+
+    #[test]
+    fn the_first_heading_stays_flush() {
+        assert!(!heading_needs_room(None, "# Title"));
+    }
+
+    #[test]
+    fn a_heading_after_a_heading_stays_close() {
+        assert!(!heading_needs_room(Some("# One"), "## Two"));
     }
 
     #[test]

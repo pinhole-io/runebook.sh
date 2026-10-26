@@ -17,7 +17,7 @@ use std::time::Duration;
 use gpui_kit::{
     Anchor, AnyElement, App, Bounds, ClickEvent, Image, IntoElement, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, RenderImage, SharedString, StyleRefinement, WeakEntity,
-    canvas, div, img, px, svg,
+    canvas, div, img, px, rems, svg,
 };
 use runebook::parse_task_line;
 
@@ -94,7 +94,11 @@ pub(super) fn surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> im
             note: note.clone(),
         });
     let mut body: Vec<AnyElement> = Vec::with_capacity(slices.len() + 1);
-    for (index, slice) in slices.into_iter().enumerate() {
+    for (index, slice) in slices.iter().enumerate() {
+        let room_before = super::rows::heading_needs_room(
+            index.checked_sub(1).map(|prev| slices[prev].as_str()),
+            slice,
+        );
         let selected = bounds.is_some_and(|(lo, hi)| index >= lo && index <= hi);
         let (checked, source) = row_source(&slice);
         let pad = super::rows::list_pad(&slice);
@@ -130,6 +134,7 @@ pub(super) fn surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> im
         let prepared = crate::anchors::prepare(&pane.latest, &source);
         let row = note_row(
             index,
+            room_before,
             RowText {
                 source: prepared.source,
                 hide_anchors: prepared.hide_anchors,
@@ -233,6 +238,7 @@ struct RowText {
 
 fn note_row(
     index: usize,
+    room_before: bool,
     text: RowText,
     paint: RowPaint,
     clip: Option<ClipPaint>,
@@ -252,12 +258,14 @@ fn note_row(
         checked,
     } = paint;
     let is_task = checked.is_some();
+    let before = crate::theme::note_spacing().heading_before;
     div()
         .id(SharedString::from(format!("note-row-{index}")))
         .w_full()
         .min_w(px(0.))
         .px_2()
         .py(px(2.))
+        .when(room_before, |row| row.mt(rems(before)))
         .flex()
         .items_start()
         .rounded_md()

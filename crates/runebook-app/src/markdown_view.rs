@@ -47,8 +47,7 @@ pub(crate) fn view(
     hide_anchors: bool,
 ) -> TextView {
     let shielded = shield_details(&source.into());
-    let styled = crate::html_style::style_html(&shielded);
-    let source = SharedString::from(space_before_headings(&styled));
+    let source = SharedString::from(crate::html_style::style_html(&shielded));
     let links = Arc::new(crate::anchors::link_urls(source.as_ref()));
     let images = Arc::new(images);
     let parser_links = Arc::clone(&links);
@@ -59,7 +58,6 @@ pub(crate) fn view(
         .markdown_block_parser(move |node, cx| parse_extra(node, cx, hide_anchors, &parser_links))
         .markdown_block_renderer("md-rule", render_rule)
         .markdown_block_renderer("md-skip", |_, _, _| div())
-        .markdown_block_renderer("md-gap", render_heading_gap)
         .markdown_block_renderer("md-link-def", render_link_def)
         .markdown_block_renderer("md-footnote", {
             let images = Arc::clone(&images);
@@ -198,79 +196,7 @@ fn details_code(code: &markdown_ast::Code) -> Option<MarkdownNode> {
     )
 }
 
-const HEADING_GAP: &str = "<div data-md-gap></div>";
-
-/// One rem of room before a heading that follows body text or a table.
-///
-/// The kit sizes the gap above a heading from the heading itself, and that
-/// gap stays short after a paragraph or a table. A heading that follows
-/// another heading stays on the kit's tighter step.
-fn space_before_headings(source: &str) -> String {
-    let mut out = String::with_capacity(source.len() + 32);
-    let mut fence: Option<char> = None;
-    let mut seen_content = false;
-    let mut last_was_heading = false;
-    for line in source.split_inclusive('\n') {
-        let body = line.trim_end_matches(['\n', '\r']);
-        let trimmed = body.trim();
-        let in_fence = fence.is_some();
-        if in_fence {
-            if closes_fence(trimmed, fence.unwrap_or('`')) {
-                fence = None;
-            }
-        } else if let Some(mark) = opens_fence(trimmed) {
-            fence = Some(mark);
-        }
-        let heading = !in_fence && is_atx_heading(body);
-        if heading && seen_content && !last_was_heading {
-            if !out.ends_with("\n\n") {
-                if !out.ends_with('\n') {
-                    out.push('\n');
-                }
-                out.push('\n');
-            }
-            out.push_str(HEADING_GAP);
-            out.push_str("\n\n");
-        }
-        out.push_str(line);
-        if !trimmed.is_empty() {
-            seen_content = true;
-            last_was_heading = heading;
-        }
-    }
-    out
-}
-
-fn is_atx_heading(line: &str) -> bool {
-    let hashes = line.bytes().take_while(|byte| *byte == b'#').count();
-    (1..=6).contains(&hashes)
-        && (line.len() == hashes || line.as_bytes().get(hashes) == Some(&b' '))
-}
-
-fn opens_fence(line: &str) -> Option<char> {
-    let mark = line.chars().next()?;
-    if mark != '`' && mark != '~' {
-        return None;
-    }
-    let run = line.chars().take_while(|ch| *ch == mark).count();
-    (run >= 3).then_some(mark)
-}
-
-fn closes_fence(line: &str, mark: char) -> bool {
-    let run = line.chars().take_while(|ch| *ch == mark).count();
-    run >= 3 && line[run..].trim().is_empty()
-}
-
-fn render_heading_gap(_: &MarkdownNode, _: &mut Window, _: &mut App) -> gpui_kit::AnyElement {
-    let spacing = crate::theme::note_spacing();
-    let extra = spacing.heading_before - spacing.paragraph_gap;
-    div().h(rems(extra.max(0.))).into_any_element()
-}
-
 fn html_block(html: &str) -> Option<MarkdownNode> {
-    if html.contains("data-md-gap") {
-        return Some(MarkdownNode::new("md-gap", ()).text(""));
-    }
     if let Some(items) = crate::html_style::def_list(html) {
         let text = items
             .iter()
@@ -1255,37 +1181,6 @@ After.
     fn a_curly_apostrophe_stays_prose() {
         let source = "Someone’s notes stay prose.\n";
         assert_eq!(shield_details(source), source);
-    }
-
-    #[test]
-    fn a_heading_after_text_gets_room() {
-        let spaced = space_before_headings("A paragraph.\n\n## Next\n");
-        assert!(spaced.contains("<div data-md-gap></div>\n\n## Next"));
-    }
-
-    #[test]
-    fn the_first_heading_stays_flush() {
-        let source = "# Title\n\nBody\n";
-        assert_eq!(space_before_headings(source), source);
-    }
-
-    #[test]
-    fn a_heading_after_a_heading_stays_close() {
-        let source = "# One\n\n## Two\n";
-        assert_eq!(space_before_headings(source), source);
-    }
-
-    #[test]
-    fn a_heading_inside_a_fence_stays_code() {
-        let spaced = space_before_headings("```\n# Not a heading\n```\n\n## Real\n");
-        assert!(spaced.contains("```\n# Not a heading\n```"));
-        assert!(spaced.contains("<div data-md-gap></div>\n\n## Real"));
-    }
-
-    #[test]
-    fn a_gap_marker_is_a_spacer() {
-        let node = html_block("<div data-md-gap></div>\n").expect("gap");
-        assert_eq!(node.name(), "md-gap");
     }
 
     #[test]

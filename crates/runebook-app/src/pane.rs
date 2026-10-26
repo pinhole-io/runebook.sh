@@ -29,8 +29,8 @@ use gpui_kit::{
     SharedString, Subscription, Window, div, px,
 };
 use runebook::{
-    AppConfig, Error, FolderId, NoteId, NoteKind, NoteViewChoice, ThemeChoice, Vault, VaultIndex,
-    VaultTree, decode_note, encode_note, toggle_task_line,
+    AppConfig, Error, FolderId, NoteId, NoteKind, NoteViewChoice, SearchHit, ThemeChoice, Vault,
+    VaultIndex, VaultTree, decode_note, encode_note, toggle_task_line,
 };
 
 use crate::Root;
@@ -119,6 +119,10 @@ pub(super) struct EditorPane {
     capture: Capture,
     prompt: Option<Prompt>,
     rename_blur: Option<Subscription>,
+    search: Option<Entity<InputState>>,
+    search_hits: Vec<SearchHit>,
+    search_truncated: bool,
+    search_watch: Option<Subscription>,
     _subscription: Subscription,
     archivist: crate::archivist::Panel,
     epoch: u64,
@@ -240,6 +244,8 @@ enum TimingState {
     Ready(playback::ClipTiming),
 }
 
+const SEARCH_NOTICE: &str = "Could not search the vault";
+
 impl EditorPane {
     pub(super) fn open(
         vault: Vault,
@@ -358,6 +364,10 @@ impl EditorPane {
             capture: Capture::Idle,
             prompt: None,
             rename_blur: None,
+            search: None,
+            search_hits: Vec::new(),
+            search_truncated: false,
+            search_watch: None,
             _subscription: subscription,
             archivist: crate::archivist::Panel::new(show_archivist, window, cx),
             epoch: next_epoch(),
@@ -1614,6 +1624,70 @@ impl EditorPane {
             window,
             cx,
         );
+    }
+
+    pub(super) fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+        if self.search.is_some() {
+            self.close_search();
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search notes"));
+        self.search_watch = Some(cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change)
+                && let Some(pane) = this.pane.as_mut()
+            {
+                pane.refresh_search(cx);
+                cx.notify();
+            }
+        }));
+        self.search = Some(input);
+        self.search_hits.clear();
+        self.search_truncated = false;
+        cx.defer_in(window, |root, window, cx| {
+            if let Some(pane) = root.pane.as_mut() {
+                pane.focus_search(window, cx);
+            }
+        });
+    }
+
+    pub(super) fn close_search(&mut self) {
+        self.search = None;
+        self.search_hits.clear();
+        self.search_truncated = false;
+        self.search_watch = None;
+    }
+
+    fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+        let Some(input) = &self.search else {
+            return;
+        };
+        input.focus_handle(cx).focus(window, cx);
+    }
+
+    fn refresh_search(&mut self, cx: &mut Context<Root>) {
+        let Some(input) = &self.search else {
+            return;
+        };
+        let query = input.read(cx).value().trim().to_string();
+        if query.is_empty() {
+            self.search_hits.clear();
+            self.search_truncated = false;
+            return;
+        }
+        match self.vault.search(&query) {
+            Ok(found) => {
+                self.search_hits = found.hits;
+                self.search_truncated = found.truncated;
+                if self.notice.as_deref() == Some(SEARCH_NOTICE) {
+                    self.notice = None;
+                }
+            }
+            Err(_) => {
+                self.search_hits.clear();
+                self.search_truncated = false;
+                self.notice = Some(SEARCH_NOTICE.to_string());
+            }
+        }
     }
 
     fn begin_create_folder(&mut self, window: &mut Window, cx: &mut Context<Root>) {

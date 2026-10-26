@@ -368,3 +368,47 @@ fn index_skips_symlinks() {
         .collect();
     assert_eq!(ids, vec!["inbox".to_string()]);
 }
+
+#[test]
+fn search_matches_the_body_and_caps_the_hits() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = Vault::create(dir.path(), "Notes").unwrap();
+    vault
+        .create_note(&note("journal/day"), "The Blue Lantern.")
+        .unwrap();
+    vault
+        .create_note(
+            &note("speech/talk"),
+            &encode_note(NoteKind::Speech, "No match here."),
+        )
+        .unwrap();
+
+    let empty = vault.search("  ").unwrap();
+    assert!(empty.hits.is_empty());
+    assert!(!empty.truncated);
+
+    let missed = vault.search("speech").unwrap();
+    assert!(missed.hits.is_empty());
+
+    let found = vault.search("blue lantern").unwrap();
+    assert_eq!(found.hits.len(), 1);
+    assert_eq!(found.hits[0].id, note("journal/day"));
+    assert!(found.hits[0].excerpt.to_lowercase().contains("blue"));
+    assert!(!found.truncated);
+
+    let long = format!("prefix {}", "x".repeat(200));
+    vault.create_note(&note("long"), &long).unwrap();
+    let clipped = vault.search("prefix").unwrap();
+    assert_eq!(clipped.hits[0].excerpt.chars().count(), 121);
+    assert!(clipped.hits[0].excerpt.starts_with("prefix "));
+    assert!(clipped.hits[0].excerpt.ends_with('…'));
+
+    for index in 0..21 {
+        vault
+            .create_note(&note(&format!("batch/{index}")), "shared token")
+            .unwrap();
+    }
+    let page = vault.search("shared token").unwrap();
+    assert_eq!(page.hits.len(), 20);
+    assert!(page.truncated);
+}
