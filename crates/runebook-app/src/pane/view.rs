@@ -31,7 +31,7 @@ pub(crate) fn toolbar(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> im
     Toolbar::new("vault-toolbar")
         .w_full()
         .pl_0()
-        .content(brand(pane))
+        .content(brand(pane, cx))
         .content(div().px_1().text_color(muted).child("-"))
         .child(
             Button::new("open-another")
@@ -293,7 +293,8 @@ fn source_surface(pane: &EditorPane) -> impl IntoElement {
         )
 }
 
-fn brand(pane: &EditorPane) -> impl IntoElement {
+fn brand(pane: &EditorPane, cx: &App) -> impl IntoElement {
+    let muted = cx.theme().muted_foreground;
     div()
         .flex()
         .items_center()
@@ -301,6 +302,7 @@ fn brand(pane: &EditorPane) -> impl IntoElement {
         .pr_2()
         .child(img(mark()).h(px(20.)).w(px(14.)).flex_shrink_0())
         .child(pane.vault.name().to_string())
+        .child(div().text_xs().text_color(muted).child("Alpha"))
 }
 
 fn mark() -> Arc<Image> {

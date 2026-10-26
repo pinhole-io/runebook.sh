@@ -421,7 +421,14 @@ impl Root {
                     .items_center()
                     .justify_center()
                     .gap_4()
-                    .child(div().text_2xl().child("Runebook"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_2xl().child("Runebook"))
+                            .child(div().text_color(muted).child("Alpha")),
+                    )
                     .child(
                         div()
                             .text_color(muted)

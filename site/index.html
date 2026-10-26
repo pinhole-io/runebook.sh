@@ -7,14 +7,55 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <header>
+    <div class="brand">
+      <img src="mark.svg" alt="" width="14" height="20">
+      <span>Runebook</span>
+      <span class="alpha">Alpha</span>
+    </div>
+    <code>curl -fsSL https://runebook.sh | sh</code>
+  </header>
   <main>
-    <p class="mark">Runebook</p>
-    <h1>A local markdown note app.</h1>
-    <p>The published binary is Linux x86_64. Install it with this command.</p>
+    <h1>Markdown notes in a folder.</h1>
+    <p>The notes stay simple. Use an agent for almost every change.</p>
+    <p>Runebook is a second brain that organizes itself. That part is not built. Basic notes work. The published binary is Linux x86_64.</p>
+    <p><a href="https://github.com/pinhole-io/runebook.sh">Pull requests</a> are welcome.</p>
+    <figure>
+      <img src="window.png" alt="Runebook window with the file tree and a Book note in preview.">
+      <figcaption>File tree and a Book note in preview.</figcaption>
+    </figure>
+    <section class="split">
+      <div>
+        <h2>What works</h2>
+        <dl>
+          <dt>Book</dt>
+          <dd>A markdown file with no kind header. Preview and source.</dd>
+          <dt>Speech</dt>
+          <dd>A transcript. Voice goes to Groq. The audio file is not kept.</dd>
+          <dt>Sight</dt>
+          <dd>A screen recording. The mp4 sits beside the note.</dd>
+          <dt>Deed</dt>
+          <dd>A task list. A preview checkbox writes that line.</dd>
+          <dt>Research</dt>
+          <dd>A question, a plan, then an investigation.</dd>
+          <dt>Archivist</dt>
+          <dd>A column that can add, change, or delete a note.</dd>
+          <dt>Links</dt>
+          <dd><code>[[note]]</code> points at a note id.</dd>
+        </dl>
+      </div>
+      <figure>
+        <img src="archivist.png" alt="The Archivist column open beside a note.">
+        <figcaption>The Archivist column beside a note.</figcaption>
+      </figure>
+    </section>
+  </main>
+  <footer>
+    <h2>Install</h2>
+    <p>Linux x86_64. The command installs <code>runebook</code> in <code>~/.local/bin</code>.</p>
     <pre><code>curl -fsSL https://runebook.sh | sh</code></pre>
-    <p>The command installs <code>runebook</code> in <code>~/.local/bin</code>.</p>
     <p>Remove the app with this command. The vault stays on disk.</p>
     <pre><code>curl -fsSL https://runebook.sh/uninstall | sh</code></pre>
-  </main>
+  </footer>
 </body>
 </html>
