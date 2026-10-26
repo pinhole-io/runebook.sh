@@ -1,0 +1,64 @@
+:root {
+  color-scheme: dark;
+  --bg: #14120e;
+  --ink: #f3efe6;
+  --muted: #b7ad9e;
+  --line: #3a342c;
+  --code: #1e1a15;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.5 "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+}
+
+main {
+  max-width: 38rem;
+  margin: 0 auto;
+  padding: 12vh 1.5rem 4rem;
+}
+
+.mark {
+  margin: 0 0 1.5rem;
+  color: var(--muted);
+  font: 0.75rem/1 ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0 0 1rem;
+  font-size: 2.4rem;
+  font-weight: 500;
+  line-height: 1.15;
+}
+
+p {
+  margin: 0 0 1rem;
+}
+
+pre {
+  margin: 0 0 1.5rem;
+  padding: 1rem 1.1rem;
+  overflow-x: auto;
+  background: var(--code);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+code {
+  font: 0.9rem/1.4 ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+}
+
+p code {
+  padding: 0.1rem 0.35rem;
+  background: var(--code);
+  border-radius: 4px;
+}

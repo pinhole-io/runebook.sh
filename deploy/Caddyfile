@@ -1,4 +1,4 @@
-# Public install host. curl receives the script. Every other client receives the command.
+# Public install host. curl receives the script. A browser receives the frontpage.
 runebook.sh {
 	handle /dl/* {
 		root * /srv/runebook
@@ -33,10 +33,13 @@ runebook.sh {
 	}
 
 	handle {
-		header {
-			Content-Type "text/plain; charset=utf-8"
-			Cache-Control "no-store"
+		reverse_proxy https://pages.runebook.sh {
+			header_up Host pages.runebook.sh
+			@github header Location *github.io*
+			handle_response @github {
+				header Location "https://runebook.sh{http.request.uri}"
+				copy_response
+			}
 		}
-		respond "curl -fsSL https://runebook.sh | sh" 200
 	}
 }
