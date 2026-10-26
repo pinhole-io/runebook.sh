@@ -79,7 +79,7 @@ pub(crate) fn render_block(node: &MarkdownNode, _: &mut Window, cx: &mut App) ->
 }
 
 fn note(message: impl Into<SharedString>) -> AnyElement {
-    div().text_sm().child(message.into()).into_any_element()
+    div().text_base().child(message.into()).into_any_element()
 }
 
 fn shown(cx: &mut App, source: &str, dark: bool) -> Shown {

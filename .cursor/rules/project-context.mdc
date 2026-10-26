@@ -41,6 +41,7 @@ kind: speech
 - Skip hidden paths and symlinks. Do not follow a symlink out of the vault.
 - There is no sidecar database. The index is rebuilt from the files.
 - User config is `$XDG_CONFIG_HOME/runebook/config.toml`. It stores `last_vault`, `microphone`, `theme`, `note_view`, `dock_layout`, `tool_rounds`, and the model fields. An empty model field uses the matching environment variable.
+- `themes/runebook.json` sets the UI font, the mono font, the radius, and the main colors. The app loads that file at startup.
 
 ## Links
 

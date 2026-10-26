@@ -2329,7 +2329,12 @@ fn prompt_record_source(root: &mut Root, window: &mut Window, cx: &mut Context<R
             .flex_col()
             .gap_1();
         if list_failed {
-            column = column.child(div().text_sm().text_color(danger).child(WINDOW_LIST_ERROR));
+            column = column.child(
+                div()
+                    .text_base()
+                    .text_color(danger)
+                    .child(WINDOW_LIST_ERROR),
+            );
         }
         for (index, (label, target)) in rows.iter().cloned().enumerate() {
             column = column.child(record_source_button(view.clone(), index, label, target));
@@ -2412,7 +2417,7 @@ fn open_create_dialog(
                     .gap_2()
                     .child(Input::new(&input).w_full())
                     .when_some(message, |column, message| {
-                        column.child(div().text_sm().text_color(danger).child(message))
+                        column.child(div().text_base().text_color(danger).child(message))
                     }),
             )
             .on_ok(move |_event, window, cx| {

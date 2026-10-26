@@ -37,7 +37,7 @@ pub(crate) fn column(
         .bg(sidebar)
         .text_color(foreground)
         .child(
-            panel_header(div().id("archivist-header").px_2().text_sm(), border)
+            panel_header(div().id("archivist-header").px_2().text_base(), border)
                 .child("Archivist")
                 .child(div().flex_1())
                 .child(hide_button(view.clone())),
@@ -100,12 +100,12 @@ fn transcript(
                         .pb_4()
                         .flex()
                         .flex_col()
-                        .gap_4()
+                        .gap_2()
                         .when(empty, |log| {
                             log.child(
                                 div()
-                                    .px_3()
-                                    .text_sm()
+                                    .px_2()
+                                    .text_base()
                                     .text_color(muted)
                                     .child("Ask the Archivist to add, change, or delete a note."),
                             )
@@ -121,7 +121,7 @@ fn transcript(
                             log.child(live_block(&panel.live_rendered, muted))
                         })
                         .when(busy, |log| {
-                            log.child(div().px_3().text_sm().text_color(muted).child("Working…"))
+                            log.child(div().px_2().text_base().text_color(muted).child("Working…"))
                         }),
                 ),
         )
@@ -148,7 +148,7 @@ fn line_block(index: usize, line: &super::Line, muted: Hsla, danger: Hsla) -> An
             let thinking = thinking.clone();
             let body = body.clone();
             div()
-                .px_3()
+                .px_2()
                 .w_full()
                 .min_w(px(0.))
                 .flex()
@@ -167,7 +167,7 @@ fn line_block(index: usize, line: &super::Line, muted: Hsla, danger: Hsla) -> An
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().text_xs().text_color(muted).child("Archivist"))
+                            .child(div().text_base().text_color(muted).child("Archivist"))
                             .child(markdown_block(
                                 SharedString::from(format!("archivist-{index}-body")),
                                 body.clone(),
@@ -183,7 +183,7 @@ fn live_block(live: &super::RenderedMarkdown, muted: Hsla) -> impl IntoElement {
     let thinking = live.thinking.clone();
     let body = live.body.clone();
     div()
-        .px_3()
+        .px_2()
         .w_full()
         .min_w(px(0.))
         .flex()
@@ -202,7 +202,7 @@ fn live_block(live: &super::RenderedMarkdown, muted: Hsla) -> impl IntoElement {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(div().text_xs().text_color(muted).child("Archivist"))
+                    .child(div().text_base().text_color(muted).child("Archivist"))
                     .child(markdown_block(
                         SharedString::from("archivist-live-body"),
                         body.clone(),
@@ -219,7 +219,7 @@ fn thinking_block(id: SharedString, text: SharedString, muted: Hsla) -> impl Int
         .flex_col()
         .gap_1()
         .opacity(0.75)
-        .child(div().text_xs().text_color(muted).child("Thinking"))
+        .child(div().text_base().text_color(muted).child("Thinking"))
         .child(markdown_block(id, text))
 }
 
@@ -227,8 +227,7 @@ fn markdown_block(id: SharedString, source: SharedString) -> impl IntoElement {
     div()
         .w_full()
         .min_w(px(0.))
-        .text_sm()
-        .line_height(px(20.))
+        .text_base()
         .child(crate::mermaid::view(id, source))
 }
 
@@ -239,17 +238,16 @@ fn plain_block(
     body_color: Hsla,
 ) -> impl IntoElement {
     div()
-        .px_3()
+        .px_2()
         .flex()
         .flex_col()
         .gap_1()
-        .child(div().text_xs().text_color(label_color).child(label))
+        .child(div().text_base().text_color(label_color).child(label))
         .child(
             div()
-                .text_sm()
+                .text_base()
                 .w_full()
                 .min_w(px(0.))
-                .line_height(px(20.))
                 .whitespace_normal()
                 .text_color(body_color)
                 .child(body.to_string()),
@@ -271,7 +269,7 @@ fn held_rows(panel: &Panel, view: WeakEntity<Root>, cx: &App) -> impl IntoElemen
         .flex_shrink_0()
         .border_t_1()
         .border_color(border)
-        .px_3()
+        .px_2()
         .py_2()
         .flex()
         .flex_col()
@@ -279,7 +277,7 @@ fn held_rows(panel: &Panel, view: WeakEntity<Root>, cx: &App) -> impl IntoElemen
         .children(cards)
         .child(
             div()
-                .text_xs()
+                .text_base()
                 .text_color(muted)
                 .child("Send includes these rows."),
         )
@@ -305,13 +303,13 @@ fn held_card(
                 .gap_1()
                 .child(
                     div()
-                        .text_xs()
+                        .text_base()
                         .text_color(muted)
                         .child(format!("Selected rows · {note_id}")),
                 )
                 .child(
                     div()
-                        .text_sm()
+                        .text_base()
                         .w_full()
                         .whitespace_normal()
                         .child(held_excerpt(source)),
@@ -363,7 +361,7 @@ fn composer(
         .flex_col()
         .gap_2()
         .when(!ready, |column| {
-            column.child(div().text_sm().text_color(danger).child(MISSING_KEY))
+            column.child(div().text_base().text_color(danger).child(MISSING_KEY))
         })
         .child(
             div()

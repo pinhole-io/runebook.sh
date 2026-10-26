@@ -489,7 +489,7 @@ fn settings_panel(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl I
                 .child(theme_group(pane, view.clone()))
                 .child(setting_label("Note view", muted))
                 .child(note_view_group(pane, view))
-                .child(div().text_sm().child("Models"))
+                .child(div().text_base().child("Models"))
                 .child(setting_label("Tool rounds", muted))
                 .child(text_setting(&pane.model_inputs.tool_rounds))
                 .child(setting_label("Groq API key", muted))
@@ -517,7 +517,7 @@ fn secret_setting(state: &Entity<InputState>) -> impl IntoElement {
 }
 
 fn setting_label(text: &'static str, color: impl Into<gpui_kit::Hsla>) -> impl IntoElement {
-    div().text_xs().text_color(color).child(text)
+    div().text_base().text_color(color).child(text)
 }
 
 fn microphone_field(pane: &EditorPane, cx: &App) -> gpui_kit::AnyElement {
@@ -544,7 +544,7 @@ fn microphone_loading(cx: &App) -> impl IntoElement {
         .rounded_md()
         .border_1()
         .border_color(border)
-        .text_sm()
+        .text_base()
         .text_color(muted)
         .child("loading...")
 }
@@ -951,7 +951,7 @@ pub(crate) fn status_bar(pane: &EditorPane, cx: &App) -> impl IntoElement {
     div()
         .px_2()
         .py_1()
-        .text_xs()
+        .text_sm()
         .text_color(muted)
         .border_t_1()
         .border_color(border)

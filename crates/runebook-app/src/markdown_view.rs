@@ -13,12 +13,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::text::{
     InlineElement, InlineRenderContext, MarkdownNode, MarkdownParseContext, MarkdownPlugin,
-    TextView, markdown_ast,
+    TextView, TextViewStyle, markdown_ast,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, ClickEvent, Image, ImageFormat, ImageSource, MouseButton, MouseDownEvent, MouseUpEvent,
-    ObjectFit, SharedString, Window, div, img, px,
+    ObjectFit, SharedString, Window, div, img, px, rems,
 };
 use runebook::{NoteId, Vault};
 
@@ -52,6 +52,7 @@ pub(crate) fn view(
     let images = Arc::new(images);
     let parser_links = Arc::clone(&links);
     TextView::markdown(id, source)
+        .style(note_style())
         .markdown_block_parser(crate::mermaid::parse_block)
         .markdown_block_renderer("mermaid", crate::mermaid::render_block)
         .markdown_block_parser(move |node, cx| parse_extra(node, cx, hide_anchors, &parser_links))
@@ -80,6 +81,26 @@ pub(crate) fn view(
             links,
             images: Arc::clone(&images),
         })
+}
+
+/// One heading scale for every preview.
+///
+/// The scale and the paragraph gap come from `themes/runebook.json`.
+/// Lower headings match the body.
+fn note_style() -> TextViewStyle {
+    let body = px(crate::theme::body_font_size());
+    let spacing = crate::theme::note_spacing();
+    let heading_1 = spacing.heading_1;
+    let heading_2 = spacing.heading_2;
+    let mut style = TextViewStyle::default();
+    style.paragraph_gap = rems(spacing.paragraph_gap);
+    style.heading_base_font_size = body;
+    style.heading_font_size = Some(Arc::new(move |level, base| match level {
+        1 => base * heading_1,
+        2 => base * heading_2,
+        _ => base,
+    }));
+    style
 }
 
 #[derive(Clone)]
@@ -240,7 +261,7 @@ fn render_link_def(node: &MarkdownNode, _: &mut Window, cx: &mut App) -> gpui_ki
         .map(|def| format!("[{}]: {}", def.label, def.url))
         .unwrap_or_default();
     div()
-        .text_sm()
+        .text_base()
         .text_color(muted)
         .child(text)
         .into_any_element()
@@ -269,7 +290,7 @@ fn render_footnote(
         .flex()
         .items_start()
         .gap_2()
-        .child(div().text_xs().text_color(link).child(id))
+        .child(div().text_base().text_color(link).child(id))
         .when(!body.trim().is_empty(), |row| {
             row.child(
                 div().flex_1().min_w(px(0.)).child(
@@ -456,7 +477,7 @@ fn render_figure(
             )
         })
         .when(!alt.is_empty(), |block| {
-            block.child(div().text_sm().text_color(muted).child(alt))
+            block.child(div().text_base().text_color(muted).child(alt))
         })
         .into_any_element()
 }

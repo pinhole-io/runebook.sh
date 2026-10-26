@@ -506,7 +506,7 @@ pub(super) fn wizard(
                 .flex_col()
                 .gap_3()
                 .child("Research rune")
-                .child(div().text_sm().text_color(muted).child(if asking {
+                .child(div().text_base().text_color(muted).child(if asking {
                     "Preparing questions."
                 } else if questions {
                     "Answer the questions, then start the investigation."
@@ -621,13 +621,13 @@ pub(super) fn report(
         .min_w(px(0.0))
         .min_h(px(0.0))
         .overflow_y_scroll()
-        .p_4()
+        .p_3()
         .child(
             div()
                 .w_full()
                 .flex()
                 .flex_col()
-                .gap_6()
+                .gap_3()
                 .when_some(job, |column, job| {
                     let phase = card_phase(job);
                     let time = if job.running {
@@ -647,7 +647,7 @@ pub(super) fn report(
                             .border_color(border)
                             .flex()
                             .gap_2()
-                            .text_sm()
+                            .text_base()
                             .child(phase)
                             .child(time),
                     )
@@ -660,7 +660,7 @@ pub(super) fn report(
                         div()
                             .w_full()
                             .min_w(px(0.0))
-                            .text_lg()
+                            .text_base()
                             .whitespace_normal()
                             .child(query),
                     ))
@@ -710,7 +710,7 @@ pub(super) fn report(
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().text_sm().text_color(danger).child("Stopped"))
+                            .child(div().text_base().text_color(danger).child("Stopped"))
                             .child(
                                 div()
                                     .w_full()
@@ -731,7 +731,7 @@ pub(super) fn report(
                             .flex()
                             .flex_col()
                             .gap_3()
-                            .child(div().text_sm().child("Findings"))
+                            .child(div().text_base().child("Findings"))
                             .child(
                                 crate::markdown_view::view(
                                     "research-findings",
@@ -772,7 +772,7 @@ fn report_block(
         .flex()
         .flex_col()
         .gap_2()
-        .child(div().text_sm().text_color(muted).child(label))
+        .child(div().text_base().text_color(muted).child(label))
         .child(body)
 }
 
@@ -805,7 +805,7 @@ fn answer_row(
                 .w_full()
                 .min_w(px(0.0))
                 .whitespace_normal()
-                .text_sm()
+                .text_base()
                 .text_color(answer_color)
                 .child(answer),
         )
@@ -872,7 +872,7 @@ fn research_card(
                 .flex()
                 .items_center()
                 .gap_2()
-                .text_xs()
+                .text_base()
                 .text_color(muted)
                 .child(phase)
                 .child(time)

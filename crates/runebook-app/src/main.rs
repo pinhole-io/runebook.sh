@@ -13,6 +13,7 @@ mod mermaid;
 mod models;
 mod pane;
 mod playback;
+mod theme;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -68,6 +69,7 @@ fn main() {
                 },
                 cx,
                 move |window, cx| {
+                    theme::apply(cx);
                     Theme::change(theme_mode(theme), Some(window), cx);
                     cx.new(|cx| Root::new(last, window, cx))
                 },
