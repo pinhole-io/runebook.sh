@@ -32,7 +32,7 @@ jobs:
           - target: x86_64-apple-darwin
             artifact: runebook-macos-x86_64
     env:
-      CARGO_TERM_COLOR: always
+      CARGO_TERM_COLOR: never
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - name: Checkout
@@ -75,7 +75,25 @@ jobs:
           fi
 
       - name: Build
-        run: cargo build --release --locked -p runebook-app --target "${{ matrix.target }}"
+        run: |
+          set +e
+          cargo build --release --locked -p runebook-app --target "${{ matrix.target }}" > "$RUNNER_TEMP/build.log" 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            {
+              echo '```'
+              tail -n 80 "$RUNNER_TEMP/build.log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            python3 - "$RUNNER_TEMP/build.log" <<'PY'
+          import pathlib, sys, urllib.parse
+          text = pathlib.Path(sys.argv[1]).read_text(errors="replace")
+          lines = "\n".join(text.splitlines()[-60:])
+          print("::error::" + urllib.parse.quote(lines))
+          PY
+            exit "$code"
+          fi
 
       - name: Package
         run: |
