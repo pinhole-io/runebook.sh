@@ -34,6 +34,8 @@ jobs:
     env:
       CARGO_TERM_COLOR: never
       MACOSX_DEPLOYMENT_TARGET: "11.0"
+      # playwright-rs 0.10 reads this while compiling. Its driver zip returns 404.
+      PLAYWRIGHT_DRIVER_VERSION: "1.58.2"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

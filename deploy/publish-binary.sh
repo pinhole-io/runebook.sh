@@ -26,6 +26,8 @@ esac
 name="runebook-${os}-${arch}"
 if [[ "${RUNEBOOK_SKIP_BUILD:-}" != "1" ]]; then
   echo "Building ${name}."
+  # playwright-rs 0.10 reads this while compiling. Its driver zip returns 404.
+  export PLAYWRIGHT_DRIVER_VERSION="${PLAYWRIGHT_DRIVER_VERSION:-1.58.2}"
   cargo build --release -p runebook-app --manifest-path "${ROOT}/Cargo.toml"
 fi
 
