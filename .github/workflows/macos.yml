@@ -1,0 +1,149 @@
+name: macOS binaries
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/macos.yml
+      - Cargo.lock
+      - Cargo.toml
+      - rust-toolchain.toml
+      - crates/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-binaries
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.artifact }}
+    runs-on: macos-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            artifact: runebook-macos-arm64
+          - target: x86_64-apple-darwin
+            artifact: runebook-macos-x86_64
+    env:
+      CARGO_TERM_COLOR: always
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch sibling crates
+        run: |
+          set -euo pipefail
+          parent="$(dirname "$GITHUB_WORKSPACE")"
+          fetch() {
+            name="$1"
+            sha="$2"
+            dest="${parent}/${name}"
+            rm -rf "${dest}"
+            mkdir -p "${dest}"
+            git -C "${dest}" init -q -b main
+            git -C "${dest}" remote add origin "https://github.com/pinhole-io/${name}.git"
+            GIT_TERMINAL_PROMPT=0 git -C "${dest}" fetch --depth 1 origin "${sha}"
+            git -C "${dest}" checkout --detach FETCH_HEAD
+          }
+          # These commits match the path crates in Cargo.lock.
+          fetch charlotte 987f5e7aa5dbfc35f52c61c8fa426f8372738430
+          fetch superglue 517c59c8b61d87f66156f4d761057684b30ec93a
+          fetch notepad e035b29107c183432a48ea2fb2bd7748c4ba9549
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ matrix.target }}
+
+      - name: Install CMake
+        run: |
+          if ! command -v cmake >/dev/null 2>&1; then
+            brew install cmake
+          fi
+
+      - name: Build
+        run: cargo build --release --locked -p runebook-app --target "${{ matrix.target }}"
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          name="${{ matrix.artifact }}"
+          src="target/${{ matrix.target }}/release/runebook"
+          test -x "${src}"
+          mkdir -p packaging
+          cp "${src}" "packaging/${name}"
+          strip -x "packaging/${name}"
+          codesign --force --sign - "packaging/${name}"
+          file "packaging/${name}"
+          (
+            cd packaging
+            shasum -a 256 "${name}" > "${name}.sha256"
+            shasum -a 256 -c "${name}.sha256"
+          )
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            packaging/${{ matrix.artifact }}
+            packaging/${{ matrix.artifact }}.sha256
+
+  release:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download the binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: runebook-macos-*
+          merge-multiple: true
+          path: downloaded
+
+      - name: Collect the files
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find downloaded -type f -name 'runebook-macos-*' -exec cp {} release/ \;
+          ls -l release
+          test -f release/runebook-macos-arm64
+          test -f release/runebook-macos-arm64.sha256
+          test -f release/runebook-macos-x86_64
+          test -f release/runebook-macos-x86_64.sha256
+          (
+            cd release
+            sha256sum -c runebook-macos-arm64.sha256
+            sha256sum -c runebook-macos-x86_64.sha256
+          )
+
+      - name: Publish the binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: binaries
+          name: macOS binaries
+          make_latest: false
+          overwrite_files: true
+          prerelease: false
+          files: release/*
+          body: |
+            Install builds for macOS. The install host redirects here when it has no local copy.

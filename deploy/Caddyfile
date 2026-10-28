@@ -1,5 +1,17 @@
 # Public install host. curl receives the script. A browser receives the frontpage.
 runebook.sh {
+	# A file on this host wins. A missing macOS file redirects to the release.
+	@macos path_regexp macos ^/dl/(runebook-macos-[A-Za-z0-9._-]+)$
+	handle @macos {
+		root * /srv/runebook
+		route {
+			@missing not file
+			redir @missing https://github.com/pinhole-io/runebook.sh/releases/download/binaries/{re.macos.1} 302
+			header Cache-Control "no-cache"
+			file_server
+		}
+	}
+
 	handle /dl/* {
 		root * /srv/runebook
 		header Cache-Control "no-cache"

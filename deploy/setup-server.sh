@@ -136,21 +136,32 @@ if [[ "${uninstall}" != "#!/bin/sh"* ]]; then
   exit 1
 fi
 
-artifact="runebook-linux-x86_64"
-check="$(mktemp -d)"
-if ! curl --proto '=https' --tlsv1.2 -fsSL "https://${DOMAIN}/dl/${artifact}" -o "${check}/${artifact}"; then
-  echo "error: https://${DOMAIN}/dl/${artifact} is missing" >&2
-  exit 1
-fi
-if ! curl --proto '=https' --tlsv1.2 -fsSL "https://${DOMAIN}/dl/${artifact}.sha256" -o "${check}/${artifact}.sha256"; then
-  echo "error: https://${DOMAIN}/dl/${artifact}.sha256 is missing" >&2
-  exit 1
-fi
-if ! (cd "${check}" && sha256sum -c "${artifact}.sha256"); then
-  echo "error: checksum failed for ${artifact}" >&2
-  exit 1
-fi
-rm -rf "${check}"
+verify_artifact() {
+  local artifact="$1"
+  local check
+  check="$(mktemp -d)"
+  if ! curl --proto '=https' --tlsv1.2 -fsSL "https://${DOMAIN}/dl/${artifact}" -o "${check}/${artifact}"; then
+    echo "error: https://${DOMAIN}/dl/${artifact} is missing" >&2
+    rm -rf "${check}"
+    exit 1
+  fi
+  if ! curl --proto '=https' --tlsv1.2 -fsSL "https://${DOMAIN}/dl/${artifact}.sha256" -o "${check}/${artifact}.sha256"; then
+    echo "error: https://${DOMAIN}/dl/${artifact}.sha256 is missing" >&2
+    rm -rf "${check}"
+    exit 1
+  fi
+  if ! (cd "${check}" && sha256sum -c "${artifact}.sha256"); then
+    echo "error: checksum failed for ${artifact}" >&2
+    rm -rf "${check}"
+    exit 1
+  fi
+  rm -rf "${check}"
+  echo "Verified ${artifact}."
+}
+
+verify_artifact "runebook-linux-x86_64"
+verify_artifact "runebook-macos-arm64"
+verify_artifact "runebook-macos-x86_64"
 
 echo ""
 echo "Install host is live."

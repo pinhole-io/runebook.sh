@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the Linux release binary and publish it to the install host.
+# Build the release binary for this machine and publish it to the install host.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -7,8 +7,9 @@ ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 case "$(uname -s)" in
   Linux) os="linux" ;;
+  Darwin) os="macos" ;;
   *)
-    echo "error: publish the binary from Linux" >&2
+    echo "error: publish the binary from Linux or macOS" >&2
     exit 1
     ;;
 esac
@@ -37,10 +38,22 @@ fi
 
 mkdir -p "${SCRIPT_DIR}/dist"
 cp "${src}" "${SCRIPT_DIR}/dist/${name}"
-strip --strip-unneeded "${SCRIPT_DIR}/dist/${name}"
+case "${os}" in
+  linux)
+    strip --strip-unneeded "${SCRIPT_DIR}/dist/${name}"
+    ;;
+  macos)
+    strip -x "${SCRIPT_DIR}/dist/${name}"
+    codesign --force --sign - "${SCRIPT_DIR}/dist/${name}"
+    ;;
+esac
 (
   cd "${SCRIPT_DIR}/dist"
-  sha256sum "${name}" > "${name}.sha256"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${name}" > "${name}.sha256"
+  else
+    shasum -a 256 "${name}" > "${name}.sha256"
+  fi
 )
 
 echo "Checksum:"
