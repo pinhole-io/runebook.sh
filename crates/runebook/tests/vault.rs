@@ -412,3 +412,38 @@ fn search_matches_the_body_and_caps_the_hits() {
     assert_eq!(page.hits.len(), 20);
     assert!(page.truncated);
 }
+
+#[test]
+fn stamp_tracks_notes_and_ignores_hidden_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = Vault::create(dir.path(), "Notes").unwrap();
+    let empty = vault.stamp().unwrap();
+    assert_eq!(vault.stamp().unwrap(), empty);
+
+    vault.create_note(&note("inbox"), "hello").unwrap();
+    let added = vault.stamp().unwrap();
+    assert_ne!(empty, added);
+
+    vault.write(&note("inbox"), "hello!").unwrap();
+    let edited = vault.stamp().unwrap();
+    assert_ne!(added, edited);
+
+    vault.create_folder(&folder("journal")).unwrap();
+    let with_folder = vault.stamp().unwrap();
+    assert_ne!(edited, with_folder);
+
+    std::fs::write(dir.path().join(".secret.md"), "hidden").unwrap();
+    std::fs::write(dir.path().join("photo.png"), "png").unwrap();
+    assert_eq!(vault.stamp().unwrap(), with_folder);
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(dir.path().join("inbox.md"), dir.path().join("link.md"))
+            .unwrap();
+        assert_eq!(vault.stamp().unwrap(), with_folder);
+    }
+
+    vault.delete_note(&note("inbox")).unwrap();
+    vault.delete_folder(&folder("journal")).unwrap();
+    assert_eq!(vault.stamp().unwrap(), empty);
+}

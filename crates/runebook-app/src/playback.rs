@@ -664,14 +664,14 @@ fn open_audio(
     let host = cpal::default_host();
     let device = host
         .default_output_device()
-        .ok_or_else(|| "Could not open audio playback".to_string())?;
+        .ok_or_else(|| crate::locale::text("media.audio_failed").to_string())?;
     let supported = device
         .default_output_config()
-        .map_err(|_| "Could not open audio playback".to_string())?;
+        .map_err(|_| crate::locale::text("media.audio_failed").to_string())?;
     let rate = supported.sample_rate().0;
     let channels = supported.channels();
     if rate == 0 || channels == 0 {
-        return Err("Could not open audio playback".to_string());
+        return Err(crate::locale::text("media.audio_failed").to_string());
     }
     let sample_format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
@@ -717,7 +717,7 @@ fn open_audio(
         let _ = child.wait();
         drop(stream);
         let _ = thread.join();
-        return Err("Could not open audio playback".to_string());
+        return Err(crate::locale::text("media.audio_failed").to_string());
     }
     Ok(AudioParts {
         child,
@@ -739,7 +739,7 @@ fn build_stream(
         SampleFormat::F32 => build_out(device, config, samples, done, drained, muted, write_f32),
         SampleFormat::I16 => build_out(device, config, samples, done, drained, muted, write_i16),
         SampleFormat::U16 => build_out(device, config, samples, done, drained, muted, write_u16),
-        _ => Err("Could not open audio playback".to_string()),
+        _ => Err(crate::locale::text("media.audio_failed").to_string()),
     }
 }
 
@@ -770,7 +770,7 @@ where
             |_| {},
             None,
         )
-        .map_err(|_| "Could not open audio playback".to_string())
+        .map_err(|_| crate::locale::text("media.audio_failed").to_string())
 }
 
 fn write_f32(sample: &mut f32, value: i16) {
@@ -819,8 +819,13 @@ fn spawn_ffmpeg(args: Vec<OsString>) -> Result<Child, String> {
         .spawn()
     {
         Ok(child) => Ok(child),
-        Err(err) if err.kind() == ErrorKind::NotFound => Err("ffmpeg is not installed".to_string()),
-        Err(err) => Err(format!("Could not start ffmpeg: {err}")),
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            Err(crate::locale::text("screen.ffmpeg_missing").to_string())
+        }
+        Err(err) => Err(crate::locale::format(
+            "screen.ffmpeg_start",
+            &[("err", &err.to_string())],
+        )),
     }
 }
 
@@ -845,7 +850,7 @@ fn take_stdout(child: &mut Child) -> Result<std::process::ChildStdout, String> {
     child
         .stdout
         .take()
-        .ok_or_else(|| "Could not start ffmpeg".to_string())
+        .ok_or_else(|| crate::locale::text("screen.ffmpeg_bare").to_string())
 }
 
 fn stop_children(children: &mut [Child]) {

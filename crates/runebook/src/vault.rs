@@ -50,6 +50,15 @@ pub struct NoteSearch {
     pub truncated: bool,
 }
 
+/// Fingerprint of the folders and notes [`Vault::tree`] shows.
+///
+/// Equal stamps mean those paths and the note bytes are unchanged.
+/// Hidden paths, symlinks, and non-note files are ignored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultStamp {
+    marks: Vec<StampMark>,
+}
+
 /// A folder or a note in [`VaultTree`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeEntry {
@@ -70,6 +79,17 @@ pub enum TreeEntry {
         name: String,
         /// Kind read from the file header. A missing header is Book.
         kind: NoteKind,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum StampMark {
+    Folder(String),
+    Note {
+        id: String,
+        secs: u64,
+        nanos: u32,
+        len: u64,
     },
 }
 
@@ -255,6 +275,22 @@ impl Vault {
         Ok(VaultTree {
             children: read_children(&self.root, &FolderId::root())?,
         })
+    }
+
+    /// Fingerprint the folders and notes [`Self::tree`] shows.
+    ///
+    /// A byte change in a note changes the stamp.
+    /// Hidden paths, symlinks, and other files do not.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] when a directory cannot be read.
+    /// Returns [`Error::InvalidNoteId`] when a file name is not a safe id.
+    pub fn stamp(&self) -> Result<VaultStamp> {
+        let mut marks = Vec::new();
+        stamp_folder(&self.root, &FolderId::root(), &mut marks)?;
+        marks.sort();
+        Ok(VaultStamp { marks })
     }
 
     /// Read a note as UTF-8.
@@ -522,16 +558,22 @@ fn collect_ids(entries: &[TreeEntry], ids: &mut Vec<NoteId>) {
     }
 }
 
-fn read_children(root: &Path, folder: &FolderId) -> Result<Vec<TreeEntry>> {
-    let dir = vault_join(root, &folder.relative_path())?;
-    let read = fs::read_dir(&dir).map_err(|source| Error::Io {
-        path: dir.clone(),
+struct VisibleItem {
+    name: String,
+    path: PathBuf,
+    is_dir: bool,
+}
+
+/// Files and folders the tree shows. Hidden names and symlinks are skipped.
+fn list_visible(dir: &Path) -> Result<Vec<VisibleItem>> {
+    let read = fs::read_dir(dir).map_err(|source| Error::Io {
+        path: dir.to_path_buf(),
         source,
     })?;
-    let mut entries = Vec::new();
+    let mut items = Vec::new();
     for item in read {
         let item = item.map_err(|source| Error::Io {
-            path: dir.clone(),
+            path: dir.to_path_buf(),
             source,
         })?;
         let Some(name) = item.file_name().into_string().ok() else {
@@ -544,25 +586,42 @@ fn read_children(root: &Path, folder: &FolderId) -> Result<Vec<TreeEntry>> {
             path: item.path(),
             source,
         })?;
-        if file_type.is_symlink() {
+        if file_type.is_symlink() || (!file_type.is_dir() && !file_type.is_file()) {
             continue;
         }
-        if file_type.is_dir() {
-            let id = folder.join_folder(&name)?;
+        items.push(VisibleItem {
+            name,
+            path: item.path(),
+            is_dir: file_type.is_dir(),
+        });
+    }
+    Ok(items)
+}
+
+fn read_children(root: &Path, folder: &FolderId) -> Result<Vec<TreeEntry>> {
+    let dir = vault_join(root, &folder.relative_path())?;
+    let mut entries = Vec::new();
+    for item in list_visible(&dir)? {
+        if item.is_dir {
+            let id = folder.join_folder(&item.name)?;
             let children = read_children(root, &id)?;
-            entries.push(TreeEntry::Folder { id, name, children });
-        } else if file_type.is_file() {
-            let Some(stem) = name.strip_suffix(".md") else {
-                continue;
-            };
-            let id = folder.join_note(stem)?;
-            let kind = read_note_kind(&item.path())?;
-            entries.push(TreeEntry::Note {
+            entries.push(TreeEntry::Folder {
                 id,
-                name: stem.to_string(),
-                kind,
+                name: item.name,
+                children,
             });
+            continue;
         }
+        let Some(stem) = item.name.strip_suffix(".md") else {
+            continue;
+        };
+        let id = folder.join_note(stem)?;
+        let kind = read_note_kind(&item.path)?;
+        entries.push(TreeEntry::Note {
+            id,
+            name: stem.to_string(),
+            kind,
+        });
     }
     entries.sort_by(|left, right| {
         rank(left)
@@ -570,6 +629,44 @@ fn read_children(root: &Path, folder: &FolderId) -> Result<Vec<TreeEntry>> {
             .then_with(|| sort_name(left).cmp(&sort_name(right)))
     });
     Ok(entries)
+}
+
+fn stamp_folder(root: &Path, folder: &FolderId, marks: &mut Vec<StampMark>) -> Result<()> {
+    let dir = vault_join(root, &folder.relative_path())?;
+    for item in list_visible(&dir)? {
+        if item.is_dir {
+            let id = folder.join_folder(&item.name)?;
+            marks.push(StampMark::Folder(id.as_str().to_string()));
+            stamp_folder(root, &id, marks)?;
+            continue;
+        }
+        let Some(stem) = item.name.strip_suffix(".md") else {
+            continue;
+        };
+        let id = folder.join_note(stem)?;
+        let meta = fs::symlink_metadata(&item.path).map_err(|source| Error::Io {
+            path: item.path.clone(),
+            source,
+        })?;
+        let (secs, nanos) = modified_parts(&meta);
+        marks.push(StampMark::Note {
+            id: id.as_str().to_string(),
+            secs,
+            nanos,
+            len: meta.len(),
+        });
+    }
+    Ok(())
+}
+
+fn modified_parts(meta: &fs::Metadata) -> (u64, u32) {
+    let Ok(modified) = meta.modified() else {
+        return (0, 0);
+    };
+    match modified.duration_since(std::time::UNIX_EPOCH) {
+        Ok(elapsed) => (elapsed.as_secs(), elapsed.subsec_nanos()),
+        Err(_) => (0, 0),
+    }
 }
 
 fn rank(entry: &TreeEntry) -> u8 {

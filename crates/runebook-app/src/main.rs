@@ -9,6 +9,7 @@ mod chrome;
 mod dock;
 mod html_style;
 mod http;
+mod locale;
 mod markdown_view;
 mod mermaid;
 mod models;
@@ -45,6 +46,9 @@ The window shows the rendered note. Use the edit icon to change the source.
 A wiki link looks like [[inbox]]. Click a missing link to create that note.
 ";
 
+/// How often the file tree reads the vault for changes made outside the app.
+const TREE_POLL: Duration = Duration::from_millis(500);
+
 fn main() {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
@@ -61,6 +65,7 @@ fn main() {
 
             let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
             let config = AppConfig::load().unwrap_or_default();
+            locale::activate(&config.locale);
             let last = config.last_vault.clone();
             let theme = config.theme;
             let text_size = config.text_size;
@@ -112,6 +117,7 @@ struct Root {
     dock: Entity<DockArea>,
     autosave_gen: u64,
     dock_save_gen: u64,
+    tree_watch: u64,
     pending_open: Option<(PathBuf, bool)>,
 }
 
@@ -135,6 +141,7 @@ impl Root {
             dock,
             autosave_gen: 0,
             dock_save_gen: 0,
+            tree_watch: 0,
             pending_open: None,
         };
         if let Some(path) = last {
@@ -230,7 +237,7 @@ impl Root {
             return;
         }
         let Some(target) = runebook::note_target_from_url(url) else {
-            self.set_notice("That link is not a note");
+            self.set_notice(locale::text("link.not_note"));
             cx.notify();
             return;
         };
@@ -248,7 +255,10 @@ impl Root {
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(", ");
-                self.set_notice(format!("\"{target}\" matches more than one note: {names}"));
+                self.set_notice(locale::format(
+                    "link.ambiguous",
+                    &[("target", target.as_str()), ("names", &names)],
+                ));
                 cx.notify();
             }
         }
@@ -256,7 +266,7 @@ impl Root {
 
     fn open_media(&self, href: &str) -> Result<(), String> {
         let Some(pane) = self.pane.as_ref() else {
-            return Err("Open a note first".to_string());
+            return Err(locale::text("media.open_note").to_string());
         };
         let path = pane.media_path(href)?;
         let program = if cfg!(target_os = "macos") {
@@ -267,13 +277,20 @@ impl Root {
         match crate::markdown_view::spawn_desktop_open(&path) {
             Ok(mut child) => match child.wait() {
                 Ok(status) if status.success() => Ok(()),
-                Ok(_) => Err("Could not open the media file".to_string()),
-                Err(err) => Err(format!("Could not open the media file: {err}")),
+                Ok(_) => Err(locale::text("media.open_failed").to_string()),
+                Err(err) => Err(locale::format(
+                    "media.open_failed_detail",
+                    &[("err", &err.to_string())],
+                )),
             },
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                Err(format!("{program} is not installed"))
-            }
-            Err(err) => Err(format!("Could not open the media file: {err}")),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(locale::format(
+                "media.program_missing",
+                &[("program", program)],
+            )),
+            Err(err) => Err(locale::format(
+                "media.open_failed_detail",
+                &[("err", &err.to_string())],
+            )),
         }
     }
 
@@ -284,7 +301,10 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         let Ok(id) = NoteId::parse(target.as_str()) else {
-            self.set_notice(format!("Cannot create a note named \"{target}\""));
+            self.set_notice(locale::format(
+                "link.bad_name",
+                &[("target", target.as_str())],
+            ));
             cx.notify();
             return;
         };
@@ -312,9 +332,9 @@ impl Root {
 
     fn pick_vault(&mut self, must_be_new: bool, cx: &mut Context<Self>) {
         let prompt = if must_be_new {
-            "Create vault"
+            locale::text("empty.create")
         } else {
-            "Open vault"
+            locale::text("empty.open")
         };
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -352,7 +372,10 @@ impl Root {
         let marker = path.join("runebook.toml");
         let vault = if marker.is_file() {
             if must_be_new {
-                self.banner = Some(format!("{} is already a vault", path.display()));
+                self.banner = Some(locale::format(
+                    "vault.already",
+                    &[("path", &path.display().to_string())],
+                ));
                 cx.notify();
                 return;
             }
@@ -361,6 +384,7 @@ impl Root {
                 Err(err) => {
                     self.banner = Some(err.to_string());
                     self.pane = None;
+                    self.arm_tree_watch(window, cx);
                     cx.notify();
                     return;
                 }
@@ -369,7 +393,7 @@ impl Root {
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .unwrap_or("Vault");
+                .unwrap_or(locale::text("vault.fallback_name"));
             match Vault::create(&path, name) {
                 Ok(vault) => {
                     if let Err(err) = vault.create_note(&welcome_id(), WELCOME)
@@ -394,16 +418,80 @@ impl Root {
                 let saved = remember_vault(pane.root());
                 self.banner = None;
                 self.pane = Some(pane);
+                self.arm_tree_watch(window, cx);
                 if let Err(err) = saved {
-                    self.set_notice(format!("Could not save the last vault: {err}"));
+                    self.set_notice(locale::format(
+                        "vault.save_failed",
+                        &[("err", &err.to_string())],
+                    ));
                 }
             }
             Err(err) => {
                 self.banner = Some(err.to_string());
                 self.pane = None;
+                self.arm_tree_watch(window, cx);
             }
         }
         cx.notify();
+    }
+
+    /// Read the vault on a timer so a change made outside the app shows up.
+    ///
+    /// A scan that started before the latest local edit is dropped.
+    fn arm_tree_watch(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.tree_watch = self.tree_watch.wrapping_add(1);
+        let generation = self.tree_watch;
+        let Some(root) = self.pane.as_ref().map(|pane| pane.root().to_path_buf()) else {
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(TREE_POLL).await;
+                let Some(base) = this
+                    .update(cx, |this, _| {
+                        if this.tree_watch != generation {
+                            return None;
+                        }
+                        this.pane.as_ref().map(|pane| pane.file_stamp().clone())
+                    })
+                    .ok()
+                    .flatten()
+                else {
+                    break;
+                };
+                let root = root.clone();
+                let base_for_scan = base.clone();
+                let scanned = cx
+                    .background_executor()
+                    .spawn(async move { pane::scan_vault(&root, &base_for_scan) })
+                    .await;
+                let keep = this
+                    .update_in(cx, |this, window, cx| {
+                        if this.tree_watch != generation {
+                            return false;
+                        }
+                        let Some(pane) = this.pane.as_mut() else {
+                            return false;
+                        };
+                        let changed = match scanned {
+                            Ok(Some(refresh)) => {
+                                pane.apply_disk_refresh(&base, refresh, window, cx)
+                            }
+                            Ok(None) => false,
+                            Err(err) => pane.fail_disk_scan(err.to_string()),
+                        };
+                        if changed {
+                            cx.notify();
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -433,14 +521,10 @@ impl Root {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(div().text_2xl().child("Runebook"))
-                            .child(div().text_color(muted).child("Alpha")),
+                            .child(div().text_2xl().child(locale::text("brand.name")))
+                            .child(div().text_color(muted).child(locale::text("brand.alpha"))),
                     )
-                    .child(
-                        div()
-                            .text_color(muted)
-                            .child("Create a vault or open a folder of markdown notes."),
-                    )
+                    .child(div().text_color(muted).child(locale::text("empty.body")))
                     .when_some(banner, |this, banner| {
                         this.child(div().text_color(danger).child(banner))
                     })
@@ -453,7 +537,7 @@ impl Root {
                                     .primary()
                                     .cursor_pointer()
                                     .icon(IconName::FolderPlus)
-                                    .label("Create vault")
+                                    .label(locale::text("empty.create"))
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         this.pick_vault(true, cx);
                                     })),
@@ -463,7 +547,7 @@ impl Root {
                                     .outline()
                                     .cursor_pointer()
                                     .icon(IconName::FolderOpen)
-                                    .label("Open vault")
+                                    .label(locale::text("empty.open"))
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         this.pick_vault(false, cx);
                                     })),
@@ -556,7 +640,7 @@ impl Render for Root {
                 if let Some(pane) = this.pane.as_mut() {
                     pane.begin_create_note(window, cx);
                 } else {
-                    this.banner = Some("Open a vault first".to_string());
+                    this.banner = Some(locale::text("vault.open_first").to_string());
                 }
                 cx.notify();
             }))

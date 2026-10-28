@@ -31,16 +31,16 @@ use gpui_kit::{
 };
 use runebook::{
     AppConfig, AutosavePace, Error, FolderId, NoteId, NoteKind, NoteViewChoice, SearchHit,
-    SpeechModel, TextSize, ThemeChoice, Vault, VaultIndex, VaultTree, decode_note, encode_note,
-    toggle_task_line,
+    SpeechModel, TextSize, ThemeChoice, Vault, VaultIndex, VaultStamp, VaultTree, decode_note,
+    encode_note, toggle_task_line,
 };
 
 use crate::Root;
 use crate::capture::{
-    MISSING_GROQ_KEY, ScreenCapture, ScreenTarget, SpeechRequest, VoiceCapture, WINDOW_LIST_ERROR,
-    append_block, list_input_devices, list_record_sources, markdown_link, utc_stamp_now,
-    voice_to_text,
+    ScreenCapture, ScreenTarget, SpeechRequest, VoiceCapture, append_block, list_input_devices,
+    list_record_sources, markdown_link, utc_stamp_now, voice_to_text, window_list_error,
 };
+use crate::locale;
 use crate::models::{self, ModelSettings};
 use crate::playback::{self, ClipKind};
 use crate::save_setting;
@@ -84,6 +84,7 @@ pub(super) struct EditorPane {
     vault: Vault,
     tree: VaultTree,
     index: VaultIndex,
+    stamp: VaultStamp,
     open_note: Option<NoteId>,
     open_kind: NoteKind,
     tree_selection: TreeSelection,
@@ -96,6 +97,7 @@ pub(super) struct EditorPane {
     microphone_watch: Option<Subscription>,
     mic_load: u64,
     theme: ThemeChoice,
+    locale: String,
     text_size: TextSize,
     line_numbers: bool,
     soft_wrap: bool,
@@ -129,6 +131,8 @@ pub(super) struct EditorPane {
     load_stop: Option<Arc<AtomicBool>>,
     picture_width: u32,
     capture: Capture,
+    /// Note that owns the live voice or screen capture.
+    recording_note: Option<NoteId>,
     prompt: Option<Prompt>,
     rename_blur: Option<Subscription>,
     search: Option<Entity<InputState>>,
@@ -259,7 +263,9 @@ enum TimingState {
     Ready(playback::ClipTiming),
 }
 
-const SEARCH_NOTICE: &str = "Could not search the vault";
+fn search_notice() -> &'static str {
+    locale::text("search.failed")
+}
 
 impl EditorPane {
     pub(super) fn open(
@@ -269,6 +275,7 @@ impl EditorPane {
     ) -> Result<Self, Error> {
         let tree = vault.tree()?;
         let index = vault.notes()?;
+        let stamp = vault.stamp()?;
         let prefs = AppConfig::load().unwrap_or_default();
         let default_note_view = note_view_from(prefs.note_view);
         let models = ModelSettings::from_config(&prefs);
@@ -303,7 +310,13 @@ impl EditorPane {
                 "openai:gpt-6-luna",
                 false,
             ),
-            speech_language: model_input(window, cx, &prefs.speech_language, "auto", false),
+            speech_language: model_input(
+                window,
+                cx,
+                &prefs.speech_language,
+                locale::text("capture.speech_placeholder"),
+                false,
+            ),
         };
         let model_watch = vec![
             watch_model(&model_inputs.tool_rounds, ModelField::ToolRounds, cx),
@@ -323,7 +336,6 @@ impl EditorPane {
             ),
         ];
         let open_note = starting_note(&index, &prefs);
-        let show_archivist = open_note.is_none();
         let (open_kind, text) = match &open_note {
             Some(id) => note_body(&vault.read(id)?),
             None => (NoteKind::Book, String::new()),
@@ -355,6 +367,7 @@ impl EditorPane {
             vault,
             tree,
             index,
+            stamp,
             note_view: default_note_view,
             default_note_view,
             settings_open: false,
@@ -363,6 +376,7 @@ impl EditorPane {
             microphone_watch: None,
             mic_load: 0,
             theme: prefs.theme,
+            locale: locale::activate(&prefs.locale).to_string(),
             text_size: prefs.text_size,
             line_numbers: prefs.line_numbers,
             soft_wrap: prefs.soft_wrap,
@@ -392,6 +406,7 @@ impl EditorPane {
             load_stop: None,
             picture_width: note_frame_width(window),
             capture: Capture::Idle,
+            recording_note: None,
             prompt: None,
             rename_blur: None,
             search: None,
@@ -399,7 +414,7 @@ impl EditorPane {
             search_truncated: false,
             search_watch: None,
             _subscription: subscription,
-            archivist: crate::archivist::Panel::new(show_archivist, window, cx),
+            archivist: crate::archivist::Panel::new(window, cx),
             epoch: next_epoch(),
             research: research::ResearchDesk::new(),
         };
@@ -480,9 +495,9 @@ impl EditorPane {
         let selected_label = self
             .microphone
             .clone()
-            .unwrap_or_else(|| SYSTEM_MICROPHONE.to_string());
+            .unwrap_or_else(|| locale::text("mic.system").to_string());
         let mut items = Vec::with_capacity(names.len() + 1);
-        items.push(SYSTEM_MICROPHONE.to_string());
+        items.push(locale::text("mic.system").to_string());
         items.extend(names);
         let selected = items
             .iter()
@@ -512,11 +527,43 @@ impl EditorPane {
 
     fn apply_microphone(&mut self, value: Option<String>) {
         let name = match value.as_deref() {
-            Some(SYSTEM_MICROPHONE) | None => None,
+            Some(name) if name == locale::text("mic.system") => None,
+            None => None,
             Some(name) => Some(name.to_string()),
         };
         self.microphone = name.clone();
         self.store_setting(|config| config.microphone = name);
+    }
+
+    /// Save the window language and refresh text that was captured earlier.
+    fn choose_locale(&mut self, code: &str, window: &mut Window, cx: &mut Context<Root>) {
+        let code = locale::activate(code);
+        if self.locale == code {
+            return;
+        }
+        self.locale = code.to_string();
+        self.refresh_placeholders(window, cx);
+        if self.settings_open {
+            self.begin_microphone_load(cx);
+        }
+        let saved = self.locale.clone();
+        self.store_setting(move |config| config.locale = saved);
+    }
+
+    fn refresh_placeholders(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+        let speech = locale::text("capture.speech_placeholder");
+        self.model_inputs
+            .speech_language
+            .update(cx, |state, cx| state.set_placeholder(speech, window, cx));
+        if let Some(search) = self.search.clone() {
+            let label = locale::text("search.placeholder");
+            search.update(cx, |state, cx| state.set_placeholder(label, window, cx));
+        }
+        if let Some(rewrite) = self.row_rewrite.clone() {
+            let label = locale::text("preview.rewrite_placeholder");
+            rewrite.update(cx, |state, cx| state.set_placeholder(label, window, cx));
+        }
+        self.archivist.set_draft_placeholder(window, cx);
     }
 
     /// Save the window theme. The caller already applied it to the window.
@@ -649,11 +696,30 @@ impl EditorPane {
         models::resolve_groq_key(&self.models.groq_api_key).is_some()
     }
 
+    pub(super) fn archivist_ready(&self) -> bool {
+        self.archivist_access().is_some()
+    }
+
+    pub(super) fn archivist_key_message(&self) -> &'static str {
+        crate::archivist::missing_model_key(&models::resolve_archivist_model(
+            &self.models.archivist_model,
+        ))
+    }
+
     fn archivist_access(&self) -> Option<crate::archivist::ModelAccess> {
-        let key = self.groq_key()?;
+        let model = models::resolve_archivist_model(&self.models.archivist_model);
+        let groq_key = self.groq_key().unwrap_or_default();
+        let openai_key =
+            models::resolve_openai_key(&self.models.openai_api_key).unwrap_or_default();
+        let openai_base_url = models::resolve_openai_base(&self.models.openai_base_url);
+        if !crate::archivist::has_model_key(&model, &groq_key, &openai_key) {
+            return None;
+        }
         Some(crate::archivist::ModelAccess {
-            key,
-            model: models::resolve_archivist_model(&self.models.archivist_model),
+            groq_key,
+            openai_key,
+            openai_base_url,
+            model,
             tool_rounds: self.models.tool_rounds,
         })
     }
@@ -665,13 +731,13 @@ impl EditorPane {
     fn apply_model_field(&mut self, field: ModelField, cx: &mut Context<Root>) {
         let raw = self.model_inputs.get(field).read(cx).value().to_string();
         let Some(text) = models::bounded(&raw) else {
-            self.notice = Some("That value is too long.".to_string());
+            self.notice = Some(locale::text("notice.value_long").to_string());
             return;
         };
         match field {
             ModelField::ToolRounds => {
                 let Some(rounds) = models::accept_tool_rounds(text) else {
-                    self.notice = Some("Tool rounds must be at least 1.".to_string());
+                    self.notice = Some(locale::text("notice.tool_rounds").to_string());
                     return;
                 };
                 if rounds == self.models.tool_rounds {
@@ -724,12 +790,12 @@ impl EditorPane {
         let next = match models::accept_language(text) {
             models::LanguageEdit::Pending => return,
             models::LanguageEdit::Reject => {
-                self.notice = Some(LANGUAGE_NOTICE.to_string());
+                self.notice = Some(locale::text("notice.language").to_string());
                 return;
             }
             models::LanguageEdit::Set(value) => value,
         };
-        if self.notice.as_deref() == Some(LANGUAGE_NOTICE) {
+        if self.notice.as_deref() == Some(locale::text("notice.language")) {
             self.notice = None;
         }
         if next == self.speech_language {
@@ -1182,13 +1248,13 @@ impl EditorPane {
         self.playback_watch = self.playback_watch.wrapping_add(1);
         let watch = self.playback_watch;
         let Some(id) = self.open_note.clone() else {
-            self.notice = Some("Open a note first".to_string());
+            self.notice = Some(locale::text("media.open_note").to_string());
             return;
         };
         let path = match self.vault.media_file(&id, href) {
             Ok(path) => path,
             Err(_) => {
-                self.notice = Some("Could not open the media file".to_string());
+                self.notice = Some(locale::text("media.open_failed").to_string());
                 return;
             }
         };
@@ -1210,13 +1276,13 @@ impl EditorPane {
         self.playback_watch = self.playback_watch.wrapping_add(1);
         let watch = self.playback_watch;
         let Some(id) = self.open_note.clone() else {
-            self.notice = Some("Open a note first".to_string());
+            self.notice = Some(locale::text("media.open_note").to_string());
             return;
         };
         let path = match self.vault.media_file(&id, href) {
             Ok(path) => path,
             Err(_) => {
-                self.notice = Some("Could not open the media file".to_string());
+                self.notice = Some(locale::text("media.open_failed").to_string());
                 return;
             }
         };
@@ -1245,7 +1311,7 @@ impl EditorPane {
                 pane.load_stop = None;
                 match loaded {
                     Ok(loaded) if loaded.frames.is_empty() => {
-                        pane.notice = Some("Could not open the media file".to_string());
+                        pane.notice = Some(locale::text("media.open_failed").to_string());
                     }
                     Ok(loaded) => {
                         let mut timing = loaded.timing;
@@ -1280,13 +1346,13 @@ impl EditorPane {
         self.playback_watch = self.playback_watch.wrapping_add(1);
         let watch = self.playback_watch;
         let Some(id) = self.open_note.clone() else {
-            self.notice = Some("Open a note first".to_string());
+            self.notice = Some(locale::text("media.open_note").to_string());
             return;
         };
         let path = match self.vault.media_file(&id, href) {
             Ok(path) => path,
             Err(_) => {
-                self.notice = Some("Could not open the media file".to_string());
+                self.notice = Some(locale::text("media.open_failed").to_string());
                 return;
             }
         };
@@ -1358,7 +1424,7 @@ impl EditorPane {
     /// Resolve a media link in the open note.
     pub(super) fn media_path(&self, href: &str) -> Result<std::path::PathBuf, String> {
         let Some(id) = self.open_note.as_ref() else {
-            return Err("Open a note first".to_string());
+            return Err(locale::text("media.open_note").to_string());
         };
         self.vault
             .media_file(id, href)
@@ -1376,8 +1442,10 @@ impl EditorPane {
     pub(super) fn capture_status(&self) -> Option<&'static str> {
         match self.capture {
             Capture::Idle => None,
-            Capture::Voice(_) | Capture::Screen(_) | Capture::SavingScreen => Some("Recording"),
-            Capture::Transcribing => Some("Transcribing"),
+            Capture::Voice(_) | Capture::Screen(_) | Capture::SavingScreen => {
+                Some(locale::text("capture.recording"))
+            }
+            Capture::Transcribing => Some(locale::text("capture.transcribing")),
         }
     }
 
@@ -1413,32 +1481,25 @@ impl EditorPane {
 
     /// Stop screen capture for the open note.
     ///
-    /// The video button starts a recording from its source menu.
+    /// A new Sight note asks for the display or window. The file-tree mark stops the capture.
     pub(super) fn toggle_screen(&mut self, cx: &mut Context<Root>) {
         if self.screen_recording() {
             self.stop_screen(cx);
         }
     }
 
-    fn note_window_list(&mut self, failed: bool) {
-        if failed {
-            self.notice = Some(WINDOW_LIST_ERROR.to_string());
-        } else if self.notice.as_deref() == Some(WINDOW_LIST_ERROR) {
-            self.notice = None;
-        }
-    }
-
     fn start_voice(&mut self) {
         if !self.voice_allowed() {
-            self.notice = Some("Open a Speech note to record voice".to_string());
+            self.notice = Some(locale::text("notice.speech_note").to_string());
             return;
         }
         if !self.groq_ready() {
-            self.notice = Some(MISSING_GROQ_KEY.to_string());
+            self.notice = Some(locale::text("capture.groq_key").to_string());
             return;
         }
         match VoiceCapture::start(self.microphone.clone()) {
             Ok(capture) => {
+                self.recording_note = self.open_note.clone();
                 self.capture = Capture::Voice(capture);
                 self.notice = None;
             }
@@ -1456,11 +1517,11 @@ impl EditorPane {
         };
         let Some(key) = self.groq_key() else {
             self.capture = Capture::Voice(capture);
-            self.notice = Some(MISSING_GROQ_KEY.to_string());
+            self.notice = Some(locale::text("capture.groq_key").to_string());
             return;
         };
         self.capture = Capture::Transcribing;
-        let note_id = self.open_note.clone();
+        let note_id = self.recording_note.clone();
         let speech = SpeechRequest {
             model: self.speech_model.api_name().to_string(),
             language: {
@@ -1497,11 +1558,11 @@ impl EditorPane {
             return;
         }
         if !self.sight_allowed() {
-            self.notice = Some("Open a Sight note to record the screen".to_string());
+            self.notice = Some(locale::text("notice.sight_note").to_string());
             return;
         }
         let Some(id) = self.open_note.clone() else {
-            self.notice = Some("Open a Sight note to record the screen".to_string());
+            self.notice = Some(locale::text("notice.sight_note").to_string());
             return;
         };
         let (path, file_name) = match self.next_recording(&id) {
@@ -1513,6 +1574,7 @@ impl EditorPane {
         };
         match ScreenCapture::start(path, file_name, target) {
             Ok(capture) => {
+                self.recording_note = Some(id);
                 self.capture = Capture::Screen(capture);
                 self.notice = None;
             }
@@ -1530,7 +1592,7 @@ impl EditorPane {
         };
         let file_name = capture.file_name.clone();
         self.capture = Capture::SavingScreen;
-        let note_id = self.open_note.clone();
+        let note_id = self.recording_note.clone();
         cx.spawn(async move |this, cx| {
             let outcome = cx
                 .background_executor()
@@ -1558,9 +1620,10 @@ impl EditorPane {
         cx: &mut Context<Root>,
     ) -> bool {
         self.capture = Capture::Idle;
+        self.recording_note = None;
         let outcome = match outcome {
             Ok(outcome) if outcome.text.is_empty() => {
-                self.notice = Some("The recording had no speech".to_string());
+                self.notice = Some(locale::text("notice.no_speech").to_string());
                 return false;
             }
             Ok(outcome) => outcome,
@@ -1569,16 +1632,21 @@ impl EditorPane {
                 return false;
             }
         };
-        if !self.same_open_note(note_id.as_ref()) {
-            self.notice = Some("The note changed before the transcript was ready".to_string());
+        let Some(id) = note_id else {
+            self.notice = Some(locale::text("notice.recording_gone").to_string());
             return false;
-        }
-        self.insert_block(&outcome.text, window, cx);
+        };
+        let dirty = match self.deliver_block(&id, &outcome.text, window, cx) {
+            Ok(dirty) => dirty,
+            Err(err) => {
+                self.notice = Some(err);
+                return false;
+            }
+        };
         if outcome.truncated {
-            self.notice =
-                Some("The recording was shortened to fit the transcription limit".to_string());
+            self.notice = Some(locale::text("notice.recording_short").to_string());
         }
-        self.dirty
+        dirty
     }
 
     fn finish_screen(
@@ -1590,24 +1658,41 @@ impl EditorPane {
         cx: &mut Context<Root>,
     ) -> bool {
         self.capture = Capture::Idle;
+        self.recording_note = None;
         if let Err(err) = outcome {
             self.notice = Some(err);
             return false;
         }
-        if !self.same_open_note(note_id.as_ref()) {
-            self.notice = Some("The note changed before the recording was saved".to_string());
+        let Some(id) = note_id else {
+            self.notice = Some(locale::text("notice.recording_gone").to_string());
             return false;
-        }
+        };
         let link = markdown_link("screen recording", &file_name);
-        self.insert_block(&link, window, cx);
-        self.dirty
+        match self.deliver_block(&id, &link, window, cx) {
+            Ok(dirty) => dirty,
+            Err(err) => {
+                self.notice = Some(err);
+                false
+            }
+        }
     }
 
-    fn same_open_note(&self, note_id: Option<&NoteId>) -> bool {
-        match (self.open_note.as_ref(), note_id) {
-            (Some(open), Some(id)) => open == id,
-            _ => false,
+    /// Put `block` in the editor when `id` is open. Otherwise write that note's file.
+    fn deliver_block(
+        &mut self,
+        id: &NoteId,
+        block: &str,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) -> Result<bool, String> {
+        if self.open_note.as_ref() == Some(id) {
+            self.insert_block(block, window, cx);
+            return Ok(self.dirty);
         }
+        let file = self.vault.read(id).map_err(|err| err.to_string())?;
+        let next = note_with_block(&file, block);
+        self.vault.write(id, &next).map_err(|err| err.to_string())?;
+        Ok(false)
     }
 
     fn insert_block(&mut self, block: &str, window: &mut Window, cx: &mut Context<Root>) {
@@ -1638,18 +1723,18 @@ impl EditorPane {
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .ok_or_else(|| "The recording name is not valid text".to_string())?
+                .ok_or_else(|| locale::text("notice.recording_name").to_string())?
                 .to_string();
             return Ok((path, name));
         }
-        Err("Could not choose a recording name".to_string())
+        Err(locale::text("notice.recording_choose").to_string())
     }
 
     fn require_idle(&self) -> Result<(), String> {
         if self.capture_status().is_none() {
             Ok(())
         } else {
-            Err("Stop the recording before you change notes".to_string())
+            Err(locale::text("notice.recording_idle").to_string())
         }
     }
 
@@ -1705,7 +1790,6 @@ impl EditorPane {
         window: &mut Window,
         cx: &mut Context<Root>,
     ) -> Result<(), String> {
-        self.require_idle()?;
         let text = self.vault.read(&id).map_err(|err| err.to_string())?;
         self.clear_note_rows();
         self.reveal(&id.parent());
@@ -1745,6 +1829,10 @@ impl EditorPane {
         window: &mut Window,
         cx: &mut Context<Root>,
     ) {
+        if new_rune_blocked(kind, self.capture_status().is_some()) {
+            self.notice = Some(locale::text("notice.new_rune").to_string());
+            return;
+        }
         let seed_name = match kind {
             NoteKind::Book => "untitled",
             NoteKind::Speech => "speech",
@@ -1770,7 +1858,8 @@ impl EditorPane {
             self.close_search();
             return;
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search notes"));
+        let input = cx
+            .new(|cx| InputState::new(window, cx).placeholder(locale::text("search.placeholder")));
         self.search_watch = Some(cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change)
                 && let Some(pane) = this.pane.as_mut()
@@ -1817,21 +1906,27 @@ impl EditorPane {
             Ok(found) => {
                 self.search_hits = found.hits;
                 self.search_truncated = found.truncated;
-                if self.notice.as_deref() == Some(SEARCH_NOTICE) {
+                if self.notice.as_deref() == Some(search_notice()) {
                     self.notice = None;
                 }
             }
             Err(_) => {
                 self.search_hits.clear();
                 self.search_truncated = false;
-                self.notice = Some(SEARCH_NOTICE.to_string());
+                self.notice = Some(search_notice().to_string());
             }
         }
     }
 
     fn begin_create_folder(&mut self, window: &mut Window, cx: &mut Context<Root>) {
         let seed = child_name(&self.parent_folder(), "folder");
-        open_create_dialog("New folder", seed, NameAction::CreateFolder, window, cx);
+        open_create_dialog(
+            locale::text("tree.new_folder"),
+            seed,
+            NameAction::CreateFolder,
+            window,
+            cx,
+        );
     }
 
     fn begin_rename(&mut self, window: &mut Window, cx: &mut Context<Root>) {
@@ -1841,7 +1936,7 @@ impl EditorPane {
                 (id.name().to_string(), NameAction::RenameFolder(id.clone()))
             }
             TreeSelection::None => {
-                self.notice = Some("Select a note or folder first".to_string());
+                self.notice = Some(locale::text("tree.select_first").to_string());
                 return;
             }
         };
@@ -1874,17 +1969,17 @@ impl EditorPane {
     fn begin_delete(&mut self, window: &mut Window, cx: &mut Context<Root>) {
         let (title, message, action) = match &self.tree_selection {
             TreeSelection::Note(id) => (
-                "Delete note",
-                format!("Delete note {id}? This removes the file."),
+                locale::text("tree.delete_note"),
+                locale::format("tree.delete_note_body", &[("id", id.as_str())]),
                 ConfirmAction::DeleteNote(id.clone()),
             ),
             TreeSelection::Folder(id) => (
-                "Delete folder",
-                format!("Delete folder {id}? This removes the notes inside it."),
+                locale::text("tree.delete_folder"),
+                locale::format("tree.delete_folder_body", &[("id", id.as_str())]),
                 ConfirmAction::DeleteFolder(id.clone()),
             ),
             TreeSelection::None => {
-                self.notice = Some("Select a note or folder first".to_string());
+                self.notice = Some(locale::text("tree.select_first").to_string());
                 return;
             }
         };
@@ -1923,6 +2018,11 @@ impl EditorPane {
         window: &mut Window,
         cx: &mut Context<Root>,
     ) -> Result<(), String> {
+        if let NameAction::CreateNote(kind) = &action
+            && new_rune_blocked(*kind, self.capture_status().is_some())
+        {
+            return Err(locale::text("notice.new_rune").to_string());
+        }
         self.require_idle()?;
         match action {
             NameAction::CreateNote(kind) => {
@@ -1980,7 +2080,7 @@ impl EditorPane {
                     return Ok(());
                 }
                 let Some(parent) = from.parent() else {
-                    return Err("Select a folder inside the vault".to_string());
+                    return Err(locale::text("tree.folder_inside").to_string());
                 };
                 let to = parent.join_folder(stem).map_err(|err| err.to_string())?;
                 self.vault
@@ -2037,7 +2137,7 @@ impl EditorPane {
         Ok(())
     }
 
-    /// Load another note after the active one is gone. An empty vault opens the Archivist.
+    /// Load another note after the active one is gone. An empty vault clears the editor.
     fn settle_after_delete(
         &mut self,
         window: &mut Window,
@@ -2047,7 +2147,6 @@ impl EditorPane {
             return Ok(());
         }
         self.clear_editor(window, cx);
-        self.archivist.show();
         Ok(())
     }
 
@@ -2145,19 +2244,128 @@ impl EditorPane {
     }
 
     fn reload(&mut self) -> Result<(), Error> {
-        self.tree = self.vault.tree()?;
-        self.index = self.vault.notes()?;
+        let tree = self.vault.tree()?;
+        let index = self.vault.notes()?;
+        let stamp = self.vault.stamp()?;
+        self.tree = tree;
+        self.index = index;
+        self.stamp = stamp;
         Ok(())
     }
 
-    /// Show or hide the Archivist column.
-    pub(crate) fn toggle_archivist(&mut self) {
-        self.archivist.toggle();
+    /// The stamp from the last scan. The file watch compares against this.
+    pub(super) fn file_stamp(&self) -> &VaultStamp {
+        &self.stamp
     }
 
-    /// Whether the Archivist column is open.
-    pub(crate) fn archivist_open(&self) -> bool {
-        self.archivist.is_open()
+    /// Read the vault again and show files that changed outside the app.
+    pub(super) fn refresh_from_disk(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+        if self.prompt.is_some() {
+            return;
+        }
+        if let Err(err) = self.reload() {
+            self.fail_disk_scan(err.to_string());
+            return;
+        }
+        self.finish_disk_refresh(window, cx);
+    }
+
+    /// Install a scan that started from `base`. A newer local edit wins.
+    pub(super) fn apply_disk_refresh(
+        &mut self,
+        base: &VaultStamp,
+        refresh: DiskRefresh,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) -> bool {
+        if self.prompt.is_some() || &self.stamp != base {
+            return false;
+        }
+        self.tree = refresh.tree;
+        self.index = refresh.index;
+        self.stamp = refresh.stamp;
+        self.finish_disk_refresh(window, cx);
+        true
+    }
+
+    /// Record a failed scan. Returns true when the notice changed.
+    pub(super) fn fail_disk_scan(&mut self, message: String) -> bool {
+        let notice = locale::format("tree.refresh_error", &[("message", &message)]);
+        if self.notice.as_deref() == Some(notice.as_str()) {
+            return false;
+        }
+        self.notice = Some(notice);
+        true
+    }
+
+    fn finish_disk_refresh(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+        self.clear_disk_notice();
+        self.reconcile_open_file(window, cx);
+        if self.search.is_some() {
+            self.refresh_search(cx);
+        }
+    }
+
+    fn clear_disk_notice(&mut self) {
+        if self.notice.as_deref().is_some_and(|text| {
+            let prefix = tree_refresh_prefix();
+            !prefix.is_empty() && text.starts_with(prefix)
+        }) {
+            self.notice = None;
+        }
+    }
+
+    /// Drop a selection the scan removed, then reload a clean open note.
+    fn reconcile_open_file(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+        self.drop_missing_selection();
+        let Some(id) = self.open_note.clone() else {
+            return;
+        };
+        let matches_saved = if self.index.contains(&id) {
+            match self.vault.read(&id) {
+                Ok(text) => {
+                    let (kind, body) = note_body(&text);
+                    Some(kind == self.open_kind && body == self.saved_text)
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        match open_file_sync(self.dirty, self.capture_status().is_some(), matches_saved) {
+            OpenFileSync::Keep => {}
+            OpenFileSync::Reload => {
+                if let Err(err) = self.reload_open_note(id, window, cx) {
+                    self.notice = Some(err);
+                }
+            }
+            OpenFileSync::MissingMove => {
+                if let Err(err) = self.settle_after_delete(window, cx) {
+                    self.notice = Some(err);
+                }
+            }
+            OpenFileSync::Notice(text) => {
+                self.notice = Some(text.to_string());
+                if matches_saved.is_none() && matches!(self.tree_selection, TreeSelection::Note(_))
+                {
+                    self.tree_selection = TreeSelection::None;
+                }
+            }
+        }
+    }
+
+    fn drop_missing_selection(&mut self) {
+        match &self.tree_selection {
+            TreeSelection::Note(id) if !tree_contains_note(&self.tree.children, id) => {
+                self.tree_selection = TreeSelection::None;
+            }
+            TreeSelection::Folder(id)
+                if !id.is_root() && !tree_contains_folder(&self.tree.children, id) =>
+            {
+                self.tree_selection = TreeSelection::None;
+            }
+            _ => {}
+        }
     }
 
     /// The Archivist session drawn in the dock panel.
@@ -2169,7 +2377,7 @@ impl EditorPane {
     ///
     /// Held rows are included even when the draft is empty.
     pub(crate) fn send_archivist(&mut self, window: &mut Window, cx: &mut Context<Root>) {
-        if !self.archivist.is_open() || self.archivist.is_busy() || !self.groq_ready() {
+        if self.archivist.is_busy() || !self.archivist_ready() {
             return;
         }
         if let Err(err) = self.require_idle() {
@@ -2227,7 +2435,7 @@ impl EditorPane {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some(SharedString::from("Add file")),
+            prompt: Some(SharedString::from(locale::text("archivist.add_file"))),
         });
         cx.spawn(async move |this, cx| {
             let picked = match receiver.await {
@@ -2327,7 +2535,6 @@ impl EditorPane {
         let Some((note_id, source)) = self.selected_note_text() else {
             return;
         };
-        self.archivist.show();
         self.archivist.hold_rows(note_id, source);
         self.clear_note_rows();
     }
@@ -2338,8 +2545,9 @@ impl EditorPane {
             return;
         }
         if self.row_rewrite.is_none() {
-            let input = cx
-                .new(|cx| InputState::new(window, cx).placeholder("How should these rows change?"));
+            let input = cx.new(|cx| {
+                InputState::new(window, cx).placeholder(locale::text("preview.rewrite_placeholder"))
+            });
             input.focus_handle(cx).focus(window, cx);
             self.row_rewrite = Some(input);
         } else if let Some(input) = &self.row_rewrite {
@@ -2363,13 +2571,12 @@ impl EditorPane {
         let Some((note_id, source)) = self.selected_note_text() else {
             return;
         };
-        if !self.groq_ready() {
-            self.archivist.show();
-            self.notice = Some(crate::archivist::MISSING_KEY.to_string());
+        if !self.archivist_ready() {
+            self.notice = Some(self.archivist_key_message().to_string());
             return;
         }
         if self.archivist.is_busy() {
-            self.notice = Some("The Archivist is still working.".to_string());
+            self.notice = Some(locale::text("notice.archivist_busy").to_string());
             return;
         }
         if let Err(err) = self.require_idle() {
@@ -2384,7 +2591,6 @@ impl EditorPane {
         };
         self.archivist.drop_held_note(&note_id);
         self.clear_note_rows();
-        self.archivist.show();
         let Some(access) = self.archivist_access() else {
             return;
         };
@@ -2459,10 +2665,6 @@ impl EditorPane {
             return;
         }
         if let Some(id) = opened {
-            if self.capture_status().is_some() {
-                self.notice = Some("Stop the recording before you change notes".to_string());
-                return;
-            }
             if !self.flush_edits(cx) {
                 return;
             }
@@ -2473,13 +2675,11 @@ impl EditorPane {
         }
         let Some(id) = open else {
             if self.open_note.is_some() && self.capture_status().is_some() {
-                self.notice =
-                    Some("Stop the recording. The Archivist deleted this note.".to_string());
+                self.notice = Some(locale::text("notice.archivist_deleted").to_string());
                 return;
             }
             if !self.take_next_note(changes, window, cx) && self.open_note.is_some() {
                 self.clear_editor(window, cx);
-                self.archivist.show();
             }
             return;
         };
@@ -2489,8 +2689,7 @@ impl EditorPane {
         }
         if self.capture_status().is_some() {
             self.open_note = Some(id);
-            self.notice =
-                Some("Stop the recording to reload the note the Archivist changed.".to_string());
+            self.notice = Some(locale::text("notice.archivist_changed").to_string());
             return;
         }
         if let Err(err) = self.reload_open_note(id, window, cx) {
@@ -2579,8 +2778,12 @@ impl Drop for EditorPane {
     }
 }
 
-const SYSTEM_MICROPHONE: &str = "System default";
-const LANGUAGE_NOTICE: &str = "Use a two-letter language code, or leave the field empty.";
+fn tree_refresh_prefix() -> &'static str {
+    locale::text("tree.refresh_error")
+        .split("{message}")
+        .next()
+        .unwrap_or("")
+}
 
 fn starting_note(index: &VaultIndex, prefs: &AppConfig) -> Option<NoteId> {
     if prefs.reopen_last_note
@@ -2622,7 +2825,10 @@ fn first_note(index: &VaultIndex) -> Option<NoteId> {
 
 /// Ask which display or window a new Sight note should record.
 fn prompt_record_source(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
-    let mut rows = vec![("Full display".to_string(), ScreenTarget::Display)];
+    let mut rows = vec![(
+        locale::text("screen.full").to_string(),
+        ScreenTarget::Display,
+    )];
     let list_failed = match list_record_sources() {
         Ok(sources) => {
             for source in sources {
@@ -2633,7 +2839,7 @@ fn prompt_record_source(root: &mut Root, window: &mut Window, cx: &mut Context<R
         Err(_) => true,
     };
     if list_failed && let Some(pane) = root.pane.as_mut() {
-        pane.notice = Some(WINDOW_LIST_ERROR.to_string());
+        pane.notice = Some(window_list_error().to_string());
     }
     let view = cx.weak_entity();
     window.open_dialog(cx, move |dialog, _, dialog_cx| {
@@ -2651,19 +2857,19 @@ fn prompt_record_source(root: &mut Root, window: &mut Window, cx: &mut Context<R
                 div()
                     .text_base()
                     .text_color(danger)
-                    .child(WINDOW_LIST_ERROR),
+                    .child(window_list_error()),
             );
         }
         for (index, (label, target)) in rows.iter().cloned().enumerate() {
             column = column.child(record_source_button(view.clone(), index, label, target));
         }
         dialog
-            .title("Choose a screen")
+            .title(locale::text("screen.choose"))
             .w(px(420.))
             .child(column)
             .footer(
                 Button::new("record-cancel")
-                    .label("Cancel")
+                    .label(locale::text("dialog.cancel"))
                     .cursor_pointer()
                     .on_click(|_: &ClickEvent, window, cx| {
                         window.close_dialog(cx);
@@ -2726,7 +2932,11 @@ fn open_create_dialog(
             .title(title)
             .confirm()
             .width(px(420.))
-            .footer(dialog_footer("Cancel", "Create", ButtonVariant::Primary))
+            .footer(dialog_footer(
+                locale::text("dialog.cancel"),
+                locale::text("dialog.create"),
+                ButtonVariant::Primary,
+            ))
             .child(
                 div()
                     .w_full()
@@ -2776,7 +2986,11 @@ fn open_delete_dialog(
             .title(title)
             .description(message.clone())
             .confirm()
-            .footer(dialog_footer("Cancel", "Delete", ButtonVariant::Danger))
+            .footer(dialog_footer(
+                locale::text("dialog.cancel"),
+                locale::text("dialog.delete"),
+                ButtonVariant::Danger,
+            ))
             .on_ok(move |_event, window, cx| {
                 view.update(cx, |root, cx| {
                     let Some(pane) = root.pane.as_mut() else {
@@ -2818,9 +3032,20 @@ fn dialog_footer(
         )
 }
 
+/// Speech and Sight notes start a capture, so they wait until the current one ends.
+fn new_rune_blocked(kind: NoteKind, recording: bool) -> bool {
+    recording && matches!(kind, NoteKind::Speech | NoteKind::Sight)
+}
+
 fn note_body(text: &str) -> (NoteKind, String) {
     let (kind, body) = decode_note(text);
     (kind, body.to_string())
+}
+
+/// Append `block` to a note file and keep that note's kind header.
+fn note_with_block(file: &str, block: &str) -> String {
+    let (kind, body) = decode_note(file);
+    encode_note(kind, &append_block(body, block))
 }
 
 fn seed_body(kind: NoteKind, name: &str) -> String {
@@ -2834,11 +3059,11 @@ fn seed_body(kind: NoteKind, name: &str) -> String {
 
 pub(super) fn kind_title(kind: NoteKind) -> &'static str {
     match kind {
-        NoteKind::Book => "Book Runes (Bókrunar)",
-        NoteKind::Speech => "Speech Runes (Málrunar)",
-        NoteKind::Sight => "Sight Runes (Sjónrunar)",
-        NoteKind::Deed => "Deed Runes (Verkrunar)",
-        NoteKind::Research => "Research Runes (Rannsóknarrúnar)",
+        NoteKind::Book => locale::text("kind.book"),
+        NoteKind::Speech => locale::text("kind.speech"),
+        NoteKind::Sight => locale::text("kind.sight"),
+        NoteKind::Deed => locale::text("kind.deed"),
+        NoteKind::Research => locale::text("kind.research"),
     }
 }
 
@@ -2903,6 +3128,90 @@ fn note_in_folder(note: &NoteId, folder: &FolderId) -> bool {
 fn next_epoch() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+fn disk_changed() -> &'static str {
+    locale::text("notice.disk_changed")
+}
+
+fn disk_removed() -> &'static str {
+    locale::text("notice.disk_removed")
+}
+
+fn recording_changed() -> &'static str {
+    locale::text("notice.recording_changed")
+}
+
+fn recording_removed() -> &'static str {
+    locale::text("notice.recording_removed")
+}
+
+/// One background scan of the vault. The watch applies it on the UI thread.
+pub(super) struct DiskRefresh {
+    tree: VaultTree,
+    index: VaultIndex,
+    stamp: VaultStamp,
+}
+
+/// Read the vault when `base` is stale.
+///
+/// `Ok(None)` means the file tree is already current.
+///
+/// # Errors
+///
+/// Returns the vault error when the folder cannot be read.
+pub(super) fn scan_vault(root: &Path, base: &VaultStamp) -> Result<Option<DiskRefresh>, Error> {
+    let vault = Vault::open(root)?;
+    let stamp = vault.stamp()?;
+    if &stamp == base {
+        return Ok(None);
+    }
+    Ok(Some(DiskRefresh {
+        tree: vault.tree()?,
+        index: vault.notes()?,
+        stamp,
+    }))
+}
+
+enum OpenFileSync {
+    Keep,
+    Reload,
+    MissingMove,
+    Notice(&'static str),
+}
+
+/// What to do with the open note after a scan.
+///
+/// `matches_saved` is `None` when the file is gone.
+/// A clean note reloads. Unsaved text and a live recording stay on screen.
+fn open_file_sync(dirty: bool, capturing: bool, matches_saved: Option<bool>) -> OpenFileSync {
+    match matches_saved {
+        Some(true) => OpenFileSync::Keep,
+        Some(false) if capturing => OpenFileSync::Notice(recording_changed()),
+        Some(false) if dirty => OpenFileSync::Notice(disk_changed()),
+        Some(false) => OpenFileSync::Reload,
+        None if capturing => OpenFileSync::Notice(recording_removed()),
+        None if dirty => OpenFileSync::Notice(disk_removed()),
+        None => OpenFileSync::MissingMove,
+    }
+}
+
+fn tree_contains_note(entries: &[runebook::TreeEntry], id: &NoteId) -> bool {
+    entries.iter().any(|entry| match entry {
+        runebook::TreeEntry::Note { id: note, .. } => note == id,
+        runebook::TreeEntry::Folder { children, .. } => tree_contains_note(children, id),
+    })
+}
+
+fn tree_contains_folder(entries: &[runebook::TreeEntry], id: &FolderId) -> bool {
+    entries.iter().any(|entry| match entry {
+        runebook::TreeEntry::Folder {
+            id: folder,
+            children,
+            ..
+        } => folder == id || tree_contains_folder(children, id),
+        runebook::TreeEntry::Note { .. } => false,
+    })
 }
 
 fn follow_open(
@@ -3063,6 +3372,69 @@ mod next_open_tests {
 }
 
 #[cfg(test)]
+mod disk_sync_tests {
+    use super::{
+        OpenFileSync, disk_changed, disk_removed, open_file_sync, recording_changed,
+        recording_removed,
+    };
+
+    fn notice(sync: OpenFileSync) -> Option<&'static str> {
+        match sync {
+            OpenFileSync::Notice(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn clean_note_reloads_when_the_file_changed() {
+        assert!(matches!(
+            open_file_sync(false, false, Some(false)),
+            super::OpenFileSync::Reload
+        ));
+        assert!(matches!(
+            open_file_sync(false, false, Some(true)),
+            super::OpenFileSync::Keep
+        ));
+    }
+
+    #[test]
+    fn unsaved_text_stays_when_the_file_changed() {
+        assert_eq!(
+            notice(open_file_sync(true, false, Some(false))),
+            Some(disk_changed())
+        );
+        assert!(matches!(
+            open_file_sync(true, false, Some(true)),
+            super::OpenFileSync::Keep
+        ));
+    }
+
+    #[test]
+    fn missing_clean_note_moves_and_a_dirty_note_stays() {
+        assert!(matches!(
+            open_file_sync(false, false, None),
+            super::OpenFileSync::MissingMove
+        ));
+        assert_eq!(
+            notice(open_file_sync(true, false, None)),
+            Some(disk_removed())
+        );
+    }
+
+    #[test]
+    fn recording_blocks_a_reload() {
+        assert_eq!(
+            notice(open_file_sync(false, true, Some(false))),
+            Some(recording_changed())
+        );
+        assert_eq!(
+            notice(open_file_sync(true, true, None)),
+            Some(recording_removed())
+        );
+    }
+}
+
+#[cfg(test)]
 mod task_tests {
     use super::toggled_task_body;
 
@@ -3080,5 +3452,31 @@ mod task_tests {
             next,
             "# Task list\n\n- [ ] Completed task\n- [x] Incomplete task\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod capture_note_tests {
+    use super::{new_rune_blocked, note_with_block};
+    use runebook::{NoteKind, decode_note, encode_note};
+
+    #[test]
+    fn speech_and_sight_wait_while_a_capture_runs() {
+        assert!(new_rune_blocked(NoteKind::Speech, true));
+        assert!(new_rune_blocked(NoteKind::Sight, true));
+        assert!(!new_rune_blocked(NoteKind::Book, true));
+        assert!(!new_rune_blocked(NoteKind::Deed, true));
+        assert!(!new_rune_blocked(NoteKind::Research, true));
+        assert!(!new_rune_blocked(NoteKind::Speech, false));
+    }
+
+    #[test]
+    fn a_saved_note_keeps_its_header_when_a_block_is_appended() {
+        let file = encode_note(NoteKind::Speech, "# speech\n");
+        let next = note_with_block(&file, "hello");
+        let (kind, body) = decode_note(&next);
+        assert_eq!(kind, NoteKind::Speech);
+        assert!(body.contains("hello"));
+        assert!(body.contains("# speech"));
     }
 }

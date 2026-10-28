@@ -16,6 +16,7 @@ use runebook::{FolderId, NoteId, NoteKind, VaultIndex, decode_note, encode_note}
 use superglue::cancel::CancellationToken;
 
 use super::EditorPane;
+use crate::locale;
 use crate::{Root, on_root};
 
 struct QuestionField {
@@ -74,7 +75,9 @@ impl EditorPane {
         cancel: CancellationToken,
     ) -> Result<superglue::chat::ChatOptions, charlotte::CharlotteError> {
         let Some(key) = crate::models::resolve_openai_key(&self.models.openai_api_key) else {
-            return Err(charlotte::CharlotteError::msg("Set OPENAI_API_KEY."));
+            return Err(charlotte::CharlotteError::msg(locale::text(
+                "research.openai_key",
+            )));
         };
         charlotte::research_chat_options_from(
             &key,
@@ -113,7 +116,7 @@ impl EditorPane {
         }
         let query = wizard.query.read(cx).value().trim().to_string();
         if query.is_empty() {
-            self.notice = Some("Enter a question.".to_string());
+            self.notice = Some(locale::text("research.enter_question").to_string());
             return;
         }
         let cancel = CancellationToken::new();
@@ -134,9 +137,11 @@ impl EditorPane {
         cx.spawn(async move |this, cx| {
             let task =
                 runtime().spawn(async move { ask_clarifying_questions(&asked, &options).await });
-            let raw = task.await.unwrap_or(Err(charlotte::CharlotteError::msg(
-                "the question call stopped",
-            )));
+            let raw = task
+                .await
+                .unwrap_or(Err(charlotte::CharlotteError::msg(locale::text(
+                    "research.question_stopped",
+                ))));
             this.update_in(cx, |root, window, cx| {
                 let Some(pane) = root.pane.as_mut() else {
                     return;
@@ -505,13 +510,13 @@ pub(super) fn wizard(
                 .flex()
                 .flex_col()
                 .gap_3()
-                .child("Research rune")
+                .child(locale::text("research.title"))
                 .child(div().text_base().text_color(muted).child(if asking {
-                    "Preparing questions."
+                    locale::text("research.preparing_questions")
                 } else if questions {
-                    "Answer the questions, then start the investigation."
+                    locale::text("research.answer_then_start")
                 } else {
-                    "What should this rune investigate?"
+                    locale::text("research.ask")
                 }))
                 .when(!questions, |column| {
                     column.child(Input::new(&query).w_full())
@@ -526,7 +531,7 @@ pub(super) fn wizard(
                             Button::new("research-start")
                                 .small()
                                 .cursor_pointer()
-                                .label("Start")
+                                .label(locale::text("research.start"))
                                 .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
                                     if let Some(pane) = this.pane.as_mut() {
                                         pane.submit_research_answers(window, cx);
@@ -539,7 +544,11 @@ pub(super) fn wizard(
                                 .small()
                                 .cursor_pointer()
                                 .disabled(asking)
-                                .label(if asking { "Preparing" } else { "Continue" })
+                                .label(if asking {
+                                    locale::text("research.preparing")
+                                } else {
+                                    locale::text("research.continue")
+                                })
                                 .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
                                     if let Some(pane) = this.pane.as_mut() {
                                         pane.submit_research_query(cx);
@@ -553,7 +562,7 @@ pub(super) fn wizard(
                                 .ghost()
                                 .small()
                                 .cursor_pointer()
-                                .label("Cancel")
+                                .label(locale::text("research.cancel"))
                                 .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
                                     if let Some(pane) = this.pane.as_mut() {
                                         pane.cancel_research_wizard();
@@ -635,7 +644,7 @@ pub(super) fn report(
                             .map(elapsed_text)
                             .unwrap_or_else(|| "0:00".to_string())
                     } else {
-                        "Waiting".to_string()
+                        locale::text("research.waiting").to_string()
                     };
                     column.child(
                         div()
@@ -654,7 +663,7 @@ pub(super) fn report(
                 })
                 .when(show_query, |column| {
                     column.child(report_block(
-                        "Query",
+                        locale::text("research.query"),
                         border,
                         muted,
                         div()
@@ -667,7 +676,7 @@ pub(super) fn report(
                 })
                 .when(show_answers, |column| {
                     column.child(report_block(
-                        "Answers",
+                        locale::text("research.answers"),
                         border,
                         muted,
                         div()
@@ -682,7 +691,7 @@ pub(super) fn report(
                 })
                 .when(show_plan, |column| {
                     column.child(report_block(
-                        "Plan",
+                        locale::text("research.plan"),
                         border,
                         muted,
                         crate::markdown_view::view("research-plan", plan, plan_images, false)
@@ -710,7 +719,12 @@ pub(super) fn report(
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().text_base().text_color(danger).child("Stopped"))
+                            .child(
+                                div()
+                                    .text_base()
+                                    .text_color(danger)
+                                    .child(locale::text("research.stopped")),
+                            )
                             .child(
                                 div()
                                     .w_full()
@@ -731,7 +745,7 @@ pub(super) fn report(
                             .flex()
                             .flex_col()
                             .gap_3()
-                            .child(div().text_base().child("Findings"))
+                            .child(div().text_base().child(locale::text("research.findings")))
                             .child(
                                 crate::markdown_view::view(
                                     "research-findings",
@@ -848,7 +862,7 @@ fn research_card(
             .map(elapsed_text)
             .unwrap_or_else(|| "0:00".to_string())
     } else {
-        "Waiting".to_string()
+        locale::text("research.waiting").to_string()
     };
     let key = format!("research-{}", job.note);
     div()
@@ -881,7 +895,7 @@ fn research_card(
                         .ghost()
                         .small()
                         .cursor_pointer()
-                        .label("Stop")
+                        .label(locale::text("research.stop"))
                         .on_click(on_root(&view, move |this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             if let Some(pane) = this.pane.as_mut() {
@@ -895,7 +909,7 @@ fn research_card(
 
 fn card_phase(job: &Job) -> String {
     if !job.running {
-        return "Waiting".to_string();
+        return locale::text("research.waiting").to_string();
     }
     job.phase
         .lock()
@@ -1127,7 +1141,7 @@ fn unique_research_id(
             return Ok(id);
         }
     }
-    Err("The folder already has these research notes.".to_string())
+    Err(locale::text("research.folder_full").to_string())
 }
 
 fn research_slug(query: &str) -> String {

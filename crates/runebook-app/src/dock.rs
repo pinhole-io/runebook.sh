@@ -68,9 +68,9 @@ impl DockPanel {
 
     fn label(&self) -> &'static str {
         match self.slot {
-            Slot::Files => "Notes",
-            Slot::Note => "Note",
-            Slot::Archivist => "Archivist",
+            Slot::Files => crate::locale::text("dock.files"),
+            Slot::Note => crate::locale::text("dock.note"),
+            Slot::Archivist => crate::locale::text("dock.archivist"),
         }
     }
 }
@@ -82,18 +82,6 @@ impl BasePanel for DockPanel {
 
     fn closable(&self, _: &App) -> bool {
         false
-    }
-
-    fn visible(&self, cx: &App) -> bool {
-        if !matches!(self.slot, Slot::Archivist) {
-            return true;
-        }
-        self.root.upgrade().is_some_and(|root| {
-            root.read(cx)
-                .pane
-                .as_ref()
-                .is_some_and(|pane| pane.archivist_open())
-        })
     }
 }
 
@@ -124,8 +112,8 @@ impl Render for DockPanel {
         self.queue_clips(cx);
         let body = self.body(cx);
         let min_width = match self.slot {
-            Slot::Files => crate::chrome::SIDEBAR_MIN_WIDTH,
-            Slot::Note | Slot::Archivist => px(0.),
+            Slot::Files | Slot::Archivist => crate::chrome::SIDEBAR_MIN_WIDTH,
+            Slot::Note => px(0.),
         };
         div()
             .id(self.name())
@@ -177,10 +165,14 @@ impl DockPanel {
         match self.slot {
             Slot::Files => crate::pane::files(pane, view, cx).into_any_element(),
             Slot::Note => crate::pane::note(pane, view, cx).into_any_element(),
-            Slot::Archivist => {
-                crate::archivist::column(pane.archivist(), pane.groq_ready(), view, cx)
-                    .into_any_element()
-            }
+            Slot::Archivist => crate::archivist::column(
+                pane.archivist(),
+                pane.archivist_ready(),
+                pane.archivist_key_message(),
+                view,
+                cx,
+            )
+            .into_any_element(),
         }
     }
 }
@@ -224,59 +216,75 @@ pub(crate) fn install(
             area.set_center(default_layout(window, cx), window, cx);
         });
     }
-    // The dock floor is 100px. That can hide the New note, New folder, and Search icons.
-    // DockLayout cannot raise one slot's floor, so a finished drag is widened here.
+    // The dock floor is 100px. That can hide the files header icons and
+    // squeeze the Archivist pane. DockLayout cannot raise one slot's floor,
+    // so a finished drag is widened here.
     cx.subscribe_in(&area, window, |_this, area, event, window, cx| {
         if !matches!(event, DockEvent::LayoutChanged) {
             return;
         }
         let area = area.clone();
         cx.defer_in(window, move |this, window, cx| {
-            clamp_files_sidebar(&area, window, cx);
+            clamp_side_panes(&area, window, cx);
             this.schedule_dock_save(&area, cx);
         });
     })
     .detach();
     let area_for_save = area.clone();
     cx.defer_in(window, move |this, window, cx| {
-        clamp_files_sidebar(&area_for_save, window, cx);
+        clamp_side_panes(&area_for_save, window, cx);
         this.schedule_dock_save(&area_for_save, cx);
     });
     area
 }
 
-fn clamp_files_sidebar(area: &Entity<DockArea>, window: &mut Window, cx: &mut App) {
-    let plan = {
+fn clamp_side_panes(area: &Entity<DockArea>, window: &mut Window, cx: &mut App) {
+    let plans = {
         let dock = area.read(cx);
         let Some(tree) = dock.layout(DockPlacement::Center) else {
             return;
         };
-        let Some(files) = files_panel(&dock, cx) else {
-            return;
-        };
-        let Some((node, index, sizes)) = files_column(tree.root(), files) else {
-            return;
-        };
-        widen_sidebar(&sizes, index).map(|sizes| (node, sizes))
+        let mut groups: Vec<(NodeId, Vec<usize>, Vec<Option<Pixels>>)> = Vec::new();
+        for name in [FILES, ARCHIVIST] {
+            let Some(panel) = panel_named(&dock, name, cx) else {
+                continue;
+            };
+            let Some((node, index, sizes)) = pane_column(tree.root(), panel) else {
+                continue;
+            };
+            if let Some(group) = groups.iter_mut().find(|group| group.0 == node) {
+                group.1.push(index);
+            } else {
+                groups.push((node, vec![index], sizes));
+            }
+        }
+        groups
+            .into_iter()
+            .filter_map(|(node, indexes, sizes)| {
+                widen_columns(&sizes, &indexes).map(|sizes| (node, sizes))
+            })
+            .collect::<Vec<_>>()
     };
-    let Some((node, sizes)) = plan else {
+    if plans.is_empty() {
         return;
-    };
+    }
     area.update(cx, |area, cx| {
-        area.set_split_sizes(node, sizes, window, cx);
+        for (node, sizes) in plans {
+            area.set_split_sizes(node, sizes, window, cx);
+        }
     });
 }
 
-fn files_panel(area: &DockArea, cx: &App) -> Option<PanelId> {
+fn panel_named(area: &DockArea, name: &str, cx: &App) -> Option<PanelId> {
     let tree = area.layout(DockPlacement::Center)?;
     tree.panels().find(|id| {
         area.panel(*id)
-            .is_some_and(|view| view.panel_name(cx) == FILES)
+            .is_some_and(|view| view.panel_name(cx) == name)
     })
 }
 
-/// The horizontal slot whose size is the files column width.
-fn files_column(node: &PaneNode, files: PanelId) -> Option<(NodeId, usize, Vec<Option<Pixels>>)> {
+/// The horizontal slot whose size is this panel's column width.
+fn pane_column(node: &PaneNode, panel: PanelId) -> Option<(NodeId, usize, Vec<Option<Pixels>>)> {
     let PaneRef::Split {
         axis,
         children,
@@ -287,10 +295,10 @@ fn files_column(node: &PaneNode, files: PanelId) -> Option<(NodeId, usize, Vec<O
     };
     if axis == Axis::Horizontal {
         for (index, child) in children.iter().enumerate() {
-            if !subtree_has(child, files) {
+            if !subtree_has(child, panel) {
                 continue;
             }
-            if let Some(nested) = files_column(child, files) {
+            if let Some(nested) = pane_column(child, panel) {
                 return Some(nested);
             }
             return Some((node.id(), index, sizes.to_vec()));
@@ -298,7 +306,7 @@ fn files_column(node: &PaneNode, files: PanelId) -> Option<(NodeId, usize, Vec<O
         return None;
     }
     for child in children {
-        if let Some(found) = files_column(child, files) {
+        if let Some(found) = pane_column(child, panel) {
             return Some(found);
         }
     }
@@ -312,34 +320,61 @@ fn subtree_has(node: &PaneNode, files: PanelId) -> bool {
     }
 }
 
-/// Grow the files slot to [`crate::chrome::SIDEBAR_MIN_WIDTH`].
+/// Grow each listed slot to [`crate::chrome::SIDEBAR_MIN_WIDTH`].
 ///
-/// The extra width comes from the other slots. The total stays the same, so
-/// the dock does not scale the column back down. `None` means the row is
-/// already wide enough, or a slot has not been measured yet.
-fn widen_sidebar(sizes: &[Option<Pixels>], index: usize) -> Option<Vec<Pixels>> {
-    let current = sizes.get(index).copied().flatten()?;
-    if current >= crate::chrome::SIDEBAR_MIN_WIDTH {
+/// The extra width comes from the other slots. A listed slot keeps its width
+/// down to the floor, and only lends what it has above that floor. The total
+/// stays the same, so the dock does not scale the column back down. `None`
+/// means every listed slot is already wide enough, a slot has not been
+/// measured yet, or the row cannot spare the width.
+fn widen_columns(sizes: &[Option<Pixels>], indexes: &[usize]) -> Option<Vec<Pixels>> {
+    if indexes.is_empty() || sizes.iter().any(Option::is_none) {
         return None;
     }
-    if sizes.iter().any(Option::is_none) {
-        return None;
-    }
+    let min = crate::chrome::SIDEBAR_MIN_WIDTH;
     let mut next: Vec<Pixels> = sizes.iter().copied().flatten().collect();
-    let mut growth = crate::chrome::SIDEBAR_MIN_WIDTH - next[index];
-    next[index] = crate::chrome::SIDEBAR_MIN_WIDTH;
-    for (slot, size) in next.iter_mut().enumerate() {
-        if slot == index || growth <= px(0.) {
-            continue;
+    let mut growth = px(0.);
+    for &index in indexes {
+        let current = *next.get(index)?;
+        if current < min {
+            growth += min - current;
+            next[index] = min;
         }
-        let give = if *size < growth { *size } else { growth };
-        *size -= give;
-        growth -= give;
+    }
+    if growth <= px(0.) {
+        return None;
+    }
+    growth = give_width(&mut next, growth, indexes, false, px(0.));
+    if growth > px(0.) {
+        growth = give_width(&mut next, growth, indexes, true, min);
     }
     if growth > px(0.) {
         return None;
     }
     Some(next)
+}
+
+/// Move `growth` out of the slots selected by `protected`, down to `floor`.
+fn give_width(
+    sizes: &mut [Pixels],
+    mut growth: Pixels,
+    indexes: &[usize],
+    protected: bool,
+    floor: Pixels,
+) -> Pixels {
+    for (slot, size) in sizes.iter_mut().enumerate() {
+        if growth <= px(0.) {
+            break;
+        }
+        if indexes.contains(&slot) != protected {
+            continue;
+        }
+        let spare = if *size > floor { *size - floor } else { px(0.) };
+        let give = if spare < growth { spare } else { growth };
+        *size -= give;
+        growth -= give;
+    }
+    growth
 }
 
 fn register_panels(cx: &mut App) {
@@ -389,7 +424,7 @@ fn watch<T: 'static>(root: WeakEntity<Root>, window: &mut Window, cx: &mut Conte
 
 #[cfg(test)]
 mod tests {
-    use super::{LAYOUT_LIMIT, accept_layout, widen_sidebar};
+    use super::{LAYOUT_LIMIT, accept_layout, widen_columns};
     use gpui_kit::px;
 
     #[test]
@@ -418,36 +453,61 @@ mod tests {
     }
 
     #[test]
-    fn widen_sidebar_keeps_a_wide_files_column() {
+    fn widen_columns_keeps_a_wide_files_column() {
         let sizes = [Some(px(260.)), Some(px(400.)), Some(px(320.))];
-        assert!(widen_sidebar(&sizes, 0).is_none());
+        assert!(widen_columns(&sizes, &[0]).is_none());
     }
 
     #[test]
-    fn widen_sidebar_grows_the_files_column_from_its_neighbor() {
+    fn widen_columns_grows_the_files_column_from_its_neighbor() {
         let sizes = [Some(px(40.)), Some(px(500.)), Some(px(320.))];
-        let next = widen_sidebar(&sizes, 0).expect("narrow column");
+        let next = widen_columns(&sizes, &[0]).expect("narrow column");
         let min = crate::chrome::SIDEBAR_MIN_WIDTH;
         assert_eq!(next, vec![min, px(500.) - (min - px(40.)), px(320.)]);
     }
 
     #[test]
-    fn widen_sidebar_grows_a_files_column_that_is_not_first() {
+    fn widen_columns_grows_a_files_column_that_is_not_first() {
         let sizes = [Some(px(320.)), Some(px(40.)), Some(px(400.))];
-        let next = widen_sidebar(&sizes, 1).expect("narrow column");
+        let next = widen_columns(&sizes, &[1]).expect("narrow column");
         let min = crate::chrome::SIDEBAR_MIN_WIDTH;
         assert_eq!(next, vec![px(320.) - (min - px(40.)), min, px(400.)]);
     }
 
     #[test]
-    fn widen_sidebar_skips_an_unmeasured_slot() {
+    fn widen_columns_skips_an_unmeasured_slot() {
         let sizes = [Some(px(100.)), None, Some(px(320.))];
-        assert!(widen_sidebar(&sizes, 0).is_none());
+        assert!(widen_columns(&sizes, &[0]).is_none());
     }
 
     #[test]
-    fn widen_sidebar_refuses_when_the_row_cannot_spare_the_width() {
+    fn widen_columns_refuses_when_the_row_cannot_spare_the_width() {
         let sizes = [Some(px(40.)), Some(px(10.)), Some(px(10.))];
-        assert!(widen_sidebar(&sizes, 0).is_none());
+        assert!(widen_columns(&sizes, &[0]).is_none());
+    }
+
+    #[test]
+    fn widen_columns_keeps_both_side_panes_at_the_floor() {
+        let sizes = [Some(px(40.)), Some(px(700.)), Some(px(40.))];
+        let next = widen_columns(&sizes, &[0, 2]).expect("narrow sides");
+        let min = crate::chrome::SIDEBAR_MIN_WIDTH;
+        let extra = min - px(40.);
+        assert_eq!(next, vec![min, px(700.) - extra - extra, min]);
+    }
+
+    #[test]
+    fn widen_columns_borrows_surplus_above_the_other_floor() {
+        let sizes = [Some(px(40.)), Some(px(10.)), Some(px(400.))];
+        let next = widen_columns(&sizes, &[0, 2]).expect("note is small");
+        let min = crate::chrome::SIDEBAR_MIN_WIDTH;
+        let from_note = px(10.);
+        let from_archivist = (min - px(40.)) - from_note;
+        assert_eq!(next, vec![min, px(0.), px(400.) - from_archivist]);
+    }
+
+    #[test]
+    fn widen_columns_refuses_when_both_floors_do_not_fit() {
+        let sizes = [Some(px(40.)), Some(px(10.)), Some(px(40.))];
+        assert!(widen_columns(&sizes, &[0, 2]).is_none());
     }
 }

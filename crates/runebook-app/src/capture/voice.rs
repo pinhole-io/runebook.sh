@@ -13,7 +13,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, Stream};
 use reqwest::blocking::multipart;
 
-use super::MISSING_GROQ_KEY;
+use crate::locale;
 
 const GROQ_URL: &str = "https://api.groq.com/openai/v1/audio/transcriptions";
 const GROQ_MODEL: &str = "whisper-large-v3-turbo";
@@ -74,7 +74,7 @@ impl VoiceCapture {
             Err(_) => {
                 stop.store(true, Ordering::Relaxed);
                 let _ = thread.join();
-                Err("The microphone did not start".to_string())
+                Err(locale::text("mic.start").to_string())
             }
         }
     }
@@ -84,7 +84,7 @@ impl VoiceCapture {
         if let Some(thread) = self.thread.take() {
             thread
                 .join()
-                .map_err(|_| "The microphone thread stopped".to_string())??;
+                .map_err(|_| locale::text("mic.thread").to_string())??;
         }
         let buf = match self.samples.lock() {
             Ok(mut buf) => std::mem::take(&mut *buf),
@@ -123,11 +123,11 @@ pub(crate) fn voice_to_text(
 ) -> Result<VoiceOutcome, String> {
     let audio = capture.stop()?;
     if audio.samples.is_empty() {
-        return Err("The recording was empty".to_string());
+        return Err(locale::text("mic.empty").to_string());
     }
     let key = key.trim().to_string();
     if key.is_empty() {
-        return Err(MISSING_GROQ_KEY.to_string());
+        return Err(locale::text("capture.groq_key").to_string());
     }
     let wav = encode_wav(&audio.samples, audio.sample_rate)?;
     let text = transcribe_wav(&wav, &key, &speech)?;
@@ -163,12 +163,12 @@ fn open_input(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device, Str
     match name {
         None => host
             .default_input_device()
-            .ok_or_else(|| "No microphone is available".to_string()),
+            .ok_or_else(|| locale::text("mic.none").to_string()),
         Some(name) => host
             .input_devices()
-            .map_err(|err| format!("Could not list microphones: {err}"))?
+            .map_err(|err| locale::format("mic.list", &[("err", &err.to_string())]))?
             .find(|device| device.name().ok().as_deref() == Some(name))
-            .ok_or_else(|| format!("The microphone \"{name}\" is not available")),
+            .ok_or_else(|| locale::format("mic.missing", &[("name", name)])),
     }
 }
 
@@ -189,7 +189,7 @@ fn capture_loop(
     let config = match device.default_input_config() {
         Ok(config) => config,
         Err(err) => {
-            let err = format!("Could not open the microphone: {err}");
+            let err = locale::format("mic.open", &[("err", &err.to_string())]);
             let _ = ready.send(Err(err.clone()));
             return Err(err);
         }
@@ -206,7 +206,7 @@ fn capture_loop(
         SampleFormat::U16 => {
             build_stream::<u16>(&device, &config.into(), Arc::clone(&buffer), channels)
         }
-        _ => Err("This microphone uses an unsupported sample format".to_string()),
+        _ => Err(locale::text("mic.format").to_string()),
     };
     let stream = match stream {
         Ok(stream) => stream,
@@ -216,7 +216,7 @@ fn capture_loop(
         }
     };
     if let Err(err) = stream.play() {
-        let err = format!("Could not start the microphone: {err}");
+        let err = locale::format("mic.start_detail", &[("err", &err.to_string())]);
         let _ = ready.send(Err(err.clone()));
         return Err(err);
     }
@@ -250,7 +250,7 @@ where
             },
             None,
         )
-        .map_err(|err| format!("Could not open the microphone: {err}"))
+        .map_err(|err| locale::format("mic.open", &[("err", &err.to_string())]))
 }
 
 fn push_mono<T>(buffer: &Mutex<SampleBuf>, data: &[T], channels: usize)
@@ -288,7 +288,7 @@ where
 
 pub(crate) fn encode_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, String> {
     if sample_rate == 0 {
-        return Err("The microphone sample rate is invalid".to_string());
+        return Err(locale::text("mic.rate").to_string());
     }
     let spec = hound::WavSpec {
         channels: 1,
@@ -298,17 +298,17 @@ pub(crate) fn encode_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, S
     };
     let mut cursor = Cursor::new(Vec::new());
     let mut writer = hound::WavWriter::new(&mut cursor, spec)
-        .map_err(|_| "Could not encode the recording".to_string())?;
+        .map_err(|_| locale::text("mic.encode").to_string())?;
     for sample in samples {
         let clipped = sample.clamp(-1.0, 1.0);
         let value = (clipped * f32::from(i16::MAX)) as i16;
         writer
             .write_sample(value)
-            .map_err(|_| "Could not encode the recording".to_string())?;
+            .map_err(|_| locale::text("mic.encode").to_string())?;
     }
     writer
         .finalize()
-        .map_err(|_| "Could not encode the recording".to_string())?;
+        .map_err(|_| locale::text("mic.encode").to_string())?;
     Ok(cursor.into_inner())
 }
 
@@ -316,11 +316,11 @@ fn transcribe_wav(wav: &[u8], api_key: &str, speech: &SpeechRequest) -> Result<S
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
-        .map_err(|_| "Could not start the Groq client".to_string())?;
+        .map_err(|_| locale::text("mic.groq_client").to_string())?;
     let part = multipart::Part::bytes(wav.to_vec())
         .file_name("audio.wav")
         .mime_str("audio/wav")
-        .map_err(|_| "Could not encode the recording".to_string())?;
+        .map_err(|_| locale::text("mic.encode").to_string())?;
     let model = if speech.model.trim().is_empty() {
         GROQ_MODEL
     } else {
@@ -343,15 +343,18 @@ fn transcribe_wav(wav: &[u8], api_key: &str, speech: &SpeechRequest) -> Result<S
         .bearer_auth(api_key)
         .multipart(form)
         .send()
-        .map_err(|_| "Could not reach Groq".to_string())?;
+        .map_err(|_| locale::text("mic.groq_reach").to_string())?;
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("Groq transcription failed ({status})"));
+        return Err(locale::format(
+            "mic.groq_failed",
+            &[("status", &status.to_string())],
+        ));
     }
     let body = response
         .text()
-        .map_err(|_| "Groq returned an unreadable response".to_string())?;
-    transcript_from_json(&body).map_err(|_| "Groq returned an unexpected response".to_string())
+        .map_err(|_| locale::text("mic.groq_unreadable").to_string())?;
+    transcript_from_json(&body).map_err(|_| locale::text("mic.groq_unexpected").to_string())
 }
 
 pub(crate) fn transcript_from_json(body: &str) -> Result<String, ()> {

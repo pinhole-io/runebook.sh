@@ -16,6 +16,13 @@ fn default_true() -> bool {
     true
 }
 
+/// Window language used when `locale` is missing or blank.
+pub const DEFAULT_LOCALE: &str = "en";
+
+fn default_locale() -> String {
+    DEFAULT_LOCALE.to_string()
+}
+
 /// OpenAI-compatible host used when Settings and `OPENAI_BASE_URL` are empty.
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com";
 
@@ -53,6 +60,9 @@ pub struct AppConfig {
     /// Window theme.
     #[serde(default)]
     pub theme: ThemeChoice,
+    /// Window language code. An unknown code uses English in the app.
+    #[serde(default = "default_locale")]
+    pub locale: String,
     /// Body and editor text size. Medium matches the theme file.
     #[serde(default)]
     pub text_size: TextSize,
@@ -104,6 +114,7 @@ impl Default for AppConfig {
             speech_model: SpeechModel::default(),
             speech_language: String::new(),
             theme: ThemeChoice::default(),
+            locale: default_locale(),
             text_size: TextSize::default(),
             note_view: NoteViewChoice::default(),
             line_numbers: true,
@@ -242,6 +253,9 @@ impl AppConfig {
         if config.tool_rounds < 1 {
             config.tool_rounds = DEFAULT_TOOL_ROUNDS;
         }
+        if config.locale.trim().is_empty() {
+            config.locale = default_locale();
+        }
         Ok(config)
     }
 
@@ -365,6 +379,7 @@ mod tests {
         assert!(config.soft_wrap);
         assert!(!config.media_muted);
         assert!(config.speech_language.is_empty());
+        assert_eq!(config.locale, super::DEFAULT_LOCALE);
         assert_eq!(config.text_size, super::TextSize::Medium);
         assert_eq!(config.autosave, super::AutosavePace::Normal);
         assert_eq!(config.speech_model, super::SpeechModel::Fast);
@@ -381,6 +396,7 @@ mod tests {
             reopen_last_note: false,
             speech_model: super::SpeechModel::Accurate,
             speech_language: "en".to_string(),
+            locale: "is".to_string(),
             text_size: super::TextSize::Large,
             line_numbers: false,
             soft_wrap: false,
@@ -392,5 +408,15 @@ mod tests {
         let loaded = AppConfig::load_from(&path).unwrap();
         assert_eq!(loaded, saved);
         assert_eq!(loaded.autosave.delay_ms(), None);
+        assert_eq!(loaded.locale, "is");
+    }
+
+    #[test]
+    fn a_blank_locale_loads_as_english() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "locale = \"  \"\n").unwrap();
+        let config = AppConfig::load_from(&path).unwrap();
+        assert_eq!(config.locale, super::DEFAULT_LOCALE);
     }
 }

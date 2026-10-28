@@ -40,10 +40,11 @@ kind: speech
 - The alt text shows when that image does not load. The path must stay inside the vault.
 - Skip hidden paths and symlinks. Do not follow a symlink out of the vault.
 - There is no sidecar database. The index is rebuilt from the files.
-- User config is `$XDG_CONFIG_HOME/runebook/config.toml`. It stores `last_vault`, `last_note`, `reopen_last_note`, `microphone`, `speech_model`, `speech_language`, `theme`, `text_size`, `note_view`, `line_numbers`, `soft_wrap`, `autosave`, `media_muted`, `dock_layout`, `tool_rounds`, and the model fields. An empty model field uses the matching environment variable.
+- User config is `$XDG_CONFIG_HOME/runebook/config.toml`. It stores `last_vault`, `last_note`, `reopen_last_note`, `microphone`, `speech_model`, `speech_language`, `theme`, `locale`, `text_size`, `note_view`, `line_numbers`, `soft_wrap`, `autosave`, `media_muted`, `dock_layout`, `tool_rounds`, and the model fields. An empty model field uses the matching environment variable.
 - `reopen_last_note` opens `last_note` when that note is still in the vault. Otherwise the window opens `welcome`, then the first note.
 - `autosave` is `fast` (200 ms), `normal` (400 ms), `slow` (1 s), or `manual`. Manual writes the note when you leave it or close the window.
 - `speech_model` is `fast` (`whisper-large-v3-turbo`) or `accurate` (`whisper-large-v3`). An empty `speech_language` lets Groq detect the language. A saved language is a two-letter code.
+- `locale` is the window language. `en` is English. A blank or unknown code uses English. Window text lives in `locales/en.json`.
 - `text_size` is `small`, `medium`, or `large`. Medium matches the theme file. Line numbers and soft wrap default to on. `media_muted` starts a new clip silent.
 - `themes/runebook.json` sets the UI font, the mono font, the radius, and the main colors. The app loads that file at startup.
 
@@ -61,6 +62,8 @@ Resolve `[[target]]` in this order:
 - Call `gpui_kit::init` before any GPUI Kit control.
 - The window uses a Kit `TitleBar`. The toolbar sits in that bar.
 - The file tree, the note, and the Archivist column sit in a Kit `DockArea`.
+- The file tree reads the vault every 500 ms. A change made outside the app shows up on that read. The refresh button reads immediately.
+- A clean open note reloads when its file changed. Unsaved text stays in the editor.
 - The Archivist can attach up to 8 files. An image or a PDF goes to the model. UTF-8 text (`txt`, `md`, `csv`, `json`, `html`) stays in the message. Each file must be 8 MiB or smaller. The transcript shows the file name.
 - Search lists notes whose body contains the query, and a click opens that note.
 - The dock panel names are `files`, `note`, and `archivist`.

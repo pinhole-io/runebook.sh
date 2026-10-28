@@ -17,6 +17,8 @@ use crate::chrome::panel_header;
 use crate::{Root, on_root, theme_mode};
 use runebook::{AutosavePace, SpeechModel, TextSize, ThemeChoice};
 
+use crate::locale;
+
 pub(super) fn panel(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
     let border = cx.theme().border;
@@ -55,14 +57,14 @@ pub(super) fn panel(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl
 
 fn header(view: WeakEntity<Root>, border: impl Into<gpui_kit::Hsla>) -> impl IntoElement {
     panel_header(div().id("settings-header").px_2(), border.into())
-        .child(div().px_2().child("Settings"))
+        .child(div().px_2().child(locale::text("settings.title")))
         .child(div().flex_1())
         .child(
             Button::new("settings-done")
                 .ghost()
                 .small()
                 .cursor_pointer()
-                .label("Done")
+                .label(locale::text("settings.done"))
                 .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
                     if let Some(pane) = this.pane.as_mut() {
                         pane.toggle_settings(cx);
@@ -80,21 +82,34 @@ fn appearance(
 ) -> impl IntoElement {
     let muted = muted.into();
     section(
-        "Appearance",
-        "Theme, text size, and the view a note opens in.",
+        locale::text("settings.appearance"),
+        locale::text("settings.appearance.hint"),
         border,
         muted,
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(field("Theme", muted, theme_group(pane, view.clone())))
             .child(field(
-                "Text size",
+                locale::text("settings.theme"),
+                muted,
+                theme_group(pane, view.clone()),
+            ))
+            .child(field(
+                locale::text("settings.ui_language"),
+                muted,
+                locale_group(pane, view.clone()),
+            ))
+            .child(field(
+                locale::text("settings.text_size"),
                 muted,
                 text_size_group(pane, view.clone()),
             ))
-            .child(field("Note view", muted, note_view_group(pane, view))),
+            .child(field(
+                locale::text("settings.note_view"),
+                muted,
+                note_view_group(pane, view),
+            )),
     )
 }
 
@@ -106,8 +121,8 @@ fn editor(
 ) -> impl IntoElement {
     let muted = muted.into();
     section(
-        "Editor",
-        "Source editor and when a change is written.",
+        locale::text("settings.editor"),
+        locale::text("settings.editor.hint"),
         border,
         muted,
         div()
@@ -116,8 +131,8 @@ fn editor(
             .gap_3()
             .child(toggle_row(
                 "line-numbers",
-                "Line numbers",
-                "Show numbers beside the source.",
+                locale::text("settings.line_numbers"),
+                locale::text("settings.line_numbers.hint"),
                 pane.line_numbers,
                 muted,
                 {
@@ -136,8 +151,8 @@ fn editor(
             ))
             .child(toggle_row(
                 "soft-wrap",
-                "Wrap lines",
-                "Wrap long source lines instead of scrolling sideways.",
+                locale::text("settings.wrap"),
+                locale::text("settings.wrap.hint"),
                 pane.soft_wrap,
                 muted,
                 {
@@ -155,17 +170,14 @@ fn editor(
                 },
             ))
             .child(field(
-                "Autosave",
+                locale::text("settings.autosave"),
                 muted,
                 div()
                     .flex()
                     .flex_col()
                     .gap_1()
                     .child(autosave_group(pane, view))
-                    .child(hint(
-                        "Manual writes the note when you leave it or close the window.",
-                        muted,
-                    )),
+                    .child(hint(locale::text("settings.autosave.hint"), muted)),
             )),
     )
 }
@@ -179,45 +191,43 @@ fn capture(
 ) -> impl IntoElement {
     let muted = muted.into();
     section(
-        "Capture",
-        "Microphone, transcription, and playback.",
+        locale::text("settings.capture"),
+        locale::text("settings.capture.hint"),
         border,
         muted,
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(field("Microphone", muted, microphone_field(pane, cx)))
             .child(field(
-                "Speech model",
+                locale::text("settings.microphone"),
+                muted,
+                microphone_field(pane, cx),
+            ))
+            .child(field(
+                locale::text("settings.speech_model"),
                 muted,
                 div()
                     .flex()
                     .flex_col()
                     .gap_1()
                     .child(speech_group(pane, view.clone()))
-                    .child(hint(
-                        "Fast uses whisper-large-v3-turbo. Accurate uses whisper-large-v3.",
-                        muted,
-                    )),
+                    .child(hint(locale::text("settings.speech_model.hint"), muted)),
             ))
             .child(field(
-                "Language",
+                locale::text("settings.speech_language"),
                 muted,
                 div()
                     .flex()
                     .flex_col()
                     .gap_1()
                     .child(text_setting(&pane.model_inputs.speech_language))
-                    .child(hint(
-                        "A two-letter code. Empty lets Groq detect the language.",
-                        muted,
-                    )),
+                    .child(hint(locale::text("settings.speech_language.hint"), muted)),
             ))
             .child(toggle_row(
                 "start-muted",
-                "Start media muted",
-                "A new clip starts silent. The mute button still works.",
+                locale::text("settings.start_muted"),
+                locale::text("settings.start_muted.hint"),
                 pane.start_muted,
                 muted,
                 {
@@ -245,8 +255,8 @@ fn models(
     let muted = muted.into();
     let inputs = &pane.model_inputs;
     section(
-        "Models",
-        "An empty field uses the environment value, then the default.",
+        locale::text("settings.models"),
+        locale::text("settings.models.hint"),
         border,
         muted,
         div()
@@ -254,40 +264,40 @@ fn models(
             .flex_col()
             .gap_3()
             .child(field(
-                "Tool rounds",
+                locale::text("settings.tool_rounds"),
                 muted,
                 div()
                     .flex()
                     .flex_col()
                     .gap_1()
                     .child(text_setting(&inputs.tool_rounds))
-                    .child(hint("Cap for Research search and the Archivist.", muted)),
+                    .child(hint(locale::text("settings.tool_rounds.hint"), muted)),
             ))
-            .child(group_label("Voice", muted))
+            .child(group_label(locale::text("settings.voice"), muted))
             .child(field(
-                "Groq API key",
+                locale::text("settings.groq_key"),
                 muted,
                 secret_setting(&inputs.groq_api_key),
             ))
-            .child(group_label("Research", muted))
+            .child(group_label(locale::text("settings.research"), muted))
             .child(field(
-                "OpenAI-compatible API key",
+                locale::text("settings.openai_key"),
                 muted,
                 secret_setting(&inputs.openai_api_key),
             ))
             .child(field(
-                "API host",
+                locale::text("settings.api_host"),
                 muted,
                 text_setting(&inputs.openai_base_url),
             ))
             .child(field(
-                "Research model",
+                locale::text("settings.research_model"),
                 muted,
                 text_setting(&inputs.openai_model),
             ))
-            .child(group_label("Archivist", muted))
+            .child(group_label(locale::text("settings.archivist"), muted))
             .child(field(
-                "Archivist model",
+                locale::text("settings.archivist_model"),
                 muted,
                 text_setting(&inputs.archivist_model),
             )),
@@ -302,14 +312,14 @@ fn vault(
 ) -> impl IntoElement {
     let muted = muted.into();
     section(
-        "Vault",
-        "Which note opens with this vault.",
+        locale::text("settings.vault"),
+        locale::text("settings.vault.hint"),
         border,
         muted,
         toggle_row(
             "reopen-note",
-            "Reopen the last note",
-            "The next launch opens that note when it is still in the vault.",
+            locale::text("settings.reopen"),
+            locale::text("settings.reopen.hint"),
             pane.reopen_last_note,
             muted,
             move |checked, _, app| {
@@ -440,7 +450,31 @@ fn microphone_loading(cx: &App) -> impl IntoElement {
         .border_color(border)
         .text_base()
         .text_color(muted)
-        .child("loading...")
+        .child(locale::text("settings.microphone.loading"))
+}
+
+fn locale_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
+    let choices = locale::choices();
+    let selected = choices.iter().position(|choice| choice.code == pane.locale);
+    RadioGroup::horizontal("ui-locale")
+        .selected_index(selected)
+        .children(
+            choices
+                .into_iter()
+                .map(|choice| Radio::new(choice.code).label(choice.name).cursor_pointer()),
+        )
+        .on_change(move |index, window, app| {
+            let Some(code) = locale::choices().get(*index).map(|choice| choice.code) else {
+                return;
+            };
+            view.update(app, |root, cx| {
+                if let Some(pane) = root.pane.as_mut() {
+                    pane.choose_locale(code, window, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
 }
 
 fn theme_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
@@ -450,8 +484,16 @@ fn theme_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
     };
     RadioGroup::horizontal("theme")
         .selected_index(Some(selected))
-        .child(Radio::new("theme-dark").label("Dark").cursor_pointer())
-        .child(Radio::new("theme-light").label("Light").cursor_pointer())
+        .child(
+            Radio::new("theme-dark")
+                .label(locale::text("settings.theme.dark"))
+                .cursor_pointer(),
+        )
+        .child(
+            Radio::new("theme-light")
+                .label(locale::text("settings.theme.light"))
+                .cursor_pointer(),
+        )
         .on_change(move |index, window, app| {
             let choice = match *index {
                 0 => ThemeChoice::Dark,
@@ -480,9 +522,21 @@ fn text_size_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
     };
     RadioGroup::horizontal("text-size")
         .selected_index(Some(selected))
-        .child(Radio::new("text-small").label("Small").cursor_pointer())
-        .child(Radio::new("text-medium").label("Medium").cursor_pointer())
-        .child(Radio::new("text-large").label("Large").cursor_pointer())
+        .child(
+            Radio::new("text-small")
+                .label(locale::text("settings.text.small"))
+                .cursor_pointer(),
+        )
+        .child(
+            Radio::new("text-medium")
+                .label(locale::text("settings.text.medium"))
+                .cursor_pointer(),
+        )
+        .child(
+            Radio::new("text-large")
+                .label(locale::text("settings.text.large"))
+                .cursor_pointer(),
+        )
         .on_change(move |index, _, app| {
             let size = match *index {
                 0 => TextSize::Small,
@@ -508,8 +562,16 @@ fn note_view_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
     };
     RadioGroup::horizontal("note-view")
         .selected_index(Some(selected))
-        .child(Radio::new("view-preview").label("Preview").cursor_pointer())
-        .child(Radio::new("view-source").label("Source").cursor_pointer())
+        .child(
+            Radio::new("view-preview")
+                .label(locale::text("settings.view.preview"))
+                .cursor_pointer(),
+        )
+        .child(
+            Radio::new("view-source")
+                .label(locale::text("settings.view.source"))
+                .cursor_pointer(),
+        )
         .on_change(move |index, window, app| {
             let next = match *index {
                 0 => NoteView::Preview,
@@ -537,20 +599,24 @@ fn autosave_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
         .selected_index(Some(selected))
         .child(
             Radio::new("save-fast")
-                .label("Fast, 200 ms")
+                .label(locale::text("settings.autosave.fast"))
                 .cursor_pointer(),
         )
         .child(
             Radio::new("save-normal")
-                .label("Normal, 400 ms")
+                .label(locale::text("settings.autosave.normal"))
                 .cursor_pointer(),
         )
         .child(
             Radio::new("save-slow")
-                .label("Slow, 1 second")
+                .label(locale::text("settings.autosave.slow"))
                 .cursor_pointer(),
         )
-        .child(Radio::new("save-manual").label("Manual").cursor_pointer())
+        .child(
+            Radio::new("save-manual")
+                .label(locale::text("settings.autosave.manual"))
+                .cursor_pointer(),
+        )
         .on_change(move |index, _, app| {
             let pace = match *index {
                 0 => AutosavePace::Fast,
@@ -576,10 +642,14 @@ fn speech_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
     };
     RadioGroup::horizontal("speech-model")
         .selected_index(Some(selected))
-        .child(Radio::new("speech-fast").label("Fast").cursor_pointer())
+        .child(
+            Radio::new("speech-fast")
+                .label(locale::text("settings.speech_fast"))
+                .cursor_pointer(),
+        )
         .child(
             Radio::new("speech-accurate")
-                .label("Accurate")
+                .label(locale::text("settings.speech_accurate"))
                 .cursor_pointer(),
         )
         .on_change(move |index, _, app| {

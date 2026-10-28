@@ -59,7 +59,7 @@ pub(crate) fn display_line(instruction: &str, names: &[String]) -> String {
 /// One user message. Images, then PDFs, then text files.
 pub(crate) fn user_message(instruction: &str, files: &[LoadedFile]) -> Result<ChatMessage, String> {
     if files.len() > MAX_FILES {
-        return Err("One send accepts at most 8 files.".to_string());
+        return Err(crate::locale::text("archivist.max_files").to_string());
     }
     let mut images = Vec::new();
     let mut pdfs = Vec::new();
@@ -89,8 +89,9 @@ pub(crate) fn user_message(instruction: &str, files: &[LoadedFile]) -> Result<Ch
         parts.push(pdf_part(file)?);
     }
     for file in texts {
-        let text = std::str::from_utf8(&file.bytes)
-            .map_err(|_| format!("{} is not UTF-8 text.", file.name))?;
+        let text = std::str::from_utf8(&file.bytes).map_err(|_| {
+            crate::locale::format("archivist.not_utf8", &[("name", file.name.as_str())])
+        })?;
         parts.push(ContentPart::Text {
             text: format!("File `{}`.\n\n{text}", file.name),
         });
@@ -112,7 +113,7 @@ pub(crate) fn file_name(path: &Path) -> String {
 
 fn load_paths(paths: &[PathBuf]) -> Result<Vec<LoadedFile>, String> {
     if paths.len() > MAX_FILES {
-        return Err("One send accepts at most 8 files.".to_string());
+        return Err(crate::locale::text("archivist.max_files").to_string());
     }
     let mut loaded = Vec::with_capacity(paths.len());
     for path in paths {
@@ -124,29 +125,51 @@ fn load_paths(paths: &[PathBuf]) -> Result<Vec<LoadedFile>, String> {
 fn load_one(path: &Path) -> Result<LoadedFile, String> {
     let name = file_name(path);
     if kind(&name).is_none() {
-        return Err(format!("{name} is not a supported file."));
+        return Err(crate::locale::format(
+            "archivist.unsupported",
+            &[("name", name.as_str())],
+        ));
     }
-    let meta = std::fs::metadata(path).map_err(|_| format!("Cannot read {name}."))?;
+    let meta = std::fs::metadata(path)
+        .map_err(|_| crate::locale::format("archivist.read_name", &[("name", name.as_str())]))?;
     if !meta.is_file() {
-        return Err(format!("{name} is not a supported file."));
+        return Err(crate::locale::format(
+            "archivist.unsupported",
+            &[("name", name.as_str())],
+        ));
     }
     if meta.len() > MAX_BYTES {
-        return Err(format!("{name} is larger than 8 MiB."));
+        return Err(crate::locale::format(
+            "archivist.too_large",
+            &[("name", name.as_str())],
+        ));
     }
-    let bytes = std::fs::read(path).map_err(|_| format!("Cannot read {name}."))?;
+    let bytes = std::fs::read(path)
+        .map_err(|_| crate::locale::format("archivist.read_name", &[("name", name.as_str())]))?;
     if bytes.len() as u64 > MAX_BYTES {
-        return Err(format!("{name} is larger than 8 MiB."));
+        return Err(crate::locale::format(
+            "archivist.too_large",
+            &[("name", name.as_str())],
+        ));
     }
     Ok(LoadedFile { name, bytes })
 }
 
 fn classify(file: &LoadedFile) -> Result<Kind, String> {
-    let kind = kind(&file.name).ok_or_else(|| format!("{} is not a supported file.", file.name))?;
+    let kind = kind(&file.name).ok_or_else(|| {
+        crate::locale::format("archivist.unsupported", &[("name", file.name.as_str())])
+    })?;
     if file.bytes.is_empty() {
-        return Err(format!("{} is empty.", file.name));
+        return Err(crate::locale::format(
+            "archivist.empty_file",
+            &[("name", file.name.as_str())],
+        ));
     }
     if file.bytes.len() as u64 > MAX_BYTES {
-        return Err(format!("{} is larger than 8 MiB.", file.name));
+        return Err(crate::locale::format(
+            "archivist.too_large",
+            &[("name", file.name.as_str())],
+        ));
     }
     Ok(kind)
 }
@@ -181,10 +204,13 @@ fn pdf_part(file: &LoadedFile) -> Result<ContentPart, String> {
 
 fn sole_part(message: ChatMessage, name: &str) -> Result<ContentPart, String> {
     match message.content {
-        Some(MessageContent::Parts(mut parts)) if parts.len() == 1 => {
-            parts.pop().ok_or_else(|| format!("Cannot attach {name}."))
-        }
-        _ => Err(format!("Cannot attach {name}.")),
+        Some(MessageContent::Parts(mut parts)) if parts.len() == 1 => parts
+            .pop()
+            .ok_or_else(|| crate::locale::format("archivist.attach_failed", &[("name", name)])),
+        _ => Err(crate::locale::format(
+            "archivist.attach_failed",
+            &[("name", name)],
+        )),
     }
 }
 

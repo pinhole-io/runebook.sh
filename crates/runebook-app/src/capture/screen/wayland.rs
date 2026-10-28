@@ -4,6 +4,8 @@
 //! A failed copy returns an error and does not include pixel data.
 //! Window titles are never passed to `ffmpeg`.
 
+use crate::locale;
+
 use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::raw::{c_char, c_int, c_void};
@@ -43,7 +45,7 @@ impl Grab {
                 height,
             } => (Some((x, y, width, height)), Some(output)),
             ScreenTarget::Window(_) => {
-                return Err("That window is not on this display".to_string());
+                return Err(locale::text("screen.window_display").to_string());
             }
         };
         let stop = Arc::new(AtomicBool::new(false));
@@ -79,7 +81,7 @@ impl Grab {
                 stop.store(true, Ordering::Relaxed);
                 let _ = thread.join();
                 reap(&child);
-                Err("The screen did not start".to_string())
+                Err(locale::text("screen.wayland_start").to_string())
             }
         }
     }
@@ -110,25 +112,26 @@ fn record(
     child_slot: Arc<Mutex<Option<Child>>>,
     ready: std::sync::mpsc::Sender<Result<(), String>>,
 ) -> Result<(), String> {
-    let conn = Connection::connect_to_env().map_err(|_| "Wayland is not available".to_string())?;
+    let conn = Connection::connect_to_env()
+        .map_err(|_| locale::text("screen.wayland_missing").to_string())?;
     let mut queue = conn.new_event_queue();
     let qh = queue.handle();
     let mut state = State::default();
     let _registry = conn.display().get_registry(&qh, ());
     queue
         .roundtrip(&mut state)
-        .map_err(|_| "Wayland did not answer".to_string())?;
+        .map_err(|_| locale::text("screen.wayland_answer").to_string())?;
     queue
         .roundtrip(&mut state)
-        .map_err(|_| "Wayland did not answer".to_string())?;
+        .map_err(|_| locale::text("screen.wayland_answer").to_string())?;
     let manager = state
         .manager
         .clone()
-        .ok_or_else(|| "This Wayland compositor cannot share the screen".to_string())?;
+        .ok_or_else(|| locale::text("screen.wayland_share").to_string())?;
     let shm = state
         .shm
         .clone()
-        .ok_or_else(|| "This Wayland compositor cannot share the screen".to_string())?;
+        .ok_or_else(|| locale::text("screen.wayland_share").to_string())?;
     let output = pick_output(&state.outputs, output_name.as_deref())?
         .proxy
         .clone();
@@ -157,7 +160,7 @@ fn record(
         if state.frame.failed || !state.frame.have_shm {
             frame.destroy();
             if stdin.is_none() {
-                return Err("This screen uses an unsupported pixel format".to_string());
+                return Err(locale::text("screen.pixel").to_string());
             }
             break;
         }
@@ -175,7 +178,7 @@ fn record(
             mapping = Some(created);
         }
         let Some(current_pool) = pool.as_ref() else {
-            return Err("Could not allocate a screen frame".to_string());
+            return Err(locale::text("screen.frame").to_string());
         };
         let buffer = current_pool.create_buffer(
             0,
@@ -197,7 +200,7 @@ fn record(
         }
         if state.frame.failed {
             if stdin.is_none() {
-                return Err("The screen copy failed".to_string());
+                return Err(locale::text("screen.copy").to_string());
             }
             break;
         }
@@ -206,17 +209,17 @@ fn record(
             let pipe = child
                 .stdin
                 .take()
-                .ok_or_else(|| "ffmpeg did not accept frames".to_string())?;
+                .ok_or_else(|| locale::text("screen.ffmpeg_frames").to_string())?;
             if let Ok(mut slot) = child_slot.lock() {
                 *slot = Some(child);
             }
             stdin = Some(pipe);
         }
         let Some(bytes) = mapping.as_ref().map(Mapping::bytes) else {
-            return Err("Could not allocate a screen frame".to_string());
+            return Err(locale::text("screen.frame").to_string());
         };
         let Some(pipe) = stdin.as_mut() else {
-            return Err("ffmpeg did not accept frames".to_string());
+            return Err(locale::text("screen.ffmpeg_frames").to_string());
         };
         let invert = state.frame.y_invert;
         write_frame(pipe, bytes, info, invert)?;
@@ -264,18 +267,18 @@ impl FrameState {
     fn info(&self) -> Result<FrameInfo, String> {
         let format = self
             .format
-            .ok_or_else(|| "This screen uses an unsupported pixel format".to_string())?;
+            .ok_or_else(|| locale::text("screen.pixel").to_string())?;
         let width = i32::try_from(self.width).unwrap_or(0);
         let height = i32::try_from(self.height).unwrap_or(0);
         let stride = i32::try_from(self.stride).unwrap_or(0);
         if width <= 0 || height <= 0 || width > MAX_EDGE || height > MAX_EDGE || stride < width * 4
         {
-            return Err("This screen uses an unsupported pixel format".to_string());
+            return Err(locale::text("screen.pixel").to_string());
         }
         let row_bytes = (width as usize).saturating_mul(4);
         let len = (stride as usize).saturating_mul(height as usize);
         if len == 0 || len > (MAX_EDGE as usize) * (MAX_EDGE as usize) * 4 {
-            return Err("This screen uses an unsupported pixel format".to_string());
+            return Err(locale::text("screen.pixel").to_string());
         }
         Ok(FrameInfo {
             format,
@@ -306,11 +309,11 @@ fn wait_frame(
     let deadline = Instant::now() + Duration::from_secs(2);
     while !until(&state.frame) && !stop.load(Ordering::Relaxed) {
         if Instant::now() >= deadline {
-            return Err("Wayland did not answer".to_string());
+            return Err(locale::text("screen.wayland_answer").to_string());
         }
         queue
             .dispatch_pending(state)
-            .map_err(|_| "Wayland did not answer".to_string())?;
+            .map_err(|_| locale::text("screen.wayland_answer").to_string())?;
         if until(&state.frame) || stop.load(Ordering::Relaxed) {
             return Ok(());
         }
@@ -319,7 +322,7 @@ fn wait_frame(
         };
         queue
             .flush()
-            .map_err(|_| "Wayland did not answer".to_string())?;
+            .map_err(|_| locale::text("screen.wayland_answer").to_string())?;
         if !wait_readable(guard.connection_fd(), Duration::from_millis(100))? {
             drop(guard);
             continue;
@@ -327,7 +330,7 @@ fn wait_frame(
         match guard.read() {
             Ok(_) => {}
             Err(err) if wayland_blocked(&err) => {}
-            Err(_) => return Err("Wayland did not answer".to_string()),
+            Err(_) => return Err(locale::text("screen.wayland_answer").to_string()),
         }
     }
     Ok(())
@@ -352,7 +355,7 @@ fn wait_readable(fd: BorrowedFd<'_>, timeout: Duration) -> Result<bool, String> 
         if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
             continue;
         }
-        return Err("Wayland did not answer".to_string());
+        return Err(locale::text("screen.wayland_answer").to_string());
     }
 }
 
@@ -367,7 +370,7 @@ fn pick_output<'a>(
     }
     outputs
         .first()
-        .ok_or_else(|| "This Wayland compositor cannot share the screen".to_string())
+        .ok_or_else(|| locale::text("screen.wayland_share").to_string())
 }
 
 fn spawn_ffmpeg(path: &std::path::Path, width: i32, height: i32) -> Result<Child, String> {
@@ -406,9 +409,12 @@ fn spawn_ffmpeg(path: &std::path::Path, width: i32, height: i32) -> Result<Child
     {
         Ok(child) => Ok(child),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            Err("ffmpeg is not installed".to_string())
+            Err(locale::text("screen.ffmpeg_missing").to_string())
         }
-        Err(err) => Err(format!("Could not start ffmpeg: {err}")),
+        Err(err) => Err(locale::format(
+            "screen.ffmpeg_start",
+            &[("err", &err.to_string())],
+        )),
     }
 }
 
@@ -425,14 +431,14 @@ fn write_frame(
             let start = row * stride;
             stdin
                 .write_all(&bytes[start..start + info.row_bytes])
-                .map_err(|_| "ffmpeg stopped".to_string())?;
+                .map_err(|_| locale::text("screen.ffmpeg_stopped").to_string())?;
         }
     } else {
         for row in 0..height {
             let start = row * stride;
             stdin
                 .write_all(&bytes[start..start + info.row_bytes])
-                .map_err(|_| "ffmpeg stopped".to_string())?;
+                .map_err(|_| locale::text("screen.ffmpeg_stopped").to_string())?;
         }
     }
     Ok(())
@@ -468,13 +474,13 @@ fn create_memfd(len: usize) -> Result<OwnedFd, String> {
     let name = c"runebook-frame".as_ptr();
     let fd = unsafe { memfd_create(name, 1) };
     if fd < 0 {
-        return Err("Could not allocate a screen frame".to_string());
+        return Err(locale::text("screen.frame").to_string());
     }
-    let len = i64::try_from(len).map_err(|_| "Could not allocate a screen frame".to_string())?;
+    let len = i64::try_from(len).map_err(|_| locale::text("screen.frame").to_string())?;
     let truncated = unsafe { ftruncate(fd, len) };
     if truncated != 0 {
         unsafe { close(fd) };
-        return Err("Could not allocate a screen frame".to_string());
+        return Err(locale::text("screen.frame").to_string());
     }
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
@@ -497,7 +503,7 @@ unsafe fn mmap_fd(fd: impl AsFd, len: usize) -> Result<*mut u8, String> {
         )
     };
     if ptr == MAP_FAILED || ptr.is_null() {
-        return Err("Could not allocate a screen frame".to_string());
+        return Err(locale::text("screen.frame").to_string());
     }
     Ok(ptr.cast())
 }

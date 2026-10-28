@@ -24,6 +24,7 @@ use runebook::parse_task_line;
 use super::EditorPane;
 use super::rows::split_rows;
 use crate::Root;
+use crate::locale;
 use crate::on_root;
 use crate::playback::{ClipKind, MediaLink};
 
@@ -451,7 +452,7 @@ fn player(
                     .items_center()
                     .justify_center()
                     .text_color(ink)
-                    .child("Loading"),
+                    .child(locale::text("media.loading")),
             )
         })
         .when(!playing && !loading, |stage| {
@@ -467,7 +468,7 @@ fn player(
                         format!("center-play-{index}"),
                         IconName::Play,
                         px(28.),
-                        "Play",
+                        locale::text("media.play"),
                         on_root(&view, move |this, _: &MouseDownEvent, window, cx| {
                             cx.stop_propagation();
                             if let Some(pane) = this.pane.as_mut() {
@@ -547,7 +548,11 @@ fn transport(
                 IconName::Play
             },
             px(16.),
-            if playing { "Pause" } else { "Play" },
+            if playing {
+                locale::text("media.pause")
+            } else {
+                locale::text("media.play")
+            },
             on_root(&view, move |this, _: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
                 if let Some(pane) = this.pane.as_mut() {
@@ -578,7 +583,11 @@ fn transport(
                 IconName::Volume2
             },
             px(16.),
-            if muted { "Unmute" } else { "Mute" },
+            if muted {
+                locale::text("media.unmute")
+            } else {
+                locale::text("media.mute")
+            },
             on_root(&view, move |this, _: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();
                 if let Some(pane) = this.pane.as_mut() {
@@ -886,7 +895,7 @@ fn row_menu(
                     Button::new("row-add-chat")
                         .small()
                         .cursor_pointer()
-                        .label("Add to chat")
+                        .label(locale::text("preview.add"))
                         .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
                             if let Some(pane) = this.pane.as_mut() {
                                 pane.add_selected_rows_to_chat();
@@ -899,7 +908,7 @@ fn row_menu(
                         .small()
                         .primary()
                         .cursor_pointer()
-                        .label("Rewrite")
+                        .label(locale::text("preview.rewrite"))
                         .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
                             if let Some(pane) = this.pane.as_mut() {
                                 pane.begin_row_rewrite(window, cx);
@@ -936,7 +945,7 @@ fn row_menu(
                             .primary()
                             .cursor_pointer()
                             .disabled(empty)
-                            .label("Apply")
+                            .label(locale::text("preview.apply"))
                             .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
                                 if let Some(pane) = this.pane.as_mut() {
                                     pane.apply_row_rewrite(window, cx);

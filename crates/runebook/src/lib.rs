@@ -32,4 +32,4 @@ pub use links::{
 };
 pub use media::is_external_url;
 pub use note::{FolderId, NoteId};
-pub use vault::{NoteSearch, SearchHit, TreeEntry, Vault, VaultTree};
+pub use vault::{NoteSearch, SearchHit, TreeEntry, Vault, VaultStamp, VaultTree};

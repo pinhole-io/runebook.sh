@@ -13,19 +13,31 @@ use gpui_kit::{AppContext, Context, Entity, ScrollHandle, SharedString, Window};
 use runebook::{FolderId, NoteId, Vault};
 use superglue::agents::AgentSpec;
 use superglue::openai::ChatMessage;
-use superglue::providers::ProviderId;
+use superglue::providers::{ProviderId, parse_model_ref};
 use superglue::{CallOptions, Client, ClientConversation};
 
 pub(crate) use column::column;
 
 use crate::Root;
+use crate::locale;
 
-/// Notice shown when the Groq key is unset.
-pub(crate) const MISSING_KEY: &str = "Set the Groq key in Settings.";
+/// Notice when the Archivist model has no key.
+pub(crate) fn missing_model_key(model: &str) -> &'static str {
+    if parse_model_ref(model).provider == ProviderId::Groq {
+        locale::text("capture.groq_key")
+    } else {
+        locale::text("capture.openai_key")
+    }
+}
 
-/// Key, model, and tool-round cap for one Archivist session.
+/// Keys, model, and tool-round cap for one Archivist session.
+///
+/// `groq_key` is only the Groq provider key. `openai_key` is the
+/// OpenAI-compatible key. An empty string means that key is unset.
 pub(crate) struct ModelAccess {
-    pub(crate) key: String,
+    pub(crate) groq_key: String,
+    pub(crate) openai_key: String,
+    pub(crate) openai_base_url: String,
     pub(crate) model: String,
     pub(crate) tool_rounds: u32,
 }
@@ -84,7 +96,7 @@ impl Turn {
             session: None,
             thinking: String::new(),
             body: String::new(),
-            error: Some("The Archivist stopped.".to_string()),
+            error: Some(locale::text("archivist.stopped").to_string()),
             changes: Vec::new(),
         }
     }
@@ -92,7 +104,6 @@ impl Turn {
 
 /// Transcript and the superglue session for one vault.
 pub(crate) struct Panel {
-    open: bool,
     busy: bool,
     lines: Vec<Line>,
     live: LiveText,
@@ -117,10 +128,11 @@ struct HeldRows {
 }
 
 impl Panel {
-    pub(crate) fn new(open: bool, window: &mut Window, cx: &mut Context<Root>) -> Self {
-        let draft = cx.new(|cx| InputState::new(window, cx).placeholder("Ask the Archivist"));
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Root>) -> Self {
+        let draft = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(locale::text("archivist.placeholder"))
+        });
         Self {
-            open,
             busy: false,
             lines: Vec::new(),
             live: LiveText::default(),
@@ -134,19 +146,6 @@ impl Panel {
             files: Vec::new(),
             reading: false,
         }
-    }
-
-    pub(crate) fn is_open(&self) -> bool {
-        self.open
-    }
-
-    pub(crate) fn toggle(&mut self) {
-        self.open = !self.open;
-    }
-
-    /// Open the column. Add to chat and Rewrite use this.
-    pub(crate) fn show(&mut self) {
-        self.open = true;
     }
 
     pub(crate) fn has_held(&self) -> bool {
@@ -167,7 +166,6 @@ impl Panel {
             return;
         }
         self.held.push(HeldRows { note_id, source });
-        self.open = true;
     }
 
     pub(crate) fn dismiss_held(&mut self, index: usize) {
@@ -224,13 +222,12 @@ impl Panel {
             added.push(attach::ParkedFile { path, name });
         }
         if self.files.len() + added.len() > attach::MAX_FILES {
-            return Err("One send accepts at most 8 files.".to_string());
+            return Err(locale::text("archivist.max_files").to_string());
         }
         if added.is_empty() {
             return Ok(());
         }
         self.files.extend(added);
-        self.open = true;
         Ok(())
     }
 
@@ -252,7 +249,6 @@ impl Panel {
 
     /// Show an error and leave parked files in place.
     pub(crate) fn note_error(&mut self, error: String) {
-        self.open = true;
         self.lines.push(Line::Error(error));
         self.follow_log();
     }
@@ -294,6 +290,13 @@ impl Panel {
     /// Draft text with surrounding whitespace removed.
     pub(crate) fn draft_text(&self, cx: &Context<Root>) -> String {
         self.draft.read(cx).value().trim().to_string()
+    }
+
+    /// Set the draft placeholder from the active locale.
+    pub(crate) fn set_draft_placeholder(&self, window: &mut Window, cx: &mut Context<Root>) {
+        let label = locale::text("archivist.placeholder");
+        self.draft
+            .update(cx, |state, cx| state.set_placeholder(label, window, cx));
     }
 
     /// Clear the draft after a send is accepted.
@@ -366,7 +369,7 @@ impl Panel {
                 .await;
             let built = match built {
                 Ok(result) => result,
-                Err(_) => Err("Cannot read the file.".to_string()),
+                Err(_) => Err(locale::text("archivist.read_failed").to_string()),
             };
             this.update_in(cx, |root, window, cx| {
                 let Some(pane) = root.pane.as_mut() else {
@@ -486,7 +489,7 @@ impl Panel {
         if done.error.is_none() && empty {
             self.lines.push(Line::Archivist {
                 thinking: SharedString::default(),
-                body: SharedString::from("The Archivist returned no text."),
+                body: SharedString::from(locale::text("archivist.no_text")),
             });
         } else if !empty {
             self.lines.push(Line::Archivist {
@@ -521,7 +524,8 @@ fn log_follows(offset_y: f32, max_y: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::log_follows;
+    use super::{key_plan, log_follows, missing_model_key};
+    use superglue::providers::ProviderId;
 
     #[test]
     fn the_log_follows_while_it_is_near_the_bottom() {
@@ -529,6 +533,49 @@ mod tests {
         assert!(log_follows(-200., 200.));
         assert!(log_follows(-170., 200.));
         assert!(!log_follows(-100., 200.));
+    }
+
+    #[test]
+    fn an_openai_model_does_not_use_the_groq_key() {
+        let plan = key_plan(
+            "openai:gpt-6-luna",
+            "gsk-groq-key-value",
+            "sk-openai-key-value",
+            "https://gateway.example/v1",
+        )
+        .expect("both keys are set");
+        assert_eq!(plan.primary, "sk-openai-key-value");
+        assert_eq!(plan.groq.as_deref(), Some("gsk-groq-key-value"));
+        assert_eq!(plan.openai.as_deref(), Some("sk-openai-key-value"));
+        assert_eq!(plan.openai_provider, ProviderId::OpenAi);
+        assert_eq!(plan.base, "https://gateway.example/v1");
+    }
+
+    #[test]
+    fn an_openai_model_rejects_a_groq_key_used_alone() {
+        let err = key_plan(
+            "openai:gpt-6-luna",
+            "gsk-groq-key-value",
+            "",
+            "https://api.openai.com",
+        )
+        .expect_err("the OpenAI key is required");
+        assert_eq!(err, missing_model_key("openai:gpt-6-luna"));
+        assert_eq!(err, "Set the OpenAI key in Settings.");
+    }
+
+    #[test]
+    fn a_groq_model_keeps_its_own_key() {
+        let plan = key_plan(
+            "groq:llama-3.3-70b-versatile",
+            "gsk-groq-key-value",
+            "sk-openai-key-value",
+            "https://api.openai.com",
+        )
+        .expect("the Groq key is set");
+        assert_eq!(plan.groq.as_deref(), Some("gsk-groq-key-value"));
+        assert_eq!(plan.primary, "sk-openai-key-value");
+        assert_eq!(plan.openai_provider, ProviderId::OpenAi);
     }
 }
 
@@ -610,7 +657,13 @@ async fn run_turn(
             };
             (body, None)
         }
-        Err(err) => (live.body, Some(redact(err.to_string(), &access.key))),
+        Err(err) => (
+            live.body,
+            Some(redact(
+                err.to_string(),
+                &[&access.groq_key, &access.openai_key],
+            )),
+        ),
     };
     Turn {
         session: Some(session),
@@ -621,32 +674,100 @@ async fn run_turn(
     }
 }
 
-async fn open_session(vault: Vault, access: &ModelAccess) -> Result<Session, String> {
-    let key = access.key.trim();
-    if key.is_empty() {
-        return Err(MISSING_KEY.to_string());
+/// Which key `ClientBuilder` receives.
+///
+/// `ClientBuilder::api_key_for` copies `api_key` onto OpenAI when that
+/// provider has no key. `primary` is the OpenAI key when one is set, so the
+/// Groq key cannot land on OpenAI.
+#[derive(Debug)]
+struct KeyPlan {
+    primary: String,
+    base: String,
+    groq: Option<String>,
+    openai: Option<String>,
+    openai_provider: ProviderId,
+}
+
+/// `true` when `model` has the key it sends with.
+pub(crate) fn has_model_key(model: &str, groq: &str, openai: &str) -> bool {
+    key_plan(model, groq, openai, ProviderId::OpenAi.default_base_url()).is_ok()
+}
+
+fn key_plan(model: &str, groq: &str, openai: &str, base: &str) -> Result<KeyPlan, String> {
+    let groq = groq.trim();
+    let openai = openai.trim();
+    let provider = parse_model_ref(model).provider;
+    let needed = if provider == ProviderId::Groq {
+        groq
+    } else {
+        openai
+    };
+    if needed.is_empty() {
+        return Err(missing_model_key(model).to_string());
     }
+    let base = base.trim();
+    let base = if base.is_empty() {
+        provider.default_base_url().to_string()
+    } else {
+        base.to_string()
+    };
+    let primary = if openai.is_empty() { groq } else { openai };
+    let openai_provider = if provider == ProviderId::Groq {
+        ProviderId::OpenAi
+    } else {
+        provider
+    };
+    Ok(KeyPlan {
+        primary: primary.to_string(),
+        base,
+        groq: (!groq.is_empty()).then(|| groq.to_string()),
+        openai: (!openai.is_empty()).then(|| openai.to_string()),
+        openai_provider,
+    })
+}
+
+async fn open_session(vault: Vault, access: &ModelAccess) -> Result<Session, String> {
+    let plan = key_plan(
+        &access.model,
+        &access.groq_key,
+        &access.openai_key,
+        &access.openai_base_url,
+    )?;
     let rounds = if access.tool_rounds < 1 {
         runebook::DEFAULT_TOOL_ROUNDS
     } else {
         access.tool_rounds
     };
     let prompt = archivist_prompt(rounds);
-    let client = Client::builder()
-        .api_key(key.to_string())
+    let mut builder = Client::builder()
+        .api_key(plan.primary.clone())
+        .base_url(plan.base.clone())
         .model(access.model.clone())
         .system_prompt(prompt)
         .max_tool_rounds(rounds)
         // Chat completions hide this summary: gpt-6-luna rejects tools unless effort is none.
         // The OpenAI turn uses the Responses stream, which keeps tools and returns the summary.
-        .reasoning_effort("low")
-        .api_key_for(ProviderId::Groq, key.to_string())
+        .reasoning_effort("low");
+    if let Some(groq) = plan.groq.as_deref() {
+        builder = builder.api_key_for(ProviderId::Groq, groq);
+    }
+    if let Some(openai) = plan.openai.as_deref() {
+        builder = builder
+            .api_key_for(plan.openai_provider, openai)
+            .base_url_for(plan.openai_provider, plan.base.clone());
+    }
+    let secrets = [
+        access.groq_key.as_str(),
+        access.openai_key.as_str(),
+        plan.primary.as_str(),
+    ];
+    let client = builder
         .build()
-        .map_err(|err| redact(err.to_string(), key))?;
+        .map_err(|err| redact(err.to_string(), &secrets))?;
     let changes = Arc::new(Mutex::new(Vec::new()));
     tools::register(&client, vault, Arc::clone(&changes))
         .await
-        .map_err(|err| redact(err, key))?;
+        .map_err(|err| redact(err, &secrets))?;
     Ok(Session {
         conversation: client.conversation(),
         changes,
@@ -685,9 +806,14 @@ fn archivist_prompt(rounds: u32) -> String {
     spec.compile_system_prompt()
 }
 
-fn redact(text: String, key: &str) -> String {
+fn redact(text: String, keys: &[&str]) -> String {
     let mut secrets = crate::models::env_secrets();
-    secrets.push(key.to_string());
+    for key in keys {
+        let key = key.trim();
+        if !key.is_empty() {
+            secrets.push(key.to_string());
+        }
+    }
     let text = crate::models::redact_secrets(&text, secrets.iter().map(String::as_str));
     const MAX: usize = 400;
     if text.chars().count() <= MAX {

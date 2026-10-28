@@ -39,9 +39,9 @@ Screen recording captures the full display. Playback needs `ffmpeg`. A click on 
 
 ## Voice and screen
 
-A Speech note stores a transcript. Record voice only while a Speech note is open. Set `GROQ_API_KEY` before you start the app. The audio clip is sent to Groq. The app does not save the audio file.
+A Speech note stores a transcript. Record voice while that note is open. Another note can open while the capture runs. The transcript still lands in the Speech note. Set `GROQ_API_KEY` before you start the app. The audio clip is sent to Groq. The app does not save the audio file.
 
-A Sight note stores a screen recording. Record the screen only while a Sight note is open. A new Sight note asks for the full display or one window before recording starts. The video button asks for the same choice later. Screen recording needs `ffmpeg`. The app writes an mp4 beside that note and appends a markdown link.
+A Sight note stores a screen recording. Record the screen while that note is open. Another note can open while the capture runs. The video link still lands in the Sight note. A new Sight note asks for the full display or one window before recording starts. A new Speech or Sight note waits until the capture ends. The file tree shows a mark on the recording note while voice or screen capture runs. A click on the mark stops the capture. Screen recording needs `ffmpeg`. The app writes an mp4 beside that note and appends a markdown link.
 
 On X11, `x11-utils` lists the windows. On Wayland, the compositor copies the screen. When `WAYLAND_DISPLAY` is set, that path is used. Sway lists each window with `swaymsg`.
 
@@ -84,17 +84,21 @@ Use `speech`, `sight`, `deed`, or `research`. The editor shows the body. Save wr
 
 A Research rune asks for a question, then for a few clarifying answers. Charlotte writes a plan first. When that plan needs facts that are not in the question, Charlotte gathers those facts and revises the plan. The note shows that plan. The investigation then searches, reads, and writes. The file tree shows that run above Settings until the findings land in the note.
 
-Set the OpenAI key, hostname, and model in Settings. An empty OpenAI key uses `OPENAI_API_KEY`, then `OPENROUTER_API_KEY`, `OPENROUTER_GATEWAY_KEY`, `XAI_API_KEY`, `RUNINFRA_GATEWAY_KEY`, or `VERCEL_GATEWAY_KEY`. An empty host uses `OPENAI_BASE_URL`. An empty model uses `OPENAI_MODEL`. The default model is `gpt-5.6-luna`. Tool rounds default to 250. Search and read use that cap. Plan stays at 1 round. Write stays at 2 rounds. The Archivist and voice use the Groq key in Settings, then `GROQ_API_KEY`. The key fields open with the environment value.
+Set the OpenAI key, hostname, and model in Settings. An empty OpenAI key uses `OPENAI_API_KEY`, then `OPENROUTER_API_KEY`, `OPENROUTER_GATEWAY_KEY`, `XAI_API_KEY`, `RUNINFRA_GATEWAY_KEY`, or `VERCEL_GATEWAY_KEY`. An empty host uses `OPENAI_BASE_URL`. An empty model uses `OPENAI_MODEL`. The default model is `gpt-5.6-luna`. Tool rounds default to 250. Search and read use that cap. Plan stays at 1 round. Write stays at 2 rounds. Voice uses the Groq key in Settings, then `GROQ_API_KEY`. A `groq:` Archivist model uses that same Groq key. Any other Archivist model uses the OpenAI-compatible key and host. The key fields open with the environment value.
 
 Search uses SearXNG at `http://127.0.0.1:18088` unless `CHARLOTTE_SEARCH_BACKEND` or `CHARLOTTE_SEARXNG_URL` says otherwise. The read step opens a headless browser. Install Playwright's Chromium for that step. The run blocks private hosts. There is no switch to turn that block off.
 
 The app skips hidden files and directories. It also skips symlinks. `[[wiki links]]` point at a note id. A bare stem matches one note when that stem is unique.
 
-The user config is `$XDG_CONFIG_HOME/runebook/config.toml`. When `XDG_CONFIG_HOME` is unset, the path is `~/.config/runebook/config.toml`. It stores the last vault, the last note, the microphone, the theme, the text size, the default note view, the editor choices, the autosave pace, and `dock_layout`.
+The user config is `$XDG_CONFIG_HOME/runebook/config.toml`. When `XDG_CONFIG_HOME` is unset, the path is `~/.config/runebook/config.toml`. It stores the last vault, the last note, the microphone, the theme, the window language, the text size, the default note view, the editor choices, the autosave pace, and `dock_layout`.
 
-Settings groups those choices. Appearance holds the theme, the text size, and the note view. Editor holds line numbers, line wrap, and autosave. Capture holds the microphone, the speech model, the language, and mute. Models holds the keys, the host, and the model names. Vault reopens the last note when that note is still in the vault.
+Settings groups those choices. Appearance holds the theme, the window language, the text size, and the note view. Editor holds line numbers, line wrap, and autosave. Capture holds the microphone, the speech model, the spoken language, and mute. Models holds the keys, the host, and the model names. Vault reopens the last note when that note is still in the vault.
+
+The window language is `locale`. `en` is English. A blank or unknown code uses English. The sentences live in `locales/en.json`. A new language is another file with the same keys.
 
 Autosave `normal` waits 400 ms. `fast` waits 200 ms. `slow` waits 1 second. `manual` writes the note when you leave it or close the window. Speech `fast` uses `whisper-large-v3-turbo`. Speech `accurate` uses `whisper-large-v3`. An empty language lets Groq detect it.
+
+The file tree reads the vault every 500 ms. A change made outside the app shows up on that read. The refresh button reads immediately. A clean open note reloads when its file changed. Unsaved text stays in the editor.
 
 The file tree, the note, and the Archivist column are dock panels. Their names are `files`, `note`, and `archivist`. `dock_layout` stores that layout as JSON.
 

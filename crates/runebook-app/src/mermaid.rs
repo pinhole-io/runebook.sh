@@ -64,11 +64,11 @@ fn diagram_source(node: &markdown_ast::Node) -> Option<&str> {
 
 pub(crate) fn render_block(node: &MarkdownNode, _: &mut Window, cx: &mut App) -> AnyElement {
     let Some(source) = node.data::<String>() else {
-        return note("Could not render the diagram.");
+        return note(crate::locale::text("mermaid.failed"));
     };
     let dark = cx.theme().mode == ThemeMode::Dark;
     match shown(cx, source, dark) {
-        Shown::Pending => note("Rendering diagram…"),
+        Shown::Pending => note(crate::locale::text("mermaid.pending")),
         Shown::Failed(message) => note(message),
         Shown::Ready(image) => div()
             .w_full()
@@ -84,10 +84,10 @@ fn note(message: impl Into<SharedString>) -> AnyElement {
 
 fn shown(cx: &mut App, source: &str, dark: bool) -> Shown {
     if source.len() > MAX_SOURCE {
-        return Shown::Failed(SharedString::from("The diagram is too large."));
+        return Shown::Failed(SharedString::from(crate::locale::text("mermaid.large")));
     }
     if source.trim().is_empty() {
-        return Shown::Failed(SharedString::from("The diagram is empty."));
+        return Shown::Failed(SharedString::from(crate::locale::text("mermaid.empty")));
     }
     let key = format!("{dark}\n{source}");
     {
@@ -138,8 +138,10 @@ fn render_svg(source: &str, dark: bool) -> Result<Vec<u8>, String> {
     let input = temp.path.join("diagram.mmd");
     let output = temp.path.join("diagram.svg");
     let config = temp.path.join("config.json");
-    std::fs::write(&input, source).map_err(|_| "Could not render the diagram.".to_string())?;
-    std::fs::write(&config, CONFIG).map_err(|_| "Could not render the diagram.".to_string())?;
+    std::fs::write(&input, source)
+        .map_err(|_| crate::locale::text("mermaid.failed").to_string())?;
+    std::fs::write(&config, CONFIG)
+        .map_err(|_| crate::locale::text("mermaid.failed").to_string())?;
     let puppeteer = temp.path.join("puppeteer.json");
     let theme = if dark { "dark" } else { "default" };
     let mut command = Command::new("mmdc");
@@ -155,7 +157,7 @@ fn render_svg(source: &str, dark: bool) -> Result<Vec<u8>, String> {
     if let Some(browser) = system_browser() {
         let puppeteer_json = format!(r#"{{"executablePath":"{browser}"}}"#);
         std::fs::write(&puppeteer, puppeteer_json)
-            .map_err(|_| "Could not render the diagram.".to_string())?;
+            .map_err(|_| crate::locale::text("mermaid.failed").to_string())?;
         command.arg("-p").arg(&puppeteer);
     }
     let mut child = command
@@ -169,18 +171,19 @@ fn render_svg(source: &str, dark: bool) -> Result<Vec<u8>, String> {
         .spawn()
         .map_err(|err| {
             if err.kind() == ErrorKind::NotFound {
-                "Install mermaid-cli (mmdc) to render diagrams.".to_string()
+                crate::locale::text("mermaid.install").to_string()
             } else {
-                "Could not start the diagram renderer.".to_string()
+                crate::locale::text("mermaid.start").to_string()
             }
         })?;
     let status = wait_for(&mut child, RENDER_LIMIT)?;
     if !status.success() {
-        return Err("Could not render the diagram.".to_string());
+        return Err(crate::locale::text("mermaid.failed").to_string());
     }
-    let bytes = std::fs::read(&output).map_err(|_| "Could not render the diagram.".to_string())?;
+    let bytes =
+        std::fs::read(&output).map_err(|_| crate::locale::text("mermaid.failed").to_string())?;
     if bytes.len() > MAX_SVG || !looks_like_svg(&bytes) {
-        return Err("Could not render the diagram.".to_string());
+        return Err(crate::locale::text("mermaid.failed").to_string());
     }
     Ok(bytes)
 }
@@ -193,10 +196,10 @@ fn wait_for(child: &mut std::process::Child, limit: Duration) -> Result<ExitStat
             Ok(None) if start.elapsed() >= limit => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("The diagram took too long to render.".to_string());
+                return Err(crate::locale::text("mermaid.timeout").to_string());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(40)),
-            Err(_) => return Err("Could not render the diagram.".to_string()),
+            Err(_) => return Err(crate::locale::text("mermaid.failed").to_string()),
         }
     }
 }
@@ -235,7 +238,8 @@ impl TempDir {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let path =
             std::env::temp_dir().join(format!("runebook-mermaid-{}-{id}", std::process::id()));
-        std::fs::create_dir_all(&path).map_err(|_| "Could not render the diagram.".to_string())?;
+        std::fs::create_dir_all(&path)
+            .map_err(|_| crate::locale::text("mermaid.failed").to_string())?;
         Ok(Self { path })
     }
 }

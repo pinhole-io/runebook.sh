@@ -38,6 +38,7 @@ fn old_config_keeps_defaults_for_new_fields() {
     assert_eq!(loaded.autosave, AutosavePace::Normal);
     assert_eq!(loaded.speech_model, SpeechModel::Fast);
     assert!(!loaded.media_muted);
+    assert_eq!(loaded.locale, "en");
 }
 
 #[test]
@@ -53,6 +54,7 @@ fn settings_round_trip() {
         autosave: AutosavePace::Slow,
         speech_model: SpeechModel::Accurate,
         speech_language: "en".to_string(),
+        locale: "is".to_string(),
         line_numbers: false,
         soft_wrap: false,
         media_muted: true,

@@ -3,7 +3,7 @@
 mod screen;
 mod voice;
 
-pub(crate) use screen::{ScreenCapture, ScreenTarget, WINDOW_LIST_ERROR, list_record_sources};
+pub(crate) use screen::{ScreenCapture, ScreenTarget, list_record_sources, window_list_error};
 pub(crate) use voice::{
     SpeechRequest, VoiceCapture, VoiceOutcome, list_input_devices, voice_to_text,
 };
@@ -66,8 +66,6 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let year = if month <= 2 { year + 1 } else { year };
     (year, month as u32, day as u32)
 }
-
-pub(crate) const MISSING_GROQ_KEY: &str = "Set the Groq key in Settings.";
 
 #[cfg(test)]
 mod tests {

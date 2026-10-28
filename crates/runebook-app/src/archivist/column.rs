@@ -1,6 +1,5 @@
 //! Right-hand Archivist column.
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Enter, Input};
 use gpui_kit::component::scroll::Scrollbar;
@@ -8,14 +7,16 @@ use gpui_kit::component::{ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, ClickEvent, Hsla, SharedString, WeakEntity, div, px};
 
-use super::{MISSING_KEY, Panel};
+use super::Panel;
 use crate::Root;
-use crate::chrome::panel_header;
+use crate::chrome::{SIDEBAR_MIN_WIDTH, panel_header};
+use crate::locale;
 use crate::on_root;
 
 pub(crate) fn column(
     panel: &Panel,
     ready: bool,
+    blocked: &'static str,
     view: WeakEntity<Root>,
     cx: &App,
 ) -> impl IntoElement {
@@ -30,7 +31,7 @@ pub(crate) fn column(
         .id("archivist")
         .size_full()
         .min_h(px(0.))
-        .min_w(px(0.))
+        .min_w(SIDEBAR_MIN_WIDTH)
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -38,9 +39,7 @@ pub(crate) fn column(
         .text_color(foreground)
         .child(
             panel_header(div().id("archivist-header").px_2().text_base(), border)
-                .child("Archivist")
-                .child(div().flex_1())
-                .child(hide_button(view.clone())),
+                .child(locale::text("archivist.title")),
         )
         .child(transcript(panel, muted, danger, busy))
         .when(!panel.held.is_empty(), |column| {
@@ -49,23 +48,7 @@ pub(crate) fn column(
         .when(!panel.files.is_empty(), |column| {
             column.child(file_rows(panel, view.clone(), cx))
         })
-        .child(composer(panel, ready, busy, danger, view, cx))
-}
-
-fn hide_button(view: WeakEntity<Root>) -> impl IntoElement {
-    Button::new("hide-archivist")
-        .ghost()
-        .small()
-        .cursor_pointer()
-        .icon(IconName::PanelRightClose)
-        .tooltip("Hide the Archivist")
-        .accessibility_label("Hide the Archivist")
-        .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
-            if let Some(pane) = this.pane.as_mut() {
-                pane.toggle_archivist();
-            }
-            cx.notify();
-        }))
+        .child(composer(panel, ready, blocked, busy, danger, view, cx))
 }
 
 fn transcript(
@@ -110,7 +93,7 @@ fn transcript(
                                     .px_2()
                                     .text_base()
                                     .text_color(muted)
-                                    .child("Ask the Archivist to add, change, or delete a note."),
+                                    .child(locale::text("archivist.empty")),
                             )
                         })
                         .children(
@@ -124,7 +107,13 @@ fn transcript(
                             log.child(live_block(&panel.live_rendered, muted))
                         })
                         .when(busy, |log| {
-                            log.child(div().px_2().text_base().text_color(muted).child("Working…"))
+                            log.child(
+                                div()
+                                    .px_2()
+                                    .text_base()
+                                    .text_color(muted)
+                                    .child(locale::text("archivist.working")),
+                            )
                         }),
                 ),
         )
@@ -143,9 +132,11 @@ fn live_visible(live: &super::LiveText) -> bool {
 
 fn line_block(index: usize, line: &super::Line, muted: Hsla, danger: Hsla) -> AnyElement {
     match line {
-        super::Line::User(text) => plain_block("You", text, muted, muted).into_any_element(),
+        super::Line::User(text) => {
+            plain_block(locale::text("archivist.you"), text, muted, muted).into_any_element()
+        }
         super::Line::Error(text) => {
-            plain_block("Archivist", text, danger, danger).into_any_element()
+            plain_block(locale::text("archivist.title"), text, danger, danger).into_any_element()
         }
         super::Line::Archivist { thinking, body } => {
             let thinking = thinking.clone();
@@ -170,7 +161,12 @@ fn line_block(index: usize, line: &super::Line, muted: Hsla, danger: Hsla) -> An
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().text_base().text_color(muted).child("Archivist"))
+                            .child(
+                                div()
+                                    .text_base()
+                                    .text_color(muted)
+                                    .child(locale::text("archivist.title")),
+                            )
                             .child(markdown_block(
                                 SharedString::from(format!("archivist-{index}-body")),
                                 body.clone(),
@@ -205,7 +201,12 @@ fn live_block(live: &super::RenderedMarkdown, muted: Hsla) -> impl IntoElement {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(div().text_base().text_color(muted).child("Archivist"))
+                    .child(
+                        div()
+                            .text_base()
+                            .text_color(muted)
+                            .child(locale::text("archivist.title")),
+                    )
                     .child(markdown_block(
                         SharedString::from("archivist-live-body"),
                         body.clone(),
@@ -222,7 +223,12 @@ fn thinking_block(id: SharedString, text: SharedString, muted: Hsla) -> impl Int
         .flex_col()
         .gap_1()
         .opacity(0.75)
-        .child(div().text_base().text_color(muted).child("Thinking"))
+        .child(
+            div()
+                .text_base()
+                .text_color(muted)
+                .child(locale::text("archivist.thinking")),
+        )
         .child(markdown_block(id, text))
 }
 
@@ -282,7 +288,7 @@ fn held_rows(panel: &Panel, view: WeakEntity<Root>, cx: &App) -> impl IntoElemen
             div()
                 .text_base()
                 .text_color(muted)
-                .child("Send includes these rows."),
+                .child(locale::text("archivist.rows")),
         )
 }
 
@@ -304,12 +310,10 @@ fn held_card(
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(
-                    div()
-                        .text_base()
-                        .text_color(muted)
-                        .child(format!("Selected rows · {note_id}")),
-                )
+                .child(div().text_base().text_color(muted).child(locale::format(
+                    "archivist.selected_rows",
+                    &[("note", note_id)],
+                )))
                 .child(
                     div()
                         .text_base()
@@ -324,7 +328,7 @@ fn held_card(
                 .small()
                 .compact()
                 .cursor_pointer()
-                .label("Remove")
+                .label(locale::text("archivist.remove"))
                 .on_click(on_root(&view, move |this, _: &ClickEvent, _, cx| {
                     if let Some(pane) = this.pane.as_mut() {
                         pane.dismiss_held_rows(index);
@@ -360,7 +364,7 @@ fn file_rows(panel: &Panel, view: WeakEntity<Root>, cx: &App) -> impl IntoElemen
             div()
                 .text_base()
                 .text_color(muted)
-                .child("Send includes these files."),
+                .child(locale::text("archivist.files")),
         )
 }
 
@@ -390,7 +394,7 @@ fn file_card(
                 .compact()
                 .cursor_pointer()
                 .disabled(busy)
-                .label("Remove")
+                .label(locale::text("archivist.remove"))
                 .on_click(on_root(&view, move |this, _: &ClickEvent, _, cx| {
                     if let Some(pane) = this.pane.as_mut() {
                         pane.dismiss_archivist_file(index);
@@ -414,6 +418,7 @@ fn held_excerpt(source: &str) -> String {
 fn composer(
     panel: &Panel,
     ready: bool,
+    blocked: &'static str,
     busy: bool,
     danger: impl Into<Hsla>,
     view: WeakEntity<Root>,
@@ -430,7 +435,7 @@ fn composer(
         .flex_col()
         .gap_2()
         .when(!ready, |column| {
-            column.child(div().text_base().text_color(danger).child(MISSING_KEY))
+            column.child(div().text_base().text_color(danger).child(blocked))
         })
         .child(
             div()
@@ -454,7 +459,7 @@ fn composer(
                         .small()
                         .cursor_pointer()
                         .disabled(busy)
-                        .label("Add file")
+                        .label(locale::text("archivist.add_file"))
                         .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
                             if let Some(pane) = this.pane.as_mut() {
                                 pane.pick_archivist_files(cx);
@@ -469,7 +474,7 @@ fn composer(
                         .cursor_pointer()
                         .flex_1()
                         .disabled(!ready || busy)
-                        .label("Send")
+                        .label(locale::text("archivist.send"))
                         .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
                             if let Some(pane) = this.pane.as_mut() {
                                 pane.send_archivist(window, cx);

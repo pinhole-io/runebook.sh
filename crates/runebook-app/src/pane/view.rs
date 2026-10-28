@@ -1,27 +1,29 @@
 //! Layout for the open vault: toolbar, tree, editor, and preview.
 
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::Disableable;
-use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
+use gpui_kit::base::Selectable;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Editor, Enter, Escape, Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::toolbar::Toolbar;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme, Selectable, Sizable};
+use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, AppContext, ClickEvent, Context, Image, ImageFormat, Render, SharedString, WeakEntity,
-    Window, black, div, img, px, relative, svg,
+    Animation, AnimationExt, App, AppContext, ClickEvent, Context, Hsla, Image, ImageFormat,
+    Render, SharedString, Transformation, WeakEntity, Window, black, div, img, px, relative, size,
+    svg,
 };
 
 use super::{EditorPane, NameAction, NoteView, Prompt, TreeSelection};
 use crate::chrome::panel_header;
 use runebook::NoteKind;
 
-use crate::capture::{ScreenTarget, list_record_sources};
+use crate::locale;
 use crate::{NewNote, OpenVault, Root, ToggleNoteView, on_root};
 
 pub(crate) fn toolbar(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
@@ -36,180 +38,98 @@ pub(crate) fn toolbar(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> im
                 .ghost()
                 .cursor_pointer()
                 .icon(IconName::FolderOpen)
-                .label("Open vault")
-                .tooltip_with_action("Open vault", &OpenVault, None)
+                .label(locale::text("toolbar.open_vault"))
+                .tooltip_with_action(locale::text("toolbar.open_vault"), &OpenVault, None)
                 .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
                     this.pick_vault(false, cx);
                 })),
         )
         .content(div().flex_1())
-        .content(capture_buttons(pane, view, cx))
 }
 
-fn archivist_button(pane: &EditorPane, view: WeakEntity<Root>) -> impl IntoElement {
-    let label = if pane.archivist.is_open() {
-        "Hide the Archivist"
+/// Which capture is live on one note in the file tree.
+#[derive(Clone, Copy)]
+enum RowCapture {
+    Voice,
+    Screen,
+}
+
+/// The note that owns the live capture. Transcribing and saving stay unmarked.
+fn row_capture(pane: &EditorPane) -> Option<(runebook::NoteId, RowCapture)> {
+    let id = pane.recording_note.clone()?;
+    if pane.voice_recording() {
+        Some((id, RowCapture::Voice))
+    } else if pane.screen_recording() {
+        Some((id, RowCapture::Screen))
     } else {
-        "Show the Archivist"
-    };
-    Button::new("toggle-archivist")
-        .ghost()
-        .small()
+        None
+    }
+}
+
+/// A live capture uses the same icon slot as the other notes. A click stops it.
+/// The glyph pulses larger than that slot. The slot itself does not move.
+fn record_mark(
+    capture: RowCapture,
+    key: &str,
+    view: WeakEntity<Root>,
+    cx: &App,
+) -> impl IntoElement {
+    div()
+        .id(SharedString::from(format!("record-{key}")))
+        .flex_shrink_0()
         .cursor_pointer()
-        .selected(pane.archivist.is_open())
-        .icon(IconName::Bot)
-        .label("Archivist")
-        .tooltip(label)
-        .accessibility_label(label)
-        .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
+        .child(RecordDot {
+            color: cx.theme().danger,
+        })
+        .aria_label(locale::text("toolbar.stop_recording"))
+        .tooltip(|window, cx| {
+            Tooltip::new(locale::text("toolbar.stop_recording")).build(window, cx)
+        })
+        .on_click(on_root(&view, move |this, _: &ClickEvent, _, cx| {
+            cx.stop_propagation();
             if let Some(pane) = this.pane.as_mut() {
-                pane.archivist.toggle();
+                match capture {
+                    RowCapture::Voice => pane.toggle_voice(cx),
+                    RowCapture::Screen => pane.toggle_screen(cx),
+                }
             }
             cx.notify();
         }))
 }
 
-fn capture_buttons(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
-    let voice_on = pane.voice_recording();
-    let screen_on = pane.screen_recording();
-    let busy = pane.capture_status().is_some();
-    let voice_label = if voice_on {
-        "Stop voice"
-    } else if pane.voice_allowed() {
-        "Record voice"
-    } else {
-        "Open a Speech note to record voice"
-    };
-    let screen_label = if screen_on {
-        "Stop screen"
-    } else if pane.sight_allowed() {
-        "Record screen"
-    } else {
-        "Open a Sight note to record the screen"
-    };
-    let voice = Button::new("record-voice")
-        .cursor_pointer()
-        .disabled(!voice_on && (busy || !pane.voice_allowed()))
-        .icon(if voice_on {
-            IconName::CircleDot
-        } else {
-            IconName::Mic
-        })
-        .tooltip(voice_label)
-        .accessibility_label(voice_label)
-        .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
-            if let Some(pane) = this.pane.as_mut() {
-                pane.toggle_voice(cx);
-            }
-            cx.notify();
-        }));
-    div()
-        .flex()
-        .items_center()
-        .gap_1()
-        .child(recording_style(voice, voice_on, cx))
-        .child(screen_button(
-            screen_on,
-            busy || !pane.sight_allowed(),
-            screen_label,
-            view,
-            cx,
-        ))
+/// Red record mark at the same size as a note icon.
+/// The scale starts at 1 so reduced motion still shows a normal icon.
+#[derive(gpui_kit::IntoElement)]
+struct RecordDot {
+    color: Hsla,
 }
 
-/// A live capture stays the size of the other toolbar icons and uses a red record mark.
-fn recording_style(button: Button, live: bool, cx: &App) -> Button {
-    if !live {
-        return button.ghost();
+impl RenderOnce for RecordDot {
+    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        let text = window.text_style();
+        svg()
+            .path(IconName::CircleDot.path())
+            .flex_shrink_0()
+            .size(text.font_size.to_pixels(window.rem_size()))
+            .text_color(self.color)
+            .with_animation(
+                "record-pulse",
+                Animation::new(Duration::from_millis(1400))
+                    .repeat()
+                    .with_max_fps(30.0),
+                |icon, delta| {
+                    let wave = (delta * std::f32::consts::PI).sin();
+                    let scale = 1.0 + 0.16 * wave;
+                    icon.with_transformation(Transformation::scale(size(scale, scale)))
+                },
+            )
     }
-    let danger = cx.theme().danger;
-    let hover = cx.theme().secondary_hover;
-    button.custom(
-        ButtonCustomVariant::new(cx)
-            .foreground(danger)
-            .hover(hover)
-            .active(hover),
-    )
-}
-
-fn screen_button(
-    screen_on: bool,
-    busy: bool,
-    screen_label: &str,
-    view: WeakEntity<Root>,
-    cx: &App,
-) -> gpui_kit::AnyElement {
-    let button = Button::new("record-screen")
-        .cursor_pointer()
-        .icon(if screen_on {
-            IconName::CircleDot
-        } else {
-            IconName::Video
-        })
-        .tooltip(screen_label.to_string())
-        .accessibility_label(screen_label.to_string());
-    if screen_on {
-        return recording_style(button, true, cx)
-            .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
-                if let Some(pane) = this.pane.as_mut() {
-                    pane.toggle_screen(cx);
-                }
-                cx.notify();
-            }))
-            .into_any_element();
-    }
-    recording_style(button, false, cx)
-        .disabled(busy)
-        .dropdown_menu(move |menu, _, menu_cx| {
-            let windows = list_record_sources();
-            let failed = windows.is_err();
-            view.update(menu_cx, |root, cx| {
-                if let Some(pane) = root.pane.as_mut() {
-                    pane.note_window_list(failed);
-                }
-                cx.notify();
-            })
-            .ok();
-            let mut menu = menu.item(screen_target_item(
-                view.clone(),
-                "Full display",
-                ScreenTarget::Display,
-            ));
-            if let Ok(windows) = windows {
-                for window in windows {
-                    menu = menu.item(screen_target_item(
-                        view.clone(),
-                        window.title,
-                        window.target,
-                    ));
-                }
-            }
-            menu
-        })
-        .into_any_element()
-}
-
-fn screen_target_item(
-    view: gpui_kit::WeakEntity<Root>,
-    label: impl Into<SharedString>,
-    target: ScreenTarget,
-) -> PopupMenuItem {
-    PopupMenuItem::new(label).on_click(move |_, _, app| {
-        let target = target.clone();
-        view.update(app, |root, cx| {
-            if let Some(pane) = root.pane.as_mut() {
-                pane.start_screen(target);
-            }
-            cx.notify();
-        })
-        .ok();
-    })
 }
 
 fn toggle_note_view(pane: &EditorPane, view: WeakEntity<Root>) -> impl IntoElement {
     let (icon, label) = match pane.note_view {
-        NoteView::Preview => (IconName::SquarePen, "Edit source"),
-        NoteView::Source => (IconName::Eye, "Show preview"),
+        NoteView::Preview => (IconName::SquarePen, locale::text("toolbar.edit_source")),
+        NoteView::Source => (IconName::Eye, locale::text("toolbar.show_preview")),
     };
     Button::new("toggle-note-view")
         .ghost()
@@ -265,7 +185,6 @@ fn note_header(
     _cx: &App,
 ) -> impl IntoElement {
     panel_header(div().id("note-header").px_2(), border)
-        .child(archivist_button(pane, view.clone()))
         .child(div().flex_1())
         .when(!pane.research_note_open(), |header| {
             header.child(toggle_note_view(pane, view))
@@ -300,7 +219,12 @@ fn brand(pane: &EditorPane, cx: &App) -> impl IntoElement {
         .pr_2()
         .child(img(mark()).h(px(20.)).w(px(14.)).flex_shrink_0())
         .child(pane.vault.name().to_string())
-        .child(div().text_xs().text_color(muted).child("Alpha"))
+        .child(
+            div()
+                .text_xs()
+                .text_color(muted)
+                .child(locale::text("brand.alpha")),
+        )
 }
 
 fn mark() -> Arc<Image> {
@@ -343,8 +267,8 @@ fn row_actions(
                 .small()
                 .compact()
                 .icon(IconName::PenLine)
-                .tooltip("Rename")
-                .accessibility_label("Rename")
+                .tooltip(locale::text("toolbar.rename"))
+                .accessibility_label(locale::text("toolbar.rename"))
                 .on_click(on_root(&view, move |this, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
                     if let Some(pane) = this.pane.as_mut() {
@@ -375,8 +299,10 @@ fn row_actions(
                         .text_color(danger)
                         .group_hover(delete_group, |style| style.text_color(black())),
                 )
-                .aria_label("Delete")
-                .tooltip(|window, cx| Tooltip::new("Delete").build(window, cx))
+                .aria_label(locale::text("toolbar.delete"))
+                .tooltip(|window, cx| {
+                    Tooltip::new(locale::text("toolbar.delete")).build(window, cx)
+                })
                 .on_click(on_root(&view, move |this, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
                     if let Some(pane) = this.pane.as_mut() {
@@ -439,7 +365,7 @@ fn settings_row(view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
                 .w_full()
                 .cursor_pointer()
                 .icon(IconName::Settings)
-                .label("Settings")
+                .label(locale::text("toolbar.settings"))
                 .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
                     if let Some(pane) = this.pane.as_mut() {
                         pane.toggle_settings(cx);
@@ -459,6 +385,7 @@ fn file_list(
 ) -> impl IntoElement {
     let collapsed = &pane.collapsed;
     let prompt = pane.prompt.as_ref();
+    let capture = row_capture(pane);
     div()
         .id("file-list")
         .flex_1()
@@ -476,11 +403,18 @@ fn file_list(
                 }
                 cx.notify();
             }))
-            .children(
-                entries.iter().cloned().map(|entry| {
-                    render_entry(entry, 0, selected, collapsed, prompt, view.clone(), cx)
-                }),
-            )
+            .children(entries.iter().cloned().map(|entry| {
+                render_entry(
+                    entry,
+                    0,
+                    selected,
+                    collapsed,
+                    prompt,
+                    capture.as_ref(),
+                    view.clone(),
+                    cx,
+                )
+            }))
         })
         .when(query_live, |list| {
             let empty = pane.search_hits.is_empty();
@@ -491,10 +425,10 @@ fn file_list(
                     .map(|hit| search_hit(hit, view.clone(), cx)),
             )
             .when(empty, |list| {
-                list.child(search_status("No notes match", cx))
+                list.child(search_status(locale::text("search.none"), cx))
             })
             .when(truncated, |list| {
-                list.child(search_status("More notes match", cx))
+                list.child(search_status(locale::text("search.more"), cx))
             })
         })
         .overflow_y_scrollbar()
@@ -584,15 +518,19 @@ fn create_actions(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl I
             .flex_shrink_0()
             .cursor_pointer()
             .icon(IconName::FilePlus)
-            .accessibility_label("New note")
-            .tooltip_with_action("New note", &NewNote, None)
+            .accessibility_label(locale::text("toolbar.new_note"))
+            .tooltip_with_action(locale::text("toolbar.new_note"), &NewNote, None)
             .dropdown_menu({
                 let view = view.clone();
+                let recording = pane.capture_status().is_some();
                 move |menu, _, _| {
-                    menu.item(new_kind_item(view.clone(), NoteKind::Book))
-                        .item(new_kind_item(view.clone(), NoteKind::Speech))
-                        .item(new_kind_item(view.clone(), NoteKind::Sight))
-                        .item(new_kind_item(view.clone(), NoteKind::Deed))
+                    let mut menu = menu.item(new_kind_item(view.clone(), NoteKind::Book));
+                    if !recording {
+                        menu = menu
+                            .item(new_kind_item(view.clone(), NoteKind::Speech))
+                            .item(new_kind_item(view.clone(), NoteKind::Sight));
+                    }
+                    menu.item(new_kind_item(view.clone(), NoteKind::Deed))
                         .item(new_kind_item(view.clone(), NoteKind::Research))
                 }
             }),
@@ -605,8 +543,8 @@ fn create_actions(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl I
             .flex_shrink_0()
             .cursor_pointer()
             .icon(IconName::FolderPlus)
-            .accessibility_label("New folder")
-            .tooltip("New folder")
+            .accessibility_label(locale::text("toolbar.new_folder"))
+            .tooltip(locale::text("toolbar.new_folder"))
             .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
                 if let Some(pane) = this.pane.as_mut() {
                     pane.begin_create_folder(window, cx);
@@ -623,11 +561,28 @@ fn create_actions(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl I
             .cursor_pointer()
             .icon(IconName::Search)
             .selected(searching)
-            .accessibility_label("Search vault")
-            .tooltip("Search vault")
+            .accessibility_label(locale::text("toolbar.search"))
+            .tooltip(locale::text("toolbar.search"))
             .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
                 if let Some(pane) = this.pane.as_mut() {
                     pane.toggle_search(window, cx);
+                }
+                cx.notify();
+            })),
+    )
+    .child(header_rule(border))
+    .child(
+        Button::new("refresh-files")
+            .ghost()
+            .small()
+            .flex_shrink_0()
+            .cursor_pointer()
+            .icon(IconName::RefreshCw)
+            .accessibility_label(locale::text("toolbar.refresh"))
+            .tooltip(locale::text("toolbar.refresh"))
+            .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
+                if let Some(pane) = this.pane.as_mut() {
+                    pane.refresh_from_disk(window, cx);
                 }
                 cx.notify();
             })),
@@ -666,6 +621,7 @@ fn render_entry(
     selected: &TreeSelection,
     collapsed: &std::collections::HashSet<runebook::FolderId>,
     prompt: Option<&Prompt>,
+    capture: Option<&(runebook::NoteId, RowCapture)>,
     view: WeakEntity<Root>,
     cx: &App,
 ) -> gpui_kit::AnyElement {
@@ -754,6 +710,7 @@ fn render_entry(
                             selected,
                             collapsed,
                             prompt,
+                            capture,
                             view.clone(),
                             cx,
                         )
@@ -766,6 +723,8 @@ fn render_entry(
             let key = format!("note-{}", id.as_str());
             let note_id = id.clone();
             let renaming = rename_input(prompt, &TreeSelection::Note(id.clone()));
+            let live =
+                capture.and_then(|(note, kind_capture)| (note == &id).then_some(*kind_capture));
             div()
                 .id(SharedString::from(key.clone()))
                 .group(SharedString::from(format!("row-{key}")))
@@ -780,7 +739,12 @@ fn render_entry(
                 .bg(if open { accent } else { sidebar })
                 .text_color(if open { accent_foreground } else { foreground })
                 .cursor_pointer()
-                .child(note_icon(kind))
+                .child(match live {
+                    Some(kind_capture) => {
+                        record_mark(kind_capture, &key, view.clone(), cx).into_any_element()
+                    }
+                    None => note_icon(kind).into_any_element(),
+                })
                 .child(row_label(&key, name, renaming))
                 .when(renaming.is_none(), |row| {
                     row.child(row_actions(
@@ -923,15 +887,24 @@ pub(crate) fn status_bar(pane: &EditorPane, cx: &App) -> impl IntoElement {
         .open_note
         .as_ref()
         .map(ToString::to_string)
-        .unwrap_or_else(|| "No note".to_string());
-    let state = if pane.dirty { "Unsaved" } else { "Saved" };
-    let mut text = format!("{} · {note} · {state}", pane.vault.root().display());
+        .unwrap_or_else(|| locale::text("status.no_note").to_string());
+    let state = if pane.dirty {
+        locale::text("status.unsaved")
+    } else {
+        locale::text("status.saved")
+    };
+    let path = pane.vault.root().display().to_string();
+    let mut text = locale::format(
+        "status.bar",
+        &[("path", &path), ("note", &note), ("state", state)],
+    );
+    let join = locale::text("status.join");
     if let Some(status) = pane.capture_status() {
-        text.push_str(" · ");
+        text.push_str(join);
         text.push_str(status);
     }
     if let Some(notice) = &pane.notice {
-        text.push_str(" · ");
+        text.push_str(join);
         text.push_str(notice);
     }
     let muted = cx.theme().muted_foreground;
