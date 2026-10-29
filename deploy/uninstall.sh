@@ -1,5 +1,5 @@
 #!/bin/sh
-# Remove the Runebook binary, the source checkout, and the user config.
+# Remove the Runebook binary, the desktop icon, and the user config.
 # The vault folder stays on disk.
 set -eu
 
@@ -16,6 +16,7 @@ fi
 data="${XDG_DATA_HOME:-${HOME}/.local/share}/runebook"
 config="${XDG_CONFIG_HOME:-${HOME}/.config}/runebook"
 binary="${HOME}/.local/bin/runebook"
+desktop="${XDG_DATA_HOME:-${HOME}/.local/share}/applications/runebook.desktop"
 
 remove_tree() {
   dir="$1"
@@ -63,6 +64,28 @@ elif [ -e "${binary}" ]; then
   exit 1
 else
   echo "Already gone: ${binary}"
+fi
+
+case "${desktop}" in
+  */applications/runebook.desktop) ;;
+  *)
+    echo "error: refusing to remove ${desktop}" >&2
+    exit 1
+    ;;
+esac
+
+if [ -L "${desktop}" ]; then
+  echo "error: ${desktop} is a symlink" >&2
+  exit 1
+fi
+if [ -f "${desktop}" ]; then
+  rm -f "${desktop}"
+  echo "Removed ${desktop}"
+elif [ -e "${desktop}" ]; then
+  echo "error: ${desktop} is not a file" >&2
+  exit 1
+else
+  echo "Already gone: ${desktop}"
 fi
 
 remove_tree "${data}"

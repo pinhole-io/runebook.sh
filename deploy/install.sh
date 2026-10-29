@@ -125,4 +125,5 @@ case ":${PATH}:" in
 esac
 
 echo "Installed ${bindir}/runebook"
+echo "The first start adds the application icon."
 echo "Research notes need OPENAI_API_KEY and Playwright Chromium."

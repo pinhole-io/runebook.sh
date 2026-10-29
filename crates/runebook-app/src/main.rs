@@ -9,6 +9,7 @@ mod chrome;
 mod dock;
 mod html_style;
 mod http;
+mod icon;
 mod locale;
 mod markdown_view;
 mod mermaid;
@@ -70,8 +71,13 @@ fn main() {
             let last = config.last_vault.clone();
             let saved_theme = config.theme.clone();
             let text_size = config.text_size;
+            #[cfg(target_os = "linux")]
+            icon::install();
+            let window_icon = icon::rgba();
             gpui_kit::open_window(
                 WindowOptions {
+                    app_id: Some(icon::APP_ID.to_string()),
+                    icon: window_icon,
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_decorations: Some(WindowDecorations::Client),
                     ..TitleBar::window_options()

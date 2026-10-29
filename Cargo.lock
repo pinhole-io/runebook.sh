@@ -6527,6 +6527,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "hound",
+ "image",
  "reqwest 0.12.28",
  "runebook",
  "serde_json",

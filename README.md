@@ -27,6 +27,8 @@ sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1
 
 Use a Wayland or X11 session. The app does not target Windows in this version.
 
+The first start writes a desktop file. The shell uses that file for the book icon.
+
 ## macOS packages
 
 Install the Xcode command line tools and Homebrew. Then install:

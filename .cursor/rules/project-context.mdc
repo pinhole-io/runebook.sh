@@ -66,6 +66,7 @@ Resolve `[[target]]` in this order:
 
 - Call `gpui_kit::init` before any GPUI Kit control.
 - The window uses a Kit `TitleBar`. The toolbar sits in that bar.
+- On Linux, the window id is `runebook`. Startup writes `$XDG_DATA_HOME/runebook/icon.png` and `$XDG_DATA_HOME/applications/runebook.desktop`. When `XDG_DATA_HOME` is unset, that directory is `~/.local/share`. The shell uses the desktop file for the book icon.
 - The file tree, the note, and the Archivist column sit in a Kit `DockArea`.
 - The file tree reads the vault every 500 ms. A change made outside the app shows up on that read. The refresh button reads immediately.
 - A clean open note reloads when its file changed. Unsaved text stays in the editor.
