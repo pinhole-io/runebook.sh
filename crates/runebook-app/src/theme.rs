@@ -19,6 +19,8 @@ const DARK_RAW: &str = include_str!("../../../themes/runebook-dark.json");
 const LIGHT_RAW: &str = include_str!("../../../themes/runebook-light.json");
 const OBSIDIAN_DARK_RAW: &str = include_str!("../../../themes/obsidian-dark.json");
 const OBSIDIAN_LIGHT_RAW: &str = include_str!("../../../themes/obsidian-light.json");
+const BLUE_TOPAZ_DARK_RAW: &str = include_str!("../../../themes/blue-topaz-dark.json");
+const BLUE_TOPAZ_LIGHT_RAW: &str = include_str!("../../../themes/blue-topaz-light.json");
 
 /// Marketplace themes, in install order. `themes/NOTICE` names each source.
 const VENDORED: &[(&str, &str)] = &[
@@ -166,6 +168,10 @@ fn builtin_themes() -> Vec<LoadedTheme> {
             .expect("themes/obsidian-dark.json is a color theme"),
         vscode_theme::parse_named("obsidian-light.json", OBSIDIAN_LIGHT_RAW, None)
             .expect("themes/obsidian-light.json is a color theme"),
+        vscode_theme::parse_named("blue-topaz-dark.json", BLUE_TOPAZ_DARK_RAW, None)
+            .expect("themes/blue-topaz-dark.json is a color theme"),
+        vscode_theme::parse_named("blue-topaz-light.json", BLUE_TOPAZ_LIGHT_RAW, None)
+            .expect("themes/blue-topaz-light.json is a color theme"),
     ];
     for (file_name, raw) in VENDORED {
         themes.push(
@@ -293,6 +299,8 @@ mod tests {
                 LIGHT_NAME,
                 "Obsidian Dark",
                 "Obsidian Light",
+                "Blue Topaz Dark",
+                "Blue Topaz Light",
                 "GitHub Dark Default",
                 "One Dark Pro",
                 "Dracula Theme",
@@ -352,6 +360,28 @@ mod tests {
             obsidian_light.config.colors.primary.as_deref(),
             Some("#7b6cd9")
         );
+        let topaz_dark = &themes[4];
+        let topaz_light = &themes[5];
+        assert!(topaz_dark.config.mode.is_dark());
+        assert!(!topaz_light.config.mode.is_dark());
+        assert_eq!(
+            topaz_dark.config.colors.background.as_deref(),
+            Some("#202020")
+        );
+        assert_eq!(topaz_dark.config.colors.sidebar.as_deref(), Some("#151515"));
+        assert_eq!(topaz_dark.config.colors.primary.as_deref(), Some("#2d82cc"));
+        assert_eq!(
+            topaz_light.config.colors.background.as_deref(),
+            Some("#ffffff")
+        );
+        assert_eq!(
+            topaz_light.config.colors.sidebar.as_deref(),
+            Some("#fcfcfc")
+        );
+        assert_eq!(
+            topaz_light.config.colors.primary.as_deref(),
+            Some("#468eeb")
+        );
         for theme in &themes[..2] {
             assert_eq!(theme.config.font_family.as_deref(), Some("Noto Sans"));
             assert_eq!(
@@ -368,7 +398,7 @@ mod tests {
                 theme.config.colors.primary_foreground.as_deref()
             );
         }
-        for theme in &themes[4..] {
+        for theme in &themes[6..] {
             assert!(theme.config.mode.is_dark());
             assert!(theme.config.colors.background.is_some());
             assert!(theme.config.highlight.is_some());

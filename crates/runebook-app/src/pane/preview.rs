@@ -160,6 +160,7 @@ pub(super) fn surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> im
         }
     }
 
+    let focus = pane.preview_focus.clone();
     div()
         .id("preview")
         .flex_1()
@@ -170,6 +171,19 @@ pub(super) fn surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> im
         .p_4()
         .flex()
         .flex_col()
+        .track_focus(&focus)
+        .on_action(on_root(
+            &view,
+            |this, _: &gpui_kit::base::input::Copy, _, cx| {
+                let copied = this
+                    .pane
+                    .as_ref()
+                    .is_some_and(|pane| pane.copy_selected_rows(cx));
+                if !copied {
+                    cx.propagate();
+                }
+            },
+        ))
         .on_mouse_down(
             MouseButton::Left,
             on_root(&view, |this, _: &MouseDownEvent, _, cx| {
@@ -181,9 +195,9 @@ pub(super) fn surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> im
         )
         .on_mouse_up(
             MouseButton::Left,
-            on_root(&view, |this, _: &MouseUpEvent, _, cx| {
+            on_root(&view, |this, _: &MouseUpEvent, window, cx| {
                 if let Some(pane) = this.pane.as_mut() {
-                    pane.release_note_row();
+                    pane.release_note_row(window, cx);
                 }
                 cx.notify();
             }),
@@ -278,10 +292,10 @@ fn note_row(
         })
         .on_mouse_down(
             MouseButton::Left,
-            on_root(&view, move |this, event: &MouseDownEvent, _, cx| {
+            on_root(&view, move |this, event: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
                 if let Some(pane) = this.pane.as_mut() {
-                    pane.press_note_row(index, event.modifiers.shift);
+                    pane.press_note_row(index, event.modifiers.shift, window, cx);
                 }
                 cx.notify();
             }),
@@ -297,9 +311,9 @@ fn note_row(
         }))
         .on_mouse_up(
             MouseButton::Left,
-            on_root(&view, |this, _: &MouseUpEvent, _, cx| {
+            on_root(&view, |this, _: &MouseUpEvent, window, cx| {
                 if let Some(pane) = this.pane.as_mut() {
-                    pane.release_note_row();
+                    pane.release_note_row(window, cx);
                 }
                 cx.notify();
             }),
@@ -316,6 +330,7 @@ fn note_row(
                         source,
                         images,
                         hide_anchors,
+                        cx,
                     )
                     .w_full()
                     .selectable(false)
@@ -891,6 +906,18 @@ fn row_menu(
                 .flex()
                 .flex_wrap()
                 .gap_1()
+                .child(
+                    Button::new("row-copy")
+                        .small()
+                        .cursor_pointer()
+                        .label(locale::text("preview.copy"))
+                        .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
+                            if let Some(pane) = this.pane.as_ref() {
+                                pane.copy_selected_rows(cx);
+                            }
+                            cx.notify();
+                        })),
+                )
                 .child(
                     Button::new("row-add-chat")
                         .small()

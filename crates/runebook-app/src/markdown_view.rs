@@ -46,6 +46,7 @@ pub(crate) fn view(
     source: impl Into<SharedString>,
     images: Option<ImageRoots>,
     hide_anchors: bool,
+    cx: &App,
 ) -> TextView {
     let shielded = shield_details(&source.into());
     let source = SharedString::from(crate::html_style::style_html(&shielded));
@@ -53,10 +54,11 @@ pub(crate) fn view(
     let images = Arc::new(images);
     let parser_links = Arc::clone(&links);
     TextView::markdown(id, source)
-        .style(note_style())
+        .style(note_style(cx))
         .markdown_block_parser(crate::mermaid::parse_block)
         .markdown_block_renderer("mermaid", crate::mermaid::render_block)
         .markdown_block_parser(move |node, cx| parse_extra(node, cx, hide_anchors, &parser_links))
+        .markdown_block_renderer("md-heading", render_heading)
         .markdown_block_renderer("md-rule", render_rule)
         .markdown_block_renderer("md-skip", |_, _, _| div())
         .markdown_block_renderer("md-link-def", render_link_def)
@@ -87,8 +89,8 @@ pub(crate) fn view(
 /// One heading scale for every preview.
 ///
 /// The scale and the paragraph gap come from the active theme.
-/// Lower headings match the body.
-fn note_style() -> TextViewStyle {
+/// Lower headings match the body. Code text uses the theme code color.
+fn note_style(cx: &App) -> TextViewStyle {
     let body = px(crate::theme::body_font_size());
     let spacing = crate::theme::note_spacing();
     let heading_1 = spacing.heading_1;
@@ -101,7 +103,49 @@ fn note_style() -> TextViewStyle {
         2 => base * heading_2,
         _ => base,
     }));
+    style.highlight_theme = cx.theme().highlight_theme.clone();
+    if let Some(color) = code_color(cx) {
+        style.inline_code.color = Some(color);
+        style.code_block.text.color = Some(color);
+    }
     style
+}
+
+fn heading_scale(level: u8) -> f32 {
+    let spacing = crate::theme::note_spacing();
+    match level {
+        1 => spacing.heading_1,
+        2 => spacing.heading_2,
+        _ => 1.,
+    }
+}
+
+/// The theme color for a syntax name, when the theme sets one.
+fn syntax_color(cx: &App, name: &str) -> Option<gpui_kit::Hsla> {
+    cx.theme()
+        .highlight_theme
+        .style
+        .syntax
+        .style(name)
+        .and_then(|style| style.color)
+}
+
+/// Inline code and a fence with no grammar use this color.
+fn code_color(cx: &App) -> Option<gpui_kit::Hsla> {
+    syntax_color(cx, "text.literal").or_else(|| syntax_color(cx, "string"))
+}
+
+fn render_heading(node: &MarkdownNode, _: &mut Window, cx: &mut App) -> gpui_kit::AnyElement {
+    let level = node.data::<u8>().copied().unwrap_or(1);
+    let body = px(crate::theme::body_font_size());
+    let color = syntax_color(cx, "title").unwrap_or(cx.theme().foreground);
+    div()
+        .whitespace_normal()
+        .text_size(body * heading_scale(level))
+        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+        .text_color(color)
+        .child(node.as_text().to_string())
+        .into_any_element()
 }
 
 #[derive(Clone)]
@@ -141,6 +185,11 @@ fn parse_extra(
         return Some(MarkdownNode::new("md-figure", figure).text(alt));
     }
     match node {
+        markdown_ast::Node::Heading(heading) => Some(
+            MarkdownNode::new("md-heading", heading.depth)
+                .text(plain_text(node))
+                .markdown(cx.node_source(node).unwrap_or("").to_string()),
+        ),
         markdown_ast::Node::Code(code) => details_code(code),
         markdown_ast::Node::ThematicBreak(_) => Some(MarkdownNode::new("md-rule", ()).text("")),
         markdown_ast::Node::Html(html) => html_block(&html.value),
@@ -300,6 +349,7 @@ fn render_footnote(
                         body,
                         images.as_ref().clone(),
                         false,
+                        cx,
                     )
                     .selectable(false),
                 ),
@@ -394,6 +444,7 @@ fn render_details(
                                 body,
                                 images.as_ref().clone(),
                                 false,
+                                cx,
                             )
                             .selectable(false),
                         ),
@@ -430,6 +481,7 @@ fn render_deflist(
                                 body,
                                 images.as_ref().clone(),
                                 false,
+                                cx,
                             )
                             .selectable(false),
                         ),

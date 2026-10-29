@@ -26,8 +26,8 @@ use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectState};
 use gpui_kit::component::{ActiveTheme, IndexPath, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AppContext, ClickEvent, Context, Entity, Focusable, Image, ImageFormat, PathPromptOptions,
-    RenderImage, SharedString, Subscription, Window, div, px,
+    AppContext, ClickEvent, Context, Entity, FocusHandle, Focusable, Image, ImageFormat,
+    PathPromptOptions, RenderImage, SharedString, Subscription, Window, div, px,
 };
 use runebook::{
     AppConfig, AutosavePace, Error, FolderId, NoteId, NoteKind, NoteViewChoice, SearchHit,
@@ -115,6 +115,8 @@ pub(super) struct EditorPane {
     latest: String,
     row_gesture: Option<rows::RowGesture>,
     row_rewrite: Option<Entity<InputState>>,
+    /// Focus for the preview, so Ctrl+C reaches the row selection.
+    preview_focus: FocusHandle,
     dirty: bool,
     notice: Option<String>,
     playback: Option<playback::Playback>,
@@ -360,6 +362,7 @@ impl EditorPane {
             collapsed: HashSet::new(),
             row_gesture: None,
             row_rewrite: None,
+            preview_focus: cx.focus_handle(),
             saved_text: text.clone(),
             latest: text,
             open_note,
@@ -2501,9 +2504,17 @@ impl EditorPane {
             .launch_message(display, message, vault, epoch, access, cx);
     }
 
-    fn press_note_row(&mut self, index: usize, shift: bool) {
+    fn press_note_row(
+        &mut self,
+        index: usize,
+        shift: bool,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) {
         self.row_rewrite = None;
         self.row_gesture = rows::RowGesture::press(self.row_gesture.take(), index, shift);
+        // Leave the source editor and the Archivist field so Ctrl+C copies these rows.
+        self.preview_focus.focus(window, cx);
     }
 
     fn drag_note_row(&mut self, index: usize) -> bool {
@@ -2512,9 +2523,12 @@ impl EditorPane {
             .is_some_and(|gesture| gesture.drag_over(index))
     }
 
-    fn release_note_row(&mut self) {
+    fn release_note_row(&mut self, window: &mut Window, cx: &mut Context<Root>) {
         if let Some(gesture) = self.row_gesture.as_mut() {
             gesture.release();
+        }
+        if self.row_gesture.is_some() {
+            self.preview_focus.focus(window, cx);
         }
     }
 
@@ -2528,6 +2542,18 @@ impl EditorPane {
         let gesture = self.row_gesture.as_ref()?;
         let source = selected_source(&self.latest, gesture)?;
         Some((note_id, source))
+    }
+
+    /// Write the selected rows to the clipboard. The selection stays.
+    ///
+    /// Returns false when nothing is selected, so the caller can let another
+    /// copy handler run.
+    fn copy_selected_rows(&self, cx: &mut Context<Root>) -> bool {
+        let Some((_, source)) = self.selected_note_text() else {
+            return false;
+        };
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(source));
+        true
     }
 
     /// Park the selection in the Archivist column. Send delivers it.

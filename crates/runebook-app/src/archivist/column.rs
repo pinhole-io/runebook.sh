@@ -1,7 +1,10 @@
 //! Right-hand Archivist column.
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Enter, Input};
+use gpui_kit::component::input::{
+    Enter, InputGroup, InputGroupAddon, InputGroupAddonAlignment, InputGroupButton, Textarea,
+};
 use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
@@ -41,7 +44,7 @@ pub(crate) fn column(
             panel_header(div().id("archivist-header").px_2().text_base(), border)
                 .child(locale::text("archivist.title")),
         )
-        .child(transcript(panel, muted, danger, busy))
+        .child(transcript(panel, muted, danger, busy, cx))
         .when(!panel.held.is_empty(), |column| {
             column.child(held_rows(panel, view.clone(), cx))
         })
@@ -56,6 +59,7 @@ fn transcript(
     muted: impl Into<Hsla>,
     danger: impl Into<Hsla>,
     busy: bool,
+    cx: &App,
 ) -> impl IntoElement {
     let muted = muted.into();
     let danger = danger.into();
@@ -101,10 +105,10 @@ fn transcript(
                                 .lines
                                 .iter()
                                 .enumerate()
-                                .map(|(index, line)| line_block(index, line, muted, danger)),
+                                .map(|(index, line)| line_block(index, line, muted, danger, cx)),
                         )
                         .when(busy && live_visible(&panel.live), |log| {
-                            log.child(live_block(&panel.live_rendered, muted))
+                            log.child(live_block(&panel.live_rendered, muted, cx))
                         })
                         .when(busy, |log| {
                             log.child(
@@ -130,7 +134,7 @@ fn live_visible(live: &super::LiveText) -> bool {
     !live.thinking.trim().is_empty() || !live.body.trim().is_empty()
 }
 
-fn line_block(index: usize, line: &super::Line, muted: Hsla, danger: Hsla) -> AnyElement {
+fn line_block(index: usize, line: &super::Line, muted: Hsla, danger: Hsla, cx: &App) -> AnyElement {
     match line {
         super::Line::User(text) => {
             plain_block(locale::text("archivist.you"), text, muted, muted).into_any_element()
@@ -153,6 +157,7 @@ fn line_block(index: usize, line: &super::Line, muted: Hsla, danger: Hsla) -> An
                         SharedString::from(format!("archivist-{index}-thinking")),
                         thinking.clone(),
                         muted,
+                        cx,
                     ))
                 })
                 .when(!body.trim().is_empty(), |block| {
@@ -170,6 +175,7 @@ fn line_block(index: usize, line: &super::Line, muted: Hsla, danger: Hsla) -> An
                             .child(markdown_block(
                                 SharedString::from(format!("archivist-{index}-body")),
                                 body.clone(),
+                                cx,
                             )),
                     )
                 })
@@ -178,7 +184,7 @@ fn line_block(index: usize, line: &super::Line, muted: Hsla, danger: Hsla) -> An
     }
 }
 
-fn live_block(live: &super::RenderedMarkdown, muted: Hsla) -> impl IntoElement {
+fn live_block(live: &super::RenderedMarkdown, muted: Hsla, cx: &App) -> impl IntoElement {
     let thinking = live.thinking.clone();
     let body = live.body.clone();
     div()
@@ -193,6 +199,7 @@ fn live_block(live: &super::RenderedMarkdown, muted: Hsla) -> impl IntoElement {
                 SharedString::from("archivist-live-thinking"),
                 thinking.clone(),
                 muted,
+                cx,
             ))
         })
         .when(!body.trim().is_empty(), |block| {
@@ -210,12 +217,13 @@ fn live_block(live: &super::RenderedMarkdown, muted: Hsla) -> impl IntoElement {
                     .child(markdown_block(
                         SharedString::from("archivist-live-body"),
                         body.clone(),
+                        cx,
                     )),
             )
         })
 }
 
-fn thinking_block(id: SharedString, text: SharedString, muted: Hsla) -> impl IntoElement {
+fn thinking_block(id: SharedString, text: SharedString, muted: Hsla, cx: &App) -> impl IntoElement {
     div()
         .w_full()
         .min_w(px(0.))
@@ -229,15 +237,15 @@ fn thinking_block(id: SharedString, text: SharedString, muted: Hsla) -> impl Int
                 .text_color(muted)
                 .child(locale::text("archivist.thinking")),
         )
-        .child(markdown_block(id, text))
+        .child(markdown_block(id, text, cx))
 }
 
-fn markdown_block(id: SharedString, source: SharedString) -> impl IntoElement {
+fn markdown_block(id: SharedString, source: SharedString, cx: &App) -> impl IntoElement {
     div()
         .w_full()
         .min_w(px(0.))
         .text_base()
-        .child(crate::mermaid::view(id, source))
+        .child(crate::mermaid::view(id, source, cx))
 }
 
 fn plain_block(
@@ -440,47 +448,60 @@ fn composer(
         .child(
             div()
                 .id("archivist-draft")
-                .on_action(on_root(&view, |this, _: &Enter, window, cx| {
+                .on_action(on_root(&view, |this, action: &Enter, window, cx| {
+                    if action.shift {
+                        return;
+                    }
                     cx.stop_propagation();
                     if let Some(pane) = this.pane.as_mut() {
                         pane.send_archivist(window, cx);
                     }
                     cx.notify();
                 }))
-                .child(Input::new(&panel.draft).w_full()),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
                 .child(
-                    Button::new("archivist-add-file")
-                        .small()
-                        .cursor_pointer()
-                        .disabled(busy)
-                        .label(locale::text("archivist.add_file"))
-                        .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
-                            if let Some(pane) = this.pane.as_mut() {
-                                pane.pick_archivist_files(cx);
-                            }
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("archivist-send")
-                        .small()
-                        .primary()
-                        .cursor_pointer()
-                        .flex_1()
-                        .disabled(!ready || busy)
-                        .label(locale::text("archivist.send"))
-                        .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
-                            if let Some(pane) = this.pane.as_mut() {
-                                pane.send_archivist(window, cx);
-                            }
-                            cx.notify();
-                        })),
+                    InputGroup::new("archivist-composer")
+                        .large()
+                        .w_full()
+                        .input(Textarea::new(&panel.draft).min_h(px(0.)))
+                        .addon(
+                            InputGroupAddon::new("archivist-file-addon").child(
+                                InputGroupButton::new("archivist-add-file")
+                                    .small()
+                                    .icon(IconName::FilePlus)
+                                    .tooltip(locale::text("archivist.add_file"))
+                                    .accessibility_label(locale::text("archivist.add_file"))
+                                    .cursor_pointer()
+                                    .disabled(busy)
+                                    .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
+                                        if let Some(pane) = this.pane.as_mut() {
+                                            pane.pick_archivist_files(cx);
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                        )
+                        .addon(
+                            InputGroupAddon::new("archivist-send-addon")
+                                .align(InputGroupAddonAlignment::InlineEnd)
+                                .child(
+                                    InputGroupButton::new("archivist-send")
+                                        .small()
+                                        .icon(IconName::Send)
+                                        .tooltip(locale::text("archivist.send"))
+                                        .accessibility_label(locale::text("archivist.send"))
+                                        .cursor_pointer()
+                                        .disabled(!ready || busy)
+                                        .on_click(on_root(
+                                            &view,
+                                            |this, _: &ClickEvent, window, cx| {
+                                                if let Some(pane) = this.pane.as_mut() {
+                                                    pane.send_archivist(window, cx);
+                                                }
+                                                cx.notify();
+                                            },
+                                        )),
+                                ),
+                        ),
                 ),
         )
 }

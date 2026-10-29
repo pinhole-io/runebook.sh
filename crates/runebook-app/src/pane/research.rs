@@ -698,7 +698,7 @@ pub(super) fn report(
                         locale::text("research.plan"),
                         border,
                         muted,
-                        crate::markdown_view::view("research-plan", plan, plan_images, false)
+                        crate::markdown_view::view("research-plan", plan, plan_images, false, cx)
                             .w_full()
                             .selectable(false)
                             .on_link_click(move |url, _, window, cx| {
@@ -756,6 +756,7 @@ pub(super) fn report(
                                     findings,
                                     images,
                                     false,
+                                    cx,
                                 )
                                 .w_full()
                                 .selectable(false)

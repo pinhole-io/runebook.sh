@@ -47,7 +47,7 @@ kind: speech
 - `locale` is the window language. `en` is English. A blank or unknown code uses English. Window text lives in `locales/en.json`.
 - `text_size` is `small`, `medium`, or `large`. Medium matches the active theme. Line numbers and soft wrap default to on. `media_muted` starts a new clip silent.
 - A theme file is a VS Code color theme. `name`, `type`, `colors`, and `tokenColors` are the keys that matter. `type` is `dark` or `light`.
-- Built-in themes are `themes/runebook-dark.json`, `themes/runebook-light.json`, `themes/obsidian-dark.json`, `themes/obsidian-light.json`, and the 15 marketplace themes listed in `themes/NOTICE`.
+- Built-in themes are `themes/runebook-dark.json`, `themes/runebook-light.json`, `themes/obsidian-dark.json`, `themes/obsidian-light.json`, `themes/blue-topaz-dark.json`, `themes/blue-topaz-light.json`, and the 15 marketplace themes listed in `themes/NOTICE`.
 - User themes are `$XDG_CONFIG_HOME/runebook/themes/*.json`. When `XDG_CONFIG_HOME` is unset, the directory is `~/.config/runebook/themes`.
 - `theme` is the theme name. `dark` and `light` still select the built-in themes. An unknown name uses Runebook Dark.
 - The app ignores `semanticTokenColors`. An `include` must be one `.json` file in the same folder.
@@ -74,6 +74,10 @@ Resolve `[[target]]` in this order:
 - The dock panel names are `files`, `note`, and `archivist`.
 - `dock_layout` stores the dock JSON. A bad value uses the default split.
 - The source pane is the Kit `Editor`. The preview pane is Kit markdown.
+- A heading uses the theme heading color.
+- A fenced code block uses the theme code color. A language with a grammar uses the theme syntax colors.
+- Inline code uses the theme code color.
 - HTML in a note uses those same styles. `<details>` starts closed. A click opens it. `<pre>`, `<code>`, `<kbd>`, `<img>`, and `<a>` follow the markdown look. A script tag is dropped.
 - The window shows the preview until the user flips to the source.
+- A click selects preview rows. The row menu copies that markdown to the clipboard. Ctrl+C does the same when the source editor and the Archivist field do not have focus.
 - Autosave is debounced. Also flush on note switch and window close.

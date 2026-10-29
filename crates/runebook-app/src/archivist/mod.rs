@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use gpui_kit::component::input::InputState;
+use gpui_kit::component::input::TextareaState;
 use gpui_kit::{AppContext, Context, Entity, ScrollHandle, SharedString, Window};
 use runebook::{FolderId, NoteId, Vault};
 use superglue::agents::AgentSpec;
@@ -108,7 +108,7 @@ pub(crate) struct Panel {
     lines: Vec<Line>,
     live: LiveText,
     live_rendered: RenderedMarkdown,
-    draft: Entity<InputState>,
+    draft: Entity<TextareaState>,
     log_scroll: ScrollHandle,
     session: Option<Session>,
     drop_session: bool,
@@ -130,7 +130,10 @@ struct HeldRows {
 impl Panel {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Root>) -> Self {
         let draft = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(locale::text("archivist.placeholder"))
+            TextareaState::new(window, cx)
+                .placeholder(locale::text("archivist.placeholder"))
+                .submit_on_enter(true)
+                .auto_grow(1, 8)
         });
         Self {
             busy: false,

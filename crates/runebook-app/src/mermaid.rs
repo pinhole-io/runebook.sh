@@ -35,8 +35,9 @@ enum Shown {
 pub(crate) fn view(
     id: impl Into<gpui_kit::ElementId>,
     source: impl Into<SharedString>,
+    cx: &App,
 ) -> TextView {
-    crate::markdown_view::view(id, source, None, false)
+    crate::markdown_view::view(id, source, None, false, cx)
 }
 
 pub(crate) fn parse_block(

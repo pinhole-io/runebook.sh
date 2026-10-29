@@ -14,6 +14,21 @@ Obsidian Light
 Syntax colors for both files come from the Obsidian color palette.
 Source: https://docs.obsidian.md/Reference/CSS+variables/Foundations/Colors
 
+Blue Topaz Dark and Blue Topaz Light use the default palette from Blue Topaz.
+The files keep `name`, `type`, `colors`, and `tokenColors`.
+
+Blue Topaz Dark
+  File: themes/blue-topaz-dark.json
+  Source: https://github.com/PKM-er/Blue-Topaz_Obsidian-css
+  License: MIT
+  Copyright (c) 2020 whyt-byte
+
+Blue Topaz Light
+  File: themes/blue-topaz-light.json
+  Source: https://github.com/PKM-er/Blue-Topaz_Obsidian-css
+  License: MIT
+  Copyright (c) 2020 whyt-byte
+
 Each remaining file is one theme from a VS Code extension.
 The file has no include. The app reads name, type, colors, and tokenColors.
 

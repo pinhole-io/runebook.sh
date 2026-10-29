@@ -101,6 +101,7 @@
   "notice.tool_rounds": "Tool rounds must be at least 1.",
   "notice.value_long": "That value is too long.",
   "preview.add": "Add to chat",
+  "preview.copy": "Copy",
   "preview.apply": "Apply",
   "preview.rewrite": "Rewrite",
   "preview.rewrite_placeholder": "How should these rows change?",

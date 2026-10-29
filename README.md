@@ -94,7 +94,7 @@ The user config is `$XDG_CONFIG_HOME/runebook/config.toml`. When `XDG_CONFIG_HOM
 
 A theme file uses the same keys as a VS Code color theme. Copy `name`, `type`, `colors`, and `tokenColors`. `type` is `dark` or `light`. Put the file in `$XDG_CONFIG_HOME/runebook/themes`. The app lists that file in Settings. `theme = "dark"` and `theme = "light"` still open Runebook Dark and Runebook Light. An unknown name uses Runebook Dark. The app ignores `semanticTokenColors`. An `include` must be one `.json` file in the same folder. Font, radius, and note spacing sit in an optional `runebook` object.
 
-The app also ships Obsidian Dark and Obsidian Light. Those files use Obsidian's published default palette. It also ships 15 color themes from the VS Code marketplace. `themes/NOTICE` lists each file, the source, and the license. Monokai Pro and Material Theme are not included. Their licenses forbid redistribution.
+The app also ships Obsidian Dark, Obsidian Light, Blue Topaz Dark, and Blue Topaz Light. It also ships 15 color themes from the VS Code marketplace. `themes/NOTICE` lists each file, the source, and the license. Monokai Pro and Material Theme are not included. Their licenses forbid redistribution.
 
 Settings groups those choices. Appearance holds the theme, the window language, the text size, and the note view. Editor holds line numbers, line wrap, and autosave. Capture holds the microphone, the speech model, the spoken language, and mute. Models holds the keys, the host, and the model names. Vault reopens the last note when that note is still in the vault.
 
