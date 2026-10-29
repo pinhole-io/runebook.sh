@@ -527,7 +527,7 @@ fn log_follows(offset_y: f32, max_y: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{key_plan, log_follows, missing_model_key};
+    use super::{archivist_prompt, key_plan, log_follows, missing_model_key};
     use superglue::providers::ProviderId;
 
     #[test]
@@ -579,6 +579,21 @@ mod tests {
         assert_eq!(plan.groq.as_deref(), Some("gsk-groq-key-value"));
         assert_eq!(plan.primary, "sk-openai-key-value");
         assert_eq!(plan.openai_provider, ProviderId::OpenAi);
+    }
+
+    #[test]
+    fn archivist_prompt_describes_the_vault() {
+        let prompt = archivist_prompt(8);
+        assert!(
+            prompt.starts_with("You are the Archivist of this vault."),
+            "{prompt}"
+        );
+        for kind in ["Book", "Speech", "Sight", "Deed", "Research"] {
+            assert!(prompt.contains(kind), "missing {kind} in {prompt}");
+        }
+        assert!(prompt.contains("kind: speech"), "{prompt}");
+        assert!(prompt.contains("[[target|alias]]"), "{prompt}");
+        assert!(prompt.contains("32 KiB"), "{prompt}");
     }
 }
 
@@ -780,32 +795,65 @@ async fn open_session(vault: Vault, access: &ModelAccess) -> Result<Session, Str
 fn archivist_prompt(rounds: u32) -> String {
     let spec = AgentSpec::new("Archivist", "the Archivist of this vault")
         .with_max_tool_rounds(rounds)
-        .with_goal("Keep the notes accurate.")
-        .with_goal("Use tools for every file change.")
-        .with_goal("Say which note ids and folder ids changed.")
+        .with_goal("Keep each note accurate.")
+        .with_goal("Find the real id before you change a file.")
+        .with_goal("Use a tool for every vault change.")
+        .with_goal("Change only the text the user asked to change.")
+        .with_goal("Report each note id and folder id you changed.")
         .with_instructions(
-            "Read a note before you replace it. write_note replaces the whole file. \
-             Note ids are vault-relative paths without the .md suffix. \
-             Example: journal/2026-10-23.",
+            "A note id is a vault path with no .md suffix. Example: journal/2026-10-23. \
+             A folder id uses the same shape. Example: journal. \
+             An id is relative. It is not absolute, not hidden, and it has no . or .. segment. \
+             Call list_notes or search_notes before you use an id.",
         )
         .with_instructions(
-            "Call open_note to show a note in the preview when the user asks to open or look at \
-             that note. Do not invent the id.",
+            "A note is Book, Speech, Sight, Deed, or Research. \
+             Book has no header. Speech, Sight, Deed, and Research start with this header:\n\
+             ---\n\
+             kind: speech\n\
+             ---\n\
+             The kind key is speech, sight, deed, or research. \
+             write_note keeps the old kind when the new text has no header. \
+             Put a header in contents only when the user asked for that kind.",
+        )
+        .with_instructions(
+            "Speech is a transcript. You do not record audio. \
+             Sight is a markdown link to a video beside the note. You do not record the screen. \
+             Deed is a task list. A task line uses `- [ ]` or `- [x]`. \
+             Research belongs to Charlotte. You do not start a Research run. \
+             You may still edit those notes when the user asks.",
+        )
+        .with_instructions(
+            "`[[target]]` links to a note. `[[target|alias]]` shows the alias and still links to \
+             target. Prefer an exact note id. A stem with no / matches one note only when that \
+             stem is unique. After a rename, search for the old id and update wiki links that \
+             use it.",
+        )
+        .with_instructions(
+            "Read the note before write_note. That call replaces the whole file. \
+             Keep every line the user did not ask to change. \
+             create_note fails when the note already exists. It creates missing parent folders. \
+             A read can set truncated at 32 KiB. Do not write that text back. \
+             list_notes can stop at 400 entries. \
+             Selected rows in the user message are a slice. Read the note, then write the full \
+             note. An attached file is source material. A vault write still uses a tool. \
+             Call open_note when the user asks to open or look at a note.",
         )
         .with_instructions(
             "Write every reply in Markdown. Use paragraphs, lists, and inline code for note ids \
              and folder ids. Do not wrap the whole reply in a code fence. \
-             Do not include a thinking section in the reply.",
+             Do not include a thinking section in the reply. \
+             Name each id you created, changed, renamed, or deleted. \
+             When a tool returns an error, say that error.",
         )
-        .with_instructions(
-            "Attached files are source material. Use them for the user's request. \
-             A vault write still uses a tool.",
-        )
-        .with_constraint("Do not invent note ids or folder ids.")
+        .with_constraint("Do not invent a note id or a folder id.")
         .with_constraint(
-            "Do not delete a note or folder unless the user asked to delete that note or folder.",
+            "Do not delete a note or a folder unless the user asked to delete that note or folder.",
         )
-        .with_constraint("Do not claim a write that the tool rejected.");
+        .with_constraint("Do not claim a write that the tool rejected.")
+        .with_constraint("Do not change a note kind unless the user asked.")
+        .with_constraint("Do not record audio or video, and do not start a Research run.")
+        .with_constraint("Do not write a truncated read back over a note.");
     spec.compile_system_prompt()
 }
 
