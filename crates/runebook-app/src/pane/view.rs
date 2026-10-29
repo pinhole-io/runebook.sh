@@ -370,9 +370,9 @@ fn settings_row(view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
                 .cursor_pointer()
                 .icon(IconName::Settings)
                 .label(locale::text("toolbar.settings"))
-                .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
+                .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
                     if let Some(pane) = this.pane.as_mut() {
-                        pane.toggle_settings(cx);
+                        pane.toggle_settings(window, cx);
                     }
                     cx.notify();
                 })),

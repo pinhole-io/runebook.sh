@@ -96,6 +96,8 @@ pub(super) struct EditorPane {
     microphone_select: Option<Entity<SelectState<SearchableVec<String>>>>,
     microphone_watch: Option<Subscription>,
     mic_load: u64,
+    theme_select: Option<Entity<SelectState<SearchableVec<String>>>>,
+    theme_watch: Option<Subscription>,
     theme: String,
     locale: String,
     text_size: TextSize,
@@ -378,6 +380,8 @@ impl EditorPane {
             microphone_select: None,
             microphone_watch: None,
             mic_load: 0,
+            theme_select: None,
+            theme_watch: None,
             theme: crate::theme::catalog().resolve(&prefs.theme).name.clone(),
             locale: locale::activate(&prefs.locale).to_string(),
             text_size: prefs.text_size,
@@ -451,12 +455,56 @@ impl EditorPane {
 
     /// Open or close settings in the note area.
     ///
-    /// Opening settings clears the microphone list and loads it again.
-    fn toggle_settings(&mut self, cx: &mut Context<Root>) {
+    /// Opening settings builds the theme list and loads the microphone list again.
+    fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Root>) {
         self.settings_open = !self.settings_open;
         if self.settings_open {
+            self.show_themes(window, cx);
             self.begin_microphone_load(cx);
         }
+    }
+
+    /// Fill the theme menu from the catalog. A theme added while Settings is open
+    /// shows up the next time Settings opens.
+    fn show_themes(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+        let names = crate::theme::catalog().names();
+        let selected = names
+            .iter()
+            .position(|name| name == &self.theme)
+            .unwrap_or(0);
+        let select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(names),
+                Some(IndexPath::new(selected)),
+                window,
+                cx,
+            )
+        });
+        self.theme_watch = Some(cx.subscribe(
+            &select,
+            |root, _, event: &SelectEvent<SearchableVec<String>>, cx| {
+                let SelectEvent::Confirm(Some(name)) = event else {
+                    return;
+                };
+                let Some(pane) = root.pane.as_mut() else {
+                    return;
+                };
+                pane.apply_theme(name.clone(), cx);
+                cx.notify();
+            },
+        ));
+        self.theme_select = Some(select);
+    }
+
+    /// Apply `name` and save it. An unknown name is ignored.
+    fn apply_theme(&mut self, name: String, cx: &mut Context<Root>) {
+        let Some(loaded) = crate::theme::catalog().by_name(&name).cloned() else {
+            return;
+        };
+        let size = self.text_size;
+        crate::theme::apply(&loaded, cx);
+        self.choose_theme(name);
+        crate::theme::apply_text_size(size, cx);
     }
 
     fn begin_microphone_load(&mut self, cx: &mut Context<Root>) {

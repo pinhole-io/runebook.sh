@@ -1,7 +1,8 @@
 //! Settings screen in the note area.
 //!
-//! Each section owns one kind of choice. A switch row keeps the label and the
-//! control on one line. A text field sits under its label.
+//! Sections run Appearance, Notes, Capture, then Models.
+//! A short choice keeps the label on the left and the control on the right.
+//! A text field or a long list sits under its label.
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputContentType, InputState};
@@ -10,11 +11,11 @@ use gpui_kit::component::select::Select;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, ClickEvent, Entity, SharedString, WeakEntity, Window, div, px};
+use gpui_kit::{App, ClickEvent, Entity, WeakEntity, Window, div, px};
 
 use super::{EditorPane, NoteView};
 use crate::chrome::panel_header;
-use crate::{Root, on_root, theme};
+use crate::{Root, on_root};
 use runebook::{AutosavePace, SpeechModel, TextSize};
 
 use crate::locale;
@@ -44,17 +45,18 @@ pub(super) fn panel(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl
                 .overflow_y_scroll()
                 .p_4()
                 .child(
-                    div()
-                        .w_full()
-                        .max_w(px(520.))
-                        .flex()
-                        .flex_col()
-                        .gap_6()
-                        .child(appearance(pane, view.clone(), muted, border))
-                        .child(editor(pane, view.clone(), muted, border))
-                        .child(capture(pane, view.clone(), cx, muted, border))
-                        .child(models(pane, muted, border))
-                        .child(vault(pane, view, muted, border)),
+                    div().w_full().flex().justify_center().child(
+                        div()
+                            .w_full()
+                            .max_w(px(520.))
+                            .flex()
+                            .flex_col()
+                            .gap_6()
+                            .child(appearance(pane, view.clone(), cx, muted, border))
+                            .child(notes(pane, view.clone(), muted, border))
+                            .child(capture(pane, view, cx, muted, border))
+                            .child(models(pane, muted, border)),
+                    ),
                 ),
         )
 }
@@ -69,9 +71,9 @@ fn header(view: WeakEntity<Root>, border: impl Into<gpui_kit::Hsla>) -> impl Int
                 .small()
                 .cursor_pointer()
                 .label(locale::text("settings.done"))
-                .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
+                .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
                     if let Some(pane) = this.pane.as_mut() {
-                        pane.toggle_settings(cx);
+                        pane.toggle_settings(window, cx);
                     }
                     cx.notify();
                 })),
@@ -81,43 +83,39 @@ fn header(view: WeakEntity<Root>, border: impl Into<gpui_kit::Hsla>) -> impl Int
 fn appearance(
     pane: &EditorPane,
     view: WeakEntity<Root>,
+    cx: &App,
     muted: impl Into<gpui_kit::Hsla> + Clone,
     border: impl Into<gpui_kit::Hsla>,
 ) -> impl IntoElement {
     let muted = muted.into();
     section(
         locale::text("settings.appearance"),
-        locale::text("settings.appearance.hint"),
         border,
-        muted,
         div()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_4()
             .child(field(
                 locale::text("settings.theme"),
                 muted,
-                theme_group(pane, view.clone()),
+                theme_field(pane, cx),
             ))
-            .child(field(
-                locale::text("settings.ui_language"),
-                muted,
-                locale_group(pane, view.clone()),
-            ))
-            .child(field(
+            .child(choice_row(
                 locale::text("settings.text_size"),
+                None,
                 muted,
                 text_size_group(pane, view.clone()),
             ))
-            .child(field(
-                locale::text("settings.note_view"),
+            .child(choice_row(
+                locale::text("settings.ui_language"),
+                None,
                 muted,
-                note_view_group(pane, view),
+                locale_group(pane, view),
             )),
     )
 }
 
-fn editor(
+fn notes(
     pane: &EditorPane,
     view: WeakEntity<Root>,
     muted: impl Into<gpui_kit::Hsla> + Clone,
@@ -125,18 +123,22 @@ fn editor(
 ) -> impl IntoElement {
     let muted = muted.into();
     section(
-        locale::text("settings.editor"),
-        locale::text("settings.editor.hint"),
+        locale::text("settings.notes"),
         border,
-        muted,
         div()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_4()
+            .child(choice_row(
+                locale::text("settings.note_view"),
+                None,
+                muted,
+                note_view_group(pane, view.clone()),
+            ))
             .child(toggle_row(
                 "line-numbers",
                 locale::text("settings.line_numbers"),
-                locale::text("settings.line_numbers.hint"),
+                None,
                 pane.line_numbers,
                 muted,
                 {
@@ -156,7 +158,7 @@ fn editor(
             .child(toggle_row(
                 "soft-wrap",
                 locale::text("settings.wrap"),
-                locale::text("settings.wrap.hint"),
+                None,
                 pane.soft_wrap,
                 muted,
                 {
@@ -180,8 +182,25 @@ fn editor(
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(autosave_group(pane, view))
+                    .child(autosave_group(pane, view.clone()))
                     .child(hint(locale::text("settings.autosave.hint"), muted)),
+            ))
+            .child(toggle_row(
+                "reopen-note",
+                locale::text("settings.reopen"),
+                Some(locale::text("settings.reopen.hint")),
+                pane.reopen_last_note,
+                muted,
+                move |checked, _, app| {
+                    let on = *checked;
+                    view.update(app, |root, cx| {
+                        if let Some(pane) = root.pane.as_mut() {
+                            pane.choose_reopen_last_note(on);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                },
             )),
     )
 }
@@ -196,27 +215,21 @@ fn capture(
     let muted = muted.into();
     section(
         locale::text("settings.capture"),
-        locale::text("settings.capture.hint"),
         border,
-        muted,
         div()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_4()
             .child(field(
                 locale::text("settings.microphone"),
                 muted,
                 microphone_field(pane, cx),
             ))
-            .child(field(
+            .child(choice_row(
                 locale::text("settings.speech_model"),
+                Some(locale::text("settings.speech_model.hint")),
                 muted,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(speech_group(pane, view.clone()))
-                    .child(hint(locale::text("settings.speech_model.hint"), muted)),
+                speech_group(pane, view.clone()),
             ))
             .child(field(
                 locale::text("settings.speech_language"),
@@ -231,21 +244,18 @@ fn capture(
             .child(toggle_row(
                 "start-muted",
                 locale::text("settings.start_muted"),
-                locale::text("settings.start_muted.hint"),
+                Some(locale::text("settings.start_muted.hint")),
                 pane.start_muted,
                 muted,
-                {
-                    let view = view;
-                    move |checked, _, app| {
-                        let on = *checked;
-                        view.update(app, |root, cx| {
-                            if let Some(pane) = root.pane.as_mut() {
-                                pane.choose_start_muted(on);
-                            }
-                            cx.notify();
-                        })
-                        .ok();
-                    }
+                move |checked, _, app| {
+                    let on = *checked;
+                    view.update(app, |root, cx| {
+                        if let Some(pane) = root.pane.as_mut() {
+                            pane.choose_start_muted(on);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
                 },
             )),
     )
@@ -260,30 +270,19 @@ fn models(
     let inputs = &pane.model_inputs;
     section(
         locale::text("settings.models"),
-        locale::text("settings.models.hint"),
         border,
-        muted,
         div()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(field(
-                locale::text("settings.tool_rounds"),
-                muted,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(text_setting(&inputs.tool_rounds))
-                    .child(hint(locale::text("settings.tool_rounds.hint"), muted)),
-            ))
-            .child(group_label(locale::text("settings.voice"), muted))
+            .gap_4()
+            .child(hint(locale::text("settings.models.hint"), muted))
+            .child(subsection(locale::text("settings.voice")))
             .child(field(
                 locale::text("settings.groq_key"),
                 muted,
                 secret_setting(&inputs.groq_api_key),
             ))
-            .child(group_label(locale::text("settings.research"), muted))
+            .child(subsection(locale::text("settings.research")))
             .child(field(
                 locale::text("settings.openai_key"),
                 muted,
@@ -299,52 +298,30 @@ fn models(
                 muted,
                 text_setting(&inputs.openai_model),
             ))
-            .child(group_label(locale::text("settings.archivist"), muted))
+            .child(subsection(locale::text("settings.archivist")))
             .child(field(
                 locale::text("settings.archivist_model"),
                 muted,
                 text_setting(&inputs.archivist_model),
-            )),
-    )
-}
-
-fn vault(
-    pane: &EditorPane,
-    view: WeakEntity<Root>,
-    muted: impl Into<gpui_kit::Hsla> + Clone,
-    border: impl Into<gpui_kit::Hsla>,
-) -> impl IntoElement {
-    let muted = muted.into();
-    section(
-        locale::text("settings.vault"),
-        locale::text("settings.vault.hint"),
-        border,
-        muted,
-        toggle_row(
-            "reopen-note",
-            locale::text("settings.reopen"),
-            locale::text("settings.reopen.hint"),
-            pane.reopen_last_note,
-            muted,
-            move |checked, _, app| {
-                let on = *checked;
-                view.update(app, |root, cx| {
-                    if let Some(pane) = root.pane.as_mut() {
-                        pane.choose_reopen_last_note(on);
-                    }
-                    cx.notify();
-                })
-                .ok();
-            },
-        ),
+            ))
+            .child(
+                div().pt_2().child(field(
+                    locale::text("settings.tool_rounds"),
+                    muted,
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(text_setting(&inputs.tool_rounds))
+                        .child(hint(locale::text("settings.tool_rounds.hint"), muted)),
+                )),
+            ),
     )
 }
 
 fn section(
     title: &'static str,
-    hint: &'static str,
     border: impl Into<gpui_kit::Hsla>,
-    muted: impl Into<gpui_kit::Hsla>,
     body: impl IntoElement,
 ) -> impl IntoElement {
     div()
@@ -353,16 +330,17 @@ fn section(
         .gap_3()
         .child(
             div()
-                .flex()
-                .flex_col()
-                .gap_1()
                 .pb_2()
                 .border_b_1()
                 .border_color(border.into())
-                .child(div().text_base().child(title))
-                .child(div().text_sm().text_color(muted.into()).child(hint)),
+                .text_base()
+                .child(title),
         )
         .child(body)
+}
+
+fn subsection(title: &'static str) -> impl IntoElement {
+    div().pt_2().text_base().child(title)
 }
 
 fn hint(text: &'static str, muted: impl Into<gpui_kit::Hsla>) -> impl IntoElement {
@@ -382,32 +360,39 @@ fn field(
         .child(control)
 }
 
-fn group_label(text: &'static str, muted: impl Into<gpui_kit::Hsla>) -> impl IntoElement {
-    div().pt_2().text_sm().text_color(muted.into()).child(text)
-}
-
-fn toggle_row(
-    id: &'static str,
+fn choice_row(
     label: &'static str,
-    hint: &'static str,
-    on: bool,
+    hint: Option<&'static str>,
     muted: impl Into<gpui_kit::Hsla>,
-    on_change: impl Fn(&bool, &mut Window, &mut App) + 'static,
+    control: impl IntoElement,
 ) -> impl IntoElement {
+    let muted = muted.into();
     div()
         .w_full()
         .flex()
         .items_center()
         .justify_between()
         .gap_4()
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(div().text_base().child(label))
-                .child(div().text_sm().text_color(muted.into()).child(hint)),
-        )
+        .child(label_block(label, hint, muted))
+        .child(control)
+}
+
+fn toggle_row(
+    id: &'static str,
+    label: &'static str,
+    hint: Option<&'static str>,
+    on: bool,
+    muted: impl Into<gpui_kit::Hsla>,
+    on_change: impl Fn(&bool, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let muted = muted.into();
+    div()
+        .w_full()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .child(label_block(label, hint, muted))
         .child(
             Switch::new(id)
                 .checked(on)
@@ -415,6 +400,21 @@ fn toggle_row(
                 .accessibility_label(label)
                 .on_change(on_change),
         )
+}
+
+fn label_block(
+    label: &'static str,
+    hint: Option<&'static str>,
+    muted: gpui_kit::Hsla,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(div().text_base().child(label))
+        .when_some(hint, |row, text| {
+            row.child(div().text_sm().text_color(muted).child(text))
+        })
 }
 
 fn text_setting(state: &Entity<InputState>) -> impl IntoElement {
@@ -428,6 +428,17 @@ fn secret_setting(state: &Entity<InputState>) -> impl IntoElement {
         .mask_toggle()
 }
 
+fn theme_field(pane: &EditorPane, cx: &App) -> gpui_kit::AnyElement {
+    let Some(select) = pane.theme_select.as_ref() else {
+        return pending_select("theme", &pane.theme, cx).into_any_element();
+    };
+    Select::new(select)
+        .id("theme")
+        .w_full()
+        .cursor_pointer()
+        .into_any_element()
+}
+
 fn microphone_field(pane: &EditorPane, cx: &App) -> gpui_kit::AnyElement {
     let Some(select) = pane.microphone_select.as_ref() else {
         return microphone_loading(cx).into_any_element();
@@ -437,6 +448,24 @@ fn microphone_field(pane: &EditorPane, cx: &App) -> gpui_kit::AnyElement {
         .w_full()
         .cursor_pointer()
         .into_any_element()
+}
+
+fn pending_select(id: &'static str, label: &str, cx: &App) -> impl IntoElement {
+    let border = cx.theme().border;
+    let muted = cx.theme().muted_foreground;
+    div()
+        .id(id)
+        .w_full()
+        .h(px(32.))
+        .px_2()
+        .flex()
+        .items_center()
+        .rounded_md()
+        .border_1()
+        .border_color(border)
+        .text_base()
+        .text_color(muted)
+        .child(label.to_string())
 }
 
 fn microphone_loading(cx: &App) -> impl IntoElement {
@@ -478,38 +507,6 @@ fn locale_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
                 cx.notify();
             })
             .ok();
-        })
-}
-
-fn theme_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
-    let names = theme::catalog().names();
-    let selected = names.iter().position(|name| name == &pane.theme);
-    let saved = names.clone();
-    RadioGroup::vertical("theme")
-        .selected_index(selected)
-        .children(names.into_iter().map(|name| {
-            Radio::new(SharedString::from(name.clone()))
-                .label(SharedString::from(name))
-                .cursor_pointer()
-        }))
-        .on_change(move |index, _window, app| {
-            let Some(name) = saved.get(*index).cloned() else {
-                return;
-            };
-            let Some(loaded) = theme::catalog().by_name(&name).cloned() else {
-                return;
-            };
-            let mut size = pane_text_size(&view, app);
-            theme::apply(&loaded, app);
-            view.update(app, |root, cx| {
-                if let Some(pane) = root.pane.as_mut() {
-                    pane.choose_theme(name);
-                    size = pane.text_size;
-                }
-                cx.notify();
-            })
-            .ok();
-            theme::apply_text_size(size, app);
         })
 }
 
@@ -665,14 +662,4 @@ fn speech_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
             })
             .ok();
         })
-}
-
-fn pane_text_size(view: &WeakEntity<Root>, app: &mut App) -> TextSize {
-    view.update(app, |root, _| {
-        root.pane
-            .as_ref()
-            .map(|pane| pane.text_size)
-            .unwrap_or_default()
-    })
-    .unwrap_or_default()
 }
