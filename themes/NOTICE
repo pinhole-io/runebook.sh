@@ -1,0 +1,127 @@
+Built-in color themes besides Runebook Dark and Runebook Light.
+
+Obsidian Dark and Obsidian Light use Obsidian's published default palette.
+The files are original. They are not copied from the Obsidian app.
+
+Obsidian Dark
+  File: themes/obsidian-dark.json
+  Source: https://publish.obsidian.md/hub/04+-+Guides%2C+Workflows%2C+%26+Courses/Guides/Default+Obsidian+Theme+Colors
+
+Obsidian Light
+  File: themes/obsidian-light.json
+  Source: https://publish.obsidian.md/hub/04+-+Guides%2C+Workflows%2C+%26+Courses/Guides/Default+Obsidian+Theme+Colors
+
+Syntax colors for both files come from the Obsidian color palette.
+Source: https://docs.obsidian.md/Reference/CSS+variables/Foundations/Colors
+
+Each remaining file is one theme from a VS Code extension.
+The file has no include. The app reads name, type, colors, and tokenColors.
+
+These packs are not included:
+- Monokai Pro. The license allows evaluation only. It forbids redistribution.
+- Material Theme. The license forbids redistribution and derivative works.
+The next open color theme is Theme (`tal7aouy.theme`).
+
+GitHub Dark Default
+  File: themes/github-dark-default.json
+  Extension: GitHub.github-vscode-theme 6.3.5
+  Source: https://github.com/primer/github-vscode-theme
+  License: MIT
+  Copyright (c) 2020 Primer
+
+One Dark Pro
+  File: themes/one-dark-pro.json
+  Extension: zhuangtongfa.Material-theme 3.20.5
+  Source: https://github.com/Binaryify/OneDark-Pro
+  License: MIT
+  Copyright (c) 2013-2022 Binaryify
+
+Dracula Theme
+  File: themes/dracula.json
+  Extension: dracula-theme.theme-dracula 2.25.1
+  Source: https://github.com/dracula/visual-studio-code
+  License: MIT
+  Copyright (c) 2016 Dracula Theme
+
+Atom One Dark
+  File: themes/atom-one-dark.json
+  Extension: akamud.vscode-theme-onedark 2.3.0
+  Source: https://github.com/akamud/vscode-theme-onedark
+  License: MIT
+  Copyright (c) 2015 Mahmoud Ali
+
+Ayu Dark
+  File: themes/ayu-dark.json
+  Extension: teabyii.ayu 1.5.0
+  Source: https://github.com/ayu-theme/vscode-ayu
+  License: MIT
+  Copyright (c) 2016 Ike Kurghinyan
+
+Winter is Coming (Dark Blue)
+  File: themes/winter-is-coming.json
+  Extension: johnpapa.winteriscoming 1.5.0
+  Source: https://github.com/johnpapa/vscode-winteriscoming
+  License: MIT
+  Copyright (c) 2015-2017 JohnPapa.net, LLC
+
+Night Owl
+  File: themes/night-owl.json
+  Extension: sdras.night-owl 2.1.1
+  Source: https://github.com/sdras/night-owl-vscode-theme
+  License: MIT
+  Copyright (c) 2018 Sarah Drasner
+
+Tokyo Night
+  File: themes/tokyo-night.json
+  Extension: enkia.tokyo-night 1.1.2
+  Source: https://github.com/enkia/tokyo-night-vscode-theme
+  License: MIT
+  Copyright (c) 2018-present Enkia
+
+One Monokai
+  File: themes/one-monokai.json
+  Extension: azemoh.one-monokai 0.5.2
+  Source: https://github.com/azemoh/vscode-one-monokai
+  License: MIT
+  Copyright (c) 2018 Joshua Azemoh
+
+Palenight Theme
+  File: themes/palenight.json
+  Extension: whizkydee.material-palenight-theme 2.0.5
+  Source: https://github.com/whizkydee/vscode-palenight-theme
+  License: MIT
+  Copyright (c) 2017-present Olaolu Olawuyi
+
+SynthWave '84
+  File: themes/synthwave-84.json
+  Extension: RobbOwen.synthwave-vscode 0.1.20
+  Source: https://github.com/robb0wen/synthwave-vscode
+  License: MIT
+  Copyright (c) 2019 Robb Owen
+
+Shades of Purple
+  File: themes/shades-of-purple.json
+  Extension: ahmadawais.shades-of-purple 7.3.6
+  Source: https://github.com/ahmadawais/shades-of-purple-vscode
+  License: MIT
+
+Cobalt2
+  File: themes/cobalt2.json
+  Extension: wesbos.theme-cobalt2 2.5.0
+  Source: https://github.com/wesbos/cobalt2-vscode
+  License: MIT
+  Copyright (c) 2018 Wes Bos, Roberto Achar
+
+Andromeda
+  File: themes/andromeda.json
+  Extension: EliverLara.andromeda 1.10.0
+  Source: https://github.com/EliverLara/Andromeda
+  License: MIT
+  Copyright (c) 2017 <eliverlara@gmail.com>
+
+Theme
+  File: themes/theme.json
+  Extension: tal7aouy.theme 3.1.0
+  Source: https://github.com/tal7aouy/theme
+  License: MIT
+  Copyright (c) 2021 Mhammed Talhaouy

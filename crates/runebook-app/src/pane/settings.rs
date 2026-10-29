@@ -8,20 +8,22 @@ use gpui_kit::component::input::{Input, InputContentType, InputState};
 use gpui_kit::component::radio::{Radio, RadioGroup};
 use gpui_kit::component::select::Select;
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme, Sizable, Theme};
+use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, ClickEvent, Entity, WeakEntity, Window, div, px};
+use gpui_kit::{App, ClickEvent, Entity, SharedString, WeakEntity, Window, div, px};
 
 use super::{EditorPane, NoteView};
 use crate::chrome::panel_header;
-use crate::{Root, on_root, theme_mode};
-use runebook::{AutosavePace, SpeechModel, TextSize, ThemeChoice};
+use crate::{Root, on_root, theme};
+use runebook::{AutosavePace, SpeechModel, TextSize};
 
 use crate::locale;
 
 pub(super) fn panel(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
     let border = cx.theme().border;
+    let background = cx.theme().background;
+    let foreground = cx.theme().foreground;
     div()
         .id("settings-panel")
         .flex_1()
@@ -31,6 +33,8 @@ pub(super) fn panel(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl
         .flex()
         .flex_col()
         .overflow_hidden()
+        .bg(background)
+        .text_color(foreground)
         .child(header(view.clone(), border))
         .child(
             div()
@@ -478,39 +482,34 @@ fn locale_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
 }
 
 fn theme_group(pane: &EditorPane, view: WeakEntity<Root>) -> RadioGroup {
-    let selected = match pane.theme {
-        ThemeChoice::Dark => 0,
-        ThemeChoice::Light => 1,
-    };
-    RadioGroup::horizontal("theme")
-        .selected_index(Some(selected))
-        .child(
-            Radio::new("theme-dark")
-                .label(locale::text("settings.theme.dark"))
-                .cursor_pointer(),
-        )
-        .child(
-            Radio::new("theme-light")
-                .label(locale::text("settings.theme.light"))
-                .cursor_pointer(),
-        )
-        .on_change(move |index, window, app| {
-            let choice = match *index {
-                0 => ThemeChoice::Dark,
-                1 => ThemeChoice::Light,
-                _ => return,
+    let names = theme::catalog().names();
+    let selected = names.iter().position(|name| name == &pane.theme);
+    let saved = names.clone();
+    RadioGroup::vertical("theme")
+        .selected_index(selected)
+        .children(names.into_iter().map(|name| {
+            Radio::new(SharedString::from(name.clone()))
+                .label(SharedString::from(name))
+                .cursor_pointer()
+        }))
+        .on_change(move |index, _window, app| {
+            let Some(name) = saved.get(*index).cloned() else {
+                return;
+            };
+            let Some(loaded) = theme::catalog().by_name(&name).cloned() else {
+                return;
             };
             let mut size = pane_text_size(&view, app);
-            Theme::change(theme_mode(choice), Some(window), app);
+            theme::apply(&loaded, app);
             view.update(app, |root, cx| {
                 if let Some(pane) = root.pane.as_mut() {
-                    pane.choose_theme(choice);
+                    pane.choose_theme(name);
                     size = pane.text_size;
                 }
                 cx.notify();
             })
             .ok();
-            crate::theme::apply_text_size(size, app);
+            theme::apply_text_size(size, app);
         })
 }
 

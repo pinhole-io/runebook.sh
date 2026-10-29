@@ -23,6 +23,10 @@ fn default_locale() -> String {
     DEFAULT_LOCALE.to_string()
 }
 
+fn default_theme() -> String {
+    "dark".to_string()
+}
+
 /// OpenAI-compatible host used when Settings and `OPENAI_BASE_URL` are empty.
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com";
 
@@ -57,9 +61,9 @@ pub struct AppConfig {
     /// Spoken language hint. Empty lets Groq detect the language.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub speech_language: String,
-    /// Window theme.
-    #[serde(default)]
-    pub theme: ThemeChoice,
+    /// Theme name. `dark` and `light` select the built-in themes.
+    #[serde(default = "default_theme")]
+    pub theme: String,
     /// Window language code. An unknown code uses English in the app.
     #[serde(default = "default_locale")]
     pub locale: String,
@@ -113,7 +117,7 @@ impl Default for AppConfig {
             microphone: None,
             speech_model: SpeechModel::default(),
             speech_language: String::new(),
-            theme: ThemeChoice::default(),
+            theme: default_theme(),
             locale: default_locale(),
             text_size: TextSize::default(),
             note_view: NoteViewChoice::default(),
@@ -130,17 +134,6 @@ impl Default for AppConfig {
             archivist_model: String::new(),
         }
     }
-}
-
-/// Light or dark window theme. Dark is the default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ThemeChoice {
-    /// Dark colors.
-    #[default]
-    Dark,
-    /// Light colors.
-    Light,
 }
 
 /// Which note surface opens first.
@@ -221,6 +214,14 @@ impl AppConfig {
     /// Path of the user config file.
     pub fn path() -> PathBuf {
         config_home().join("runebook").join("config.toml")
+    }
+
+    /// Directory of user theme files.
+    ///
+    /// The path is `$XDG_CONFIG_HOME/runebook/themes`.
+    /// When `XDG_CONFIG_HOME` is unset, the directory is `~/.config/runebook/themes`.
+    pub fn themes_dir() -> PathBuf {
+        config_home().join("runebook").join("themes")
     }
 
     /// Load the user config. A missing file is the default config.
@@ -305,7 +306,7 @@ mod tests {
         std::fs::write(&path, "theme = \"light\"\n").unwrap();
         let config = AppConfig::load_from(&path).unwrap();
         assert!(config.dock_layout.is_none());
-        assert_eq!(config.theme, super::ThemeChoice::Light);
+        assert_eq!(config.theme, "light");
     }
 
     #[test]

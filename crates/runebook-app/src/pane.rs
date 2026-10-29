@@ -31,8 +31,8 @@ use gpui_kit::{
 };
 use runebook::{
     AppConfig, AutosavePace, Error, FolderId, NoteId, NoteKind, NoteViewChoice, SearchHit,
-    SpeechModel, TextSize, ThemeChoice, Vault, VaultIndex, VaultStamp, VaultTree, decode_note,
-    encode_note, toggle_task_line,
+    SpeechModel, TextSize, Vault, VaultIndex, VaultStamp, VaultTree, decode_note, encode_note,
+    toggle_task_line,
 };
 
 use crate::Root;
@@ -96,7 +96,7 @@ pub(super) struct EditorPane {
     microphone_select: Option<Entity<SelectState<SearchableVec<String>>>>,
     microphone_watch: Option<Subscription>,
     mic_load: u64,
-    theme: ThemeChoice,
+    theme: String,
     locale: String,
     text_size: TextSize,
     line_numbers: bool,
@@ -375,7 +375,7 @@ impl EditorPane {
             microphone_select: None,
             microphone_watch: None,
             mic_load: 0,
-            theme: prefs.theme,
+            theme: crate::theme::catalog().resolve(&prefs.theme).name.clone(),
             locale: locale::activate(&prefs.locale).to_string(),
             text_size: prefs.text_size,
             line_numbers: prefs.line_numbers,
@@ -567,9 +567,9 @@ impl EditorPane {
     }
 
     /// Save the window theme. The caller already applied it to the window.
-    fn choose_theme(&mut self, choice: ThemeChoice) {
-        self.theme = choice;
-        self.store_setting(|config| config.theme = choice);
+    fn choose_theme(&mut self, name: String) {
+        self.theme = name.clone();
+        self.store_setting(move |config| config.theme = name);
     }
 
     /// Save the text size. The caller already applied it to the window.

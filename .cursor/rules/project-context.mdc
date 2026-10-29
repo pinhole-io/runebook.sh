@@ -45,8 +45,13 @@ kind: speech
 - `autosave` is `fast` (200 ms), `normal` (400 ms), `slow` (1 s), or `manual`. Manual writes the note when you leave it or close the window.
 - `speech_model` is `fast` (`whisper-large-v3-turbo`) or `accurate` (`whisper-large-v3`). An empty `speech_language` lets Groq detect the language. A saved language is a two-letter code.
 - `locale` is the window language. `en` is English. A blank or unknown code uses English. Window text lives in `locales/en.json`.
-- `text_size` is `small`, `medium`, or `large`. Medium matches the theme file. Line numbers and soft wrap default to on. `media_muted` starts a new clip silent.
-- `themes/runebook.json` sets the UI font, the mono font, the radius, and the main colors. The app loads that file at startup.
+- `text_size` is `small`, `medium`, or `large`. Medium matches the active theme. Line numbers and soft wrap default to on. `media_muted` starts a new clip silent.
+- A theme file is a VS Code color theme. `name`, `type`, `colors`, and `tokenColors` are the keys that matter. `type` is `dark` or `light`.
+- Built-in themes are `themes/runebook-dark.json`, `themes/runebook-light.json`, `themes/obsidian-dark.json`, `themes/obsidian-light.json`, and the 15 marketplace themes listed in `themes/NOTICE`.
+- User themes are `$XDG_CONFIG_HOME/runebook/themes/*.json`. When `XDG_CONFIG_HOME` is unset, the directory is `~/.config/runebook/themes`.
+- `theme` is the theme name. `dark` and `light` still select the built-in themes. An unknown name uses Runebook Dark.
+- The app ignores `semanticTokenColors`. An `include` must be one `.json` file in the same folder.
+- Font, radius, and note spacing sit in an optional `runebook` object. A missing object uses Noto Sans 14, Noto Sans Mono 13, radius 6 and 8, and the built-in heading scale.
 
 ## Links
 

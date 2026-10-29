@@ -165,6 +165,8 @@ fn note_surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_kit
         }
     };
     let border = cx.theme().border;
+    let background = cx.theme().background;
+    let foreground = cx.theme().foreground;
     div()
         .flex_1()
         .h_full()
@@ -173,6 +175,8 @@ fn note_surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_kit
         .flex()
         .flex_col()
         .overflow_hidden()
+        .bg(background)
+        .text_color(foreground)
         .child(note_header(pane, border, view, cx))
         .child(body)
         .into_any_element()

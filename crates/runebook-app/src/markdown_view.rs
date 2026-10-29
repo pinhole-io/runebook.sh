@@ -86,7 +86,7 @@ pub(crate) fn view(
 
 /// One heading scale for every preview.
 ///
-/// The scale and the paragraph gap come from `themes/runebook.json`.
+/// The scale and the paragraph gap come from the active theme.
 /// Lower headings match the body.
 fn note_style() -> TextViewStyle {
     let body = px(crate::theme::body_font_size());

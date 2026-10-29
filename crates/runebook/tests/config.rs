@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use runebook::{AppConfig, AutosavePace, NoteViewChoice, SpeechModel, TextSize, ThemeChoice};
+use runebook::{AppConfig, AutosavePace, NoteViewChoice, SpeechModel, TextSize};
 
 #[test]
 fn missing_config_is_the_default_and_save_round_trips() {
@@ -16,7 +16,7 @@ fn missing_config_is_the_default_and_save_round_trips() {
     config.save_to(&path).unwrap();
     let again = AppConfig::load_from(&path).unwrap();
     assert_eq!(again.last_vault.unwrap(), PathBuf::from("/tmp/notes"));
-    assert_eq!(again.theme, ThemeChoice::Dark);
+    assert_eq!(again.theme, "dark");
     assert_eq!(again.note_view, NoteViewChoice::Preview);
     assert_eq!(again.microphone, None);
 }
@@ -28,7 +28,7 @@ fn old_config_keeps_defaults_for_new_fields() {
     std::fs::write(&path, "last_vault = \"/tmp/notes\"\n").unwrap();
     let loaded = AppConfig::load_from(&path).unwrap();
     assert_eq!(loaded.last_vault.unwrap(), PathBuf::from("/tmp/notes"));
-    assert_eq!(loaded.theme, ThemeChoice::Dark);
+    assert_eq!(loaded.theme, "dark");
     assert_eq!(loaded.note_view, NoteViewChoice::Preview);
     assert_eq!(loaded.microphone, None);
     assert!(loaded.line_numbers);
@@ -42,13 +42,25 @@ fn old_config_keeps_defaults_for_new_fields() {
 }
 
 #[test]
+fn dark_and_light_theme_names_still_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "theme = \"dark\"\n").unwrap();
+    assert_eq!(AppConfig::load_from(&path).unwrap().theme, "dark");
+    std::fs::write(&path, "theme = \"light\"\n").unwrap();
+    assert_eq!(AppConfig::load_from(&path).unwrap().theme, "light");
+    std::fs::write(&path, "theme = \"Dracula\"\n").unwrap();
+    assert_eq!(AppConfig::load_from(&path).unwrap().theme, "Dracula");
+}
+
+#[test]
 fn settings_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     let config = AppConfig {
         last_vault: Some(PathBuf::from("/tmp/notes")),
         microphone: Some("Built-in Audio".to_string()),
-        theme: ThemeChoice::Light,
+        theme: "light".to_string(),
         note_view: NoteViewChoice::Source,
         text_size: TextSize::Small,
         autosave: AutosavePace::Slow,

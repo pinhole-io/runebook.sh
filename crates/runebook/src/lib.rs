@@ -20,7 +20,7 @@ mod vault;
 
 pub use config::{
     AppConfig, AutosavePace, DEFAULT_ARCHIVIST_MODEL, DEFAULT_OPENAI_BASE_URL,
-    DEFAULT_OPENAI_MODEL, DEFAULT_TOOL_ROUNDS, NoteViewChoice, SpeechModel, TextSize, ThemeChoice,
+    DEFAULT_OPENAI_MODEL, DEFAULT_TOOL_ROUNDS, NoteViewChoice, SpeechModel, TextSize,
 };
 pub use error::{Error, Result};
 pub use index::VaultIndex;

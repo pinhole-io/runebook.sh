@@ -187,8 +187,6 @@
   "settings.text.small": "Small",
   "settings.text_size": "Text size",
   "settings.theme": "Theme",
-  "settings.theme.dark": "Dark",
-  "settings.theme.light": "Light",
   "settings.title": "Settings",
   "settings.tool_rounds": "Tool rounds",
   "settings.tool_rounds.hint": "Cap for Research search and the Archivist.",

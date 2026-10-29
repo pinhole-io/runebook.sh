@@ -495,6 +495,8 @@ pub(super) fn wizard(
         .enumerate()
         .map(|(index, question)| question_field(index, question).into_any_element())
         .collect();
+    let background = cx.theme().background;
+    let foreground = cx.theme().foreground;
     div()
         .id("research-wizard")
         .flex_1()
@@ -502,6 +504,8 @@ pub(super) fn wizard(
         .min_w(px(0.0))
         .min_h(px(0.0))
         .overflow_y_scroll()
+        .bg(background)
+        .text_color(foreground)
         .p_4()
         .child(
             div()

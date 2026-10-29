@@ -16,6 +16,7 @@ mod models;
 mod pane;
 mod playback;
 mod theme;
+mod vscode_theme;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -23,14 +24,14 @@ use std::time::Duration;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dock::DockArea;
-use gpui_kit::component::{ActiveTheme, Theme, ThemeMode, TitleBar};
+use gpui_kit::component::{ActiveTheme, TitleBar};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Bounds, ClickEvent, Context, Entity, FocusHandle, KeyBinding, PathPromptOptions, Render,
     SharedString, WeakEntity, Window, WindowBounds, WindowDecorations, WindowOptions, div, px,
     size,
 };
-use runebook::{AppConfig, Error, NoteId, ThemeChoice, Vault};
+use runebook::{AppConfig, Error, NoteId, Vault};
 
 use crate::pane::EditorPane;
 
@@ -67,7 +68,7 @@ fn main() {
             let config = AppConfig::load().unwrap_or_default();
             locale::activate(&config.locale);
             let last = config.last_vault.clone();
-            let theme = config.theme;
+            let saved_theme = config.theme.clone();
             let text_size = config.text_size;
             gpui_kit::open_window(
                 WindowOptions {
@@ -77,8 +78,8 @@ fn main() {
                 },
                 cx,
                 move |window, cx| {
-                    theme::apply(cx);
-                    Theme::change(theme_mode(theme), Some(window), cx);
+                    let chosen = theme::catalog().resolve(&saved_theme).clone();
+                    theme::apply(&chosen, cx);
                     theme::apply_text_size(text_size, cx);
                     cx.new(|cx| Root::new(last, window, cx))
                 },
@@ -561,13 +562,6 @@ fn remember_vault(path: &std::path::Path) -> runebook::Result<()> {
     let mut config = AppConfig::load().unwrap_or_default();
     config.last_vault = Some(path.to_path_buf());
     config.save()
-}
-
-pub(crate) fn theme_mode(choice: ThemeChoice) -> ThemeMode {
-    match choice {
-        ThemeChoice::Dark => ThemeMode::Dark,
-        ThemeChoice::Light => ThemeMode::Light,
-    }
 }
 
 /// Load the user config, change one field, and write it back.
