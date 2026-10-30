@@ -20,31 +20,26 @@ use gpui_kit::{
 };
 
 use super::{EditorPane, NameAction, NoteView, Prompt, TreeSelection};
-use crate::chrome::panel_header;
+use crate::chrome::{FOOTER_PAD_Y, FOOTER_ROW_HEIGHT, panel_header};
 use runebook::NoteKind;
 
 use crate::locale;
 use crate::{NewNote, OpenVault, Root, ToggleNoteView, on_root};
 
-pub(crate) fn toolbar(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
+pub(crate) fn toolbar(pane: &EditorPane, cx: &App) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
     Toolbar::new("vault-toolbar")
         .w_full()
         .pl_0()
-        .content(brand(pane, cx))
-        .content(div().px_1().text_color(muted).child("-"))
-        .child(
-            Button::new("open-another")
-                .ghost()
-                .cursor_pointer()
-                .icon(IconName::FolderOpen)
-                .label(locale::text("toolbar.open_vault"))
-                .tooltip_with_action(locale::text("toolbar.open_vault"), &OpenVault, None)
-                .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
-                    this.pick_vault(false, cx);
-                })),
-        )
+        .content(brand(pane))
         .content(div().flex_1())
+        .content(
+            div()
+                .pr_2()
+                .text_xs()
+                .text_color(muted)
+                .child(locale::text("brand.alpha")),
+        )
 }
 
 /// Which capture is live on one note in the file tree.
@@ -170,7 +165,7 @@ fn note_surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_kit
     div()
         .flex_1()
         .h_full()
-        .min_w(px(0.0))
+        .min_w(crate::chrome::NOTE_MIN_WIDTH)
         .min_h(px(0.0))
         .flex()
         .flex_col()
@@ -214,8 +209,7 @@ fn source_surface(pane: &EditorPane) -> impl IntoElement {
         )
 }
 
-fn brand(pane: &EditorPane, cx: &App) -> impl IntoElement {
-    let muted = cx.theme().muted_foreground;
+fn brand(pane: &EditorPane) -> impl IntoElement {
     div()
         .flex()
         .items_center()
@@ -223,12 +217,6 @@ fn brand(pane: &EditorPane, cx: &App) -> impl IntoElement {
         .pr_2()
         .child(img(mark()).h(px(20.)).w(px(14.)).flex_shrink_0())
         .child(pane.vault.name().to_string())
-        .child(
-            div()
-                .text_xs()
-                .text_color(muted)
-                .child(locale::text("brand.alpha")),
-        )
 }
 
 fn mark() -> Arc<Image> {
@@ -350,33 +338,85 @@ pub(crate) fn files(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl
             cx,
         ))
         .child(super::research::cards(pane, view.clone(), cx))
-        .child(settings_row(view, cx))
+        .child(sidebar_footer(pane.settings_open, view, cx))
 }
 
-fn settings_row(view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
+fn sidebar_footer(settings_open: bool, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let border = cx.theme().sidebar_border;
     div()
         .w_full()
         .flex_shrink_0()
+        .flex()
+        .flex_col()
         .border_t_1()
         .border_color(border)
-        .px_1()
-        .py_1()
+        .py(FOOTER_PAD_Y)
         .child(
-            Button::new("settings")
-                .ghost()
-                .small()
-                .w_full()
-                .cursor_pointer()
-                .icon(IconName::Settings)
-                .label(locale::text("toolbar.settings"))
-                .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
-                    if let Some(pane) = this.pane.as_mut() {
-                        pane.toggle_settings(window, cx);
-                    }
-                    cx.notify();
-                })),
+            footer_row(
+                "open-another",
+                IconName::FolderOpen,
+                locale::text("toolbar.open_vault"),
+                false,
+                cx,
+            )
+            .tooltip(|window, cx| {
+                Tooltip::new(locale::text("toolbar.open_vault"))
+                    .action(&OpenVault, None)
+                    .build(window, cx)
+            })
+            .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
+                this.pick_vault(false, cx);
+            })),
         )
+        .child(
+            footer_row(
+                "settings",
+                IconName::Settings,
+                locale::text("toolbar.settings"),
+                settings_open,
+                cx,
+            )
+            .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
+                if let Some(pane) = this.pane.as_mut() {
+                    pane.toggle_settings(window, cx);
+                }
+                cx.notify();
+            })),
+        )
+}
+
+/// One sidebar action, aligned with a note row.
+fn footer_row(
+    id: &'static str,
+    icon: IconName,
+    label: &'static str,
+    active: bool,
+    cx: &App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let hover = cx.theme().sidebar_accent;
+    let sidebar = cx.theme().sidebar;
+    let foreground = cx.theme().sidebar_foreground;
+    let accent = cx.theme().sidebar_accent;
+    let accent_foreground = cx.theme().sidebar_accent_foreground;
+    div()
+        .id(id)
+        .pl(px(8.))
+        .pr_2()
+        .min_h(FOOTER_ROW_HEIGHT)
+        .w_full()
+        .flex()
+        .items_center()
+        .gap_2()
+        .cursor_pointer()
+        .bg(if active { accent } else { sidebar })
+        .text_color(if active {
+            accent_foreground
+        } else {
+            foreground
+        })
+        .hover(move |style| style.bg(hover))
+        .child(icon)
+        .child(label)
 }
 
 fn file_list(

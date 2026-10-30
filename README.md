@@ -106,7 +106,7 @@ Autosave `normal` waits 400 ms. `fast` waits 200 ms. `slow` waits 1 second. `man
 
 The file tree reads the vault every 500 ms. A change made outside the app shows up on that read. The refresh button reads immediately. A clean open note reloads when its file changed. Unsaved text stays in the editor.
 
-The file tree, the note, and the Archivist column are dock panels. Their names are `files`, `note`, and `archivist`. `dock_layout` stores that layout as JSON.
+The file tree, the note, and the Archivist column sit side by side. The two side columns stop at the sidebar minimum. `dock_layout` stores the files width and the Archivist width. An older dock JSON still supplies those widths.
 
 ## Tests
 

@@ -189,6 +189,151 @@ pub(crate) fn pick_env<'a>(names: &[&str], values: &[(&'a str, &'a str)]) -> Opt
     })
 }
 
+/// How many model names the menu keeps.
+const MODEL_LIST_LIMIT: usize = 200;
+
+/// How many rows of a model list are read before the cap.
+const MODEL_SCAN_LIMIT: usize = 1000;
+
+/// Largest model name the menu accepts.
+const MODEL_ID_LIMIT: usize = 128;
+
+/// Body size cap for `GET /v1/models`. A larger body is dropped.
+const MODEL_BODY_LIMIT: u64 = 1024 * 1024;
+
+/// Result of one model-list request.
+pub(crate) enum ListedModels {
+    /// Names from the host, already capped.
+    Ready(Vec<String>),
+    /// The host did not return a model list.
+    Failed,
+}
+
+/// `GET /v1/models` for `base`. A host that already ends in `/v1` is not doubled.
+///
+/// A URL with a user name, or a scheme other than `http` or `https`, is refused.
+pub(crate) fn models_url(base: &str) -> Option<String> {
+    let base = base.trim().trim_end_matches('/');
+    if base.is_empty() || base.contains(['\n', '\r', ' ', '\t']) {
+        return None;
+    }
+    let rest = base
+        .strip_prefix("https://")
+        .or_else(|| base.strip_prefix("http://"))?;
+    let host = rest.split('/').next().unwrap_or("");
+    if host.is_empty() || host.contains('@') {
+        return None;
+    }
+    if base.ends_with("/v1") {
+        Some(format!("{base}/models"))
+    } else {
+        Some(format!("{base}/v1/models"))
+    }
+}
+
+/// Model names from an OpenAI-shaped `data` array.
+///
+/// Blank names and names with control characters are dropped. The list is sorted
+/// and capped at [`MODEL_LIST_LIMIT`].
+pub(crate) fn parse_model_ids(body: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Vec::new();
+    };
+    let Some(rows) = value.get("data").and_then(|data| data.as_array()) else {
+        return Vec::new();
+    };
+    let mut ids = Vec::new();
+    for row in rows.iter().take(MODEL_SCAN_LIMIT) {
+        let Some(id) = row
+            .get("id")
+            .and_then(|id| id.as_str())
+            .and_then(accept_model_id)
+        else {
+            continue;
+        };
+        if ids.iter().any(|item: &String| item == id) {
+            continue;
+        }
+        ids.push(id.to_string());
+    }
+    ids.sort_by(|left, right| left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase()));
+    ids.truncate(MODEL_LIST_LIMIT);
+    ids
+}
+
+/// Menu rows: `default_label`, then `ids`, then any saved name the list omitted.
+pub(crate) fn model_choices(default_label: &str, ids: &[String], saved: &[&str]) -> Vec<String> {
+    let mut names = Vec::with_capacity(ids.len() + saved.len() + 1);
+    names.push(default_label.to_string());
+    for id in ids {
+        if id != default_label && !names.iter().any(|item| item == id) {
+            names.push(id.clone());
+        }
+    }
+    for saved in saved {
+        let saved = saved.trim();
+        if saved.is_empty() || names.iter().any(|item| item == saved) {
+            continue;
+        }
+        names.push(saved.to_string());
+    }
+    names
+}
+
+/// Load model names from `base`. An empty `key` sends no `Authorization` header.
+///
+/// A failure returns [`ListedModels::Failed`]. The error text is dropped so a key
+/// cannot leak through a URL or a response body.
+pub(crate) fn fetch_model_ids(base: &str, key: &str) -> ListedModels {
+    let Some(url) = models_url(base) else {
+        return ListedModels::Failed;
+    };
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+    else {
+        return ListedModels::Failed;
+    };
+    let mut request = client.get(&url);
+    let key = key.trim();
+    if !key.is_empty() {
+        request = request.bearer_auth(key);
+    }
+    let Ok(response) = request.send() else {
+        return ListedModels::Failed;
+    };
+    if !response.status().is_success() {
+        return ListedModels::Failed;
+    }
+    let mut body = Vec::new();
+    let mut limited = std::io::Read::take(response, MODEL_BODY_LIMIT + 1);
+    if std::io::Read::read_to_end(&mut limited, &mut body).is_err()
+        || body.len() as u64 > MODEL_BODY_LIMIT
+    {
+        return ListedModels::Failed;
+    }
+    let Ok(text) = String::from_utf8(body) else {
+        return ListedModels::Failed;
+    };
+    if !text.contains("\"data\"") {
+        return ListedModels::Failed;
+    }
+    ListedModels::Ready(parse_model_ids(&text))
+}
+
+fn accept_model_id(id: &str) -> Option<&str> {
+    let id = id.trim();
+    if id.is_empty() || id.chars().count() > MODEL_ID_LIMIT {
+        return None;
+    }
+    if id.chars().any(|ch| ch.is_control()) {
+        return None;
+    }
+    Some(id)
+}
+
 /// Replace each secret of 8 characters or more with `[redacted]`.
 pub(crate) fn redact_secrets<'a>(text: &str, secrets: impl IntoIterator<Item = &'a str>) -> String {
     let mut text = text.to_string();
@@ -204,8 +349,8 @@ pub(crate) fn redact_secrets<'a>(text: &str, secrets: impl IntoIterator<Item = &
 #[cfg(test)]
 mod tests {
     use super::{
-        LanguageEdit, OPENAI_KEY_ENVS, accept_language, accept_tool_rounds, pick_env,
-        redact_secrets, resolve_secret,
+        LanguageEdit, OPENAI_KEY_ENVS, accept_language, accept_tool_rounds, model_choices,
+        models_url, parse_model_ids, pick_env, redact_secrets, resolve_secret,
     };
 
     #[test]
@@ -247,6 +392,42 @@ mod tests {
             ],
         );
         assert_eq!(value, Some("router-key-value"));
+    }
+
+    #[test]
+    fn a_host_without_v1_gains_the_models_path() {
+        assert_eq!(
+            models_url("https://api.openai.com").as_deref(),
+            Some("https://api.openai.com/v1/models")
+        );
+        assert_eq!(
+            models_url("https://api.openai.com/v1/").as_deref(),
+            Some("https://api.openai.com/v1/models")
+        );
+        assert_eq!(models_url("https://user:secret@api.openai.com"), None);
+        assert_eq!(models_url("file:///tmp/models"), None);
+    }
+
+    #[test]
+    fn model_ids_keep_the_name_and_drop_a_blank() {
+        let body = r#"{"data":[{"id":"openai:gpt-6-luna"},{"id":" "},{"id":"groq:llama"}]}"#;
+        assert_eq!(
+            parse_model_ids(body),
+            vec!["groq:llama".to_string(), "openai:gpt-6-luna".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_saved_model_stays_when_the_list_omits_it() {
+        let names = model_choices("Default", &["openai:a".to_string()], &["custom:b", ""]);
+        assert_eq!(
+            names,
+            vec![
+                "Default".to_string(),
+                "openai:a".to_string(),
+                "custom:b".to_string()
+            ]
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ use gpui_kit::{AnyElement, App, ClickEvent, Hsla, SharedString, WeakEntity, div,
 
 use super::Panel;
 use crate::Root;
-use crate::chrome::{SIDEBAR_MIN_WIDTH, panel_header};
+use crate::chrome::{FOOTER_PAD_Y, SIDEBAR_MIN_WIDTH, panel_header, sidebar_footer_height};
 use crate::locale;
 use crate::on_root;
 
@@ -436,11 +436,14 @@ fn composer(
     let danger = danger.into();
     div()
         .flex_shrink_0()
+        .min_h(sidebar_footer_height())
         .border_t_1()
         .border_color(border)
-        .p_2()
+        .px_2()
+        .py(FOOTER_PAD_Y)
         .flex()
         .flex_col()
+        .justify_center()
         .gap_2()
         .when(!ready, |column| {
             column.child(div().text_base().text_color(danger).child(blocked))
@@ -448,6 +451,7 @@ fn composer(
         .child(
             div()
                 .id("archivist-draft")
+                .w_full()
                 .on_action(on_root(&view, |this, action: &Enter, window, cx| {
                     if action.shift {
                         return;

@@ -98,6 +98,12 @@ pub(super) struct EditorPane {
     mic_load: u64,
     theme_select: Option<Entity<SelectState<SearchableVec<String>>>>,
     theme_watch: Option<Subscription>,
+    research_model_select: Option<Entity<SelectState<SearchableVec<String>>>>,
+    research_model_watch: Option<Subscription>,
+    archivist_model_select: Option<Entity<SelectState<SearchableVec<String>>>>,
+    archivist_model_watch: Option<Subscription>,
+    model_load: u64,
+    model_list_failed: bool,
     theme: String,
     locale: String,
     text_size: TextSize,
@@ -382,6 +388,12 @@ impl EditorPane {
             mic_load: 0,
             theme_select: None,
             theme_watch: None,
+            research_model_select: None,
+            research_model_watch: None,
+            archivist_model_select: None,
+            archivist_model_watch: None,
+            model_load: 0,
+            model_list_failed: false,
             theme: crate::theme::catalog().resolve(&prefs.theme).name.clone(),
             locale: locale::activate(&prefs.locale).to_string(),
             text_size: prefs.text_size,
@@ -455,12 +467,13 @@ impl EditorPane {
 
     /// Open or close settings in the note area.
     ///
-    /// Opening settings builds the theme list and loads the microphone list again.
+    /// Opening settings builds the theme list, the microphone list, and the model list.
     fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Root>) {
         self.settings_open = !self.settings_open;
         if self.settings_open {
             self.show_themes(window, cx);
             self.begin_microphone_load(cx);
+            self.schedule_model_list_load(Duration::ZERO, cx);
         }
     }
 
@@ -494,6 +507,153 @@ impl EditorPane {
             },
         ));
         self.theme_select = Some(select);
+    }
+
+    /// Load `GET /v1/models` for the current host and key.
+    ///
+    /// `delay` lets a host or key edit settle before the request. A newer load
+    /// cancels the menu update from an older one. The key stays in the request
+    /// header and is not written to an error.
+    fn schedule_model_list_load(&mut self, delay: Duration, cx: &mut Context<Root>) {
+        self.model_load = self.model_load.wrapping_add(1);
+        let load = self.model_load;
+        self.model_list_failed = false;
+        let base = models::resolve_openai_base(&self.models.openai_base_url);
+        let key = models::resolve_openai_key(&self.models.openai_api_key).unwrap_or_default();
+        cx.spawn(async move |this, cx| {
+            if !delay.is_zero() {
+                cx.background_executor().timer(delay).await;
+            }
+            let current = this
+                .update(cx, |root, _| {
+                    root.pane
+                        .as_ref()
+                        .is_some_and(|pane| pane.model_load == load && pane.settings_open)
+                })
+                .unwrap_or(false);
+            if !current {
+                return;
+            }
+            let listed = cx
+                .background_executor()
+                .spawn(async move { models::fetch_model_ids(&base, &key) })
+                .await;
+            this.update_in(cx, |root, window, cx| {
+                let Some(pane) = root.pane.as_mut() else {
+                    return;
+                };
+                if pane.model_load != load || !pane.settings_open {
+                    return;
+                }
+                pane.show_model_selects(listed, window, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn show_model_selects(
+        &mut self,
+        listed: models::ListedModels,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) {
+        let (failed, ids) = match listed {
+            models::ListedModels::Ready(ids) => (false, ids),
+            models::ListedModels::Failed => (true, Vec::new()),
+        };
+        self.model_list_failed = failed;
+        let research = self.models.openai_model.clone();
+        let archivist = self.models.archivist_model.clone();
+        let names = models::model_choices(
+            locale::text("settings.model.default"),
+            &ids,
+            &[research.as_str(), archivist.as_str()],
+        );
+        let (research_select, research_watch) = Self::model_select(
+            names.clone(),
+            &research,
+            ModelField::OpenAiModel,
+            window,
+            cx,
+        );
+        let (archivist_select, archivist_watch) =
+            Self::model_select(names, &archivist, ModelField::ArchivistModel, window, cx);
+        self.research_model_select = Some(research_select);
+        self.research_model_watch = Some(research_watch);
+        self.archivist_model_select = Some(archivist_select);
+        self.archivist_model_watch = Some(archivist_watch);
+    }
+
+    fn model_select(
+        names: Vec<String>,
+        saved: &str,
+        field: ModelField,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) -> (Entity<SelectState<SearchableVec<String>>>, Subscription) {
+        let selected_label = if saved.is_empty() {
+            locale::text("settings.model.default").to_string()
+        } else {
+            saved.to_string()
+        };
+        let selected = names
+            .iter()
+            .position(|item| item == &selected_label)
+            .unwrap_or(0);
+        let select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(names),
+                Some(IndexPath::new(selected)),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
+        let watch = cx.subscribe(
+            &select,
+            move |root, _, event: &SelectEvent<SearchableVec<String>>, cx| {
+                let SelectEvent::Confirm(value) = event else {
+                    return;
+                };
+                let Some(pane) = root.pane.as_mut() else {
+                    return;
+                };
+                let name = value
+                    .clone()
+                    .unwrap_or_else(|| locale::text("settings.model.default").to_string());
+                pane.apply_listed_model(field, name);
+                cx.notify();
+            },
+        );
+        (select, watch)
+    }
+
+    /// Save a model from the menu. The default row stores an empty field.
+    fn apply_listed_model(&mut self, field: ModelField, name: String) {
+        let value = if name == locale::text("settings.model.default") {
+            String::new()
+        } else {
+            name
+        };
+        match field {
+            ModelField::OpenAiModel => {
+                if value == self.models.openai_model {
+                    return;
+                }
+                self.models.openai_model = value;
+            }
+            ModelField::ArchivistModel => {
+                if value == self.models.archivist_model {
+                    return;
+                }
+                self.models.archivist_model = value;
+                self.archivist.end_session();
+            }
+            _ => return,
+        }
+        self.store_models();
     }
 
     /// Apply `name` and save it. An unknown name is ignored.
@@ -835,6 +995,9 @@ impl EditorPane {
             }
         }
         self.store_models();
+        if self.settings_open && matches!(field, ModelField::OpenAiKey | ModelField::OpenAiBase) {
+            self.schedule_model_list_load(Duration::from_millis(400), cx);
+        }
     }
 
     fn apply_speech_language(&mut self, text: &str) {

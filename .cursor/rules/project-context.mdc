@@ -67,14 +67,17 @@ Resolve `[[target]]` in this order:
 - Call `gpui_kit::init` before any GPUI Kit control.
 - The window uses a Kit `TitleBar`. The toolbar sits in that bar.
 - Settings in the note area are Appearance, Notes, Capture, and Models, in that order.
+- Each settings row has a sentence. The label tooltip adds the default or the environment name.
+- Research and the Archivist pick a model from the host list at `/v1/models`. The menu search filters that list. Default leaves that field empty.
 - On Linux, the window id is `runebook`. Startup writes `$XDG_DATA_HOME/runebook/icon.png` and `$XDG_DATA_HOME/applications/runebook.desktop`. When `XDG_DATA_HOME` is unset, that directory is `~/.local/share`. The shell uses the desktop file for the book icon.
-- The file tree, the note, and the Archivist column sit in a Kit `DockArea`.
+- The file tree, the note, and the Archivist column sit in one horizontal split.
 - The file tree reads the vault every 500 ms. A change made outside the app shows up on that read. The refresh button reads immediately.
 - A clean open note reloads when its file changed. Unsaved text stays in the editor.
 - The Archivist can attach up to 8 files. An image or a PDF goes to the model. UTF-8 text (`txt`, `md`, `csv`, `json`, `html`) stays in the message. Each file must be 8 MiB or smaller. The transcript shows the file name.
 - Search lists notes whose body contains the query, and a click opens that note.
-- The dock panel names are `files`, `note`, and `archivist`.
-- `dock_layout` stores the dock JSON. A bad value uses the default split.
+- A drag stops at the sidebar minimum in `chrome.rs`. The note column stops at `NOTE_MIN_WIDTH`.
+- An older layout names the panels `files`, `note`, and `archivist`.
+- `dock_layout` stores the files width and the Archivist width. An older dock JSON still supplies those widths. A bad value uses the default split.
 - The source pane is the Kit `Editor`. The preview pane is Kit markdown.
 - A heading uses the theme heading color.
 - A fenced code block uses the theme code color. A language with a grammar uses the theme syntax colors.

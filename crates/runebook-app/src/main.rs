@@ -24,13 +24,12 @@ use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::dock::DockArea;
 use gpui_kit::component::{ActiveTheme, TitleBar};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Bounds, ClickEvent, Context, Entity, FocusHandle, KeyBinding, PathPromptOptions, Render,
-    SharedString, WeakEntity, Window, WindowBounds, WindowDecorations, WindowOptions, div, px,
-    size,
+    App, Bounds, ClickEvent, Context, Entity, FocusHandle, KeyBinding, PathPromptOptions, Pixels,
+    Render, SharedString, WeakEntity, Window, WindowBounds, WindowDecorations, WindowOptions, div,
+    px, size,
 };
 use runebook::{AppConfig, Error, NoteId, Vault};
 
@@ -121,7 +120,7 @@ struct Root {
     focus: FocusHandle,
     banner: Option<String>,
     pane: Option<EditorPane>,
-    dock: Entity<DockArea>,
+    dock: Entity<crate::dock::Columns>,
     autosave_gen: u64,
     dock_save_gen: u64,
     tree_watch: u64,
@@ -184,20 +183,28 @@ impl Root {
         .detach();
     }
 
-    pub(crate) fn schedule_dock_save(&mut self, area: &Entity<DockArea>, cx: &mut Context<Self>) {
+    pub(crate) fn schedule_dock_save(
+        &mut self,
+        files: Pixels,
+        archivist: Pixels,
+        cx: &mut Context<Self>,
+    ) {
         self.dock_save_gen = self.dock_save_gen.wrapping_add(1);
         let generation = self.dock_save_gen;
-        let area = area.clone();
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(400))
                 .await;
-            this.update(cx, |this, cx| {
+            this.update(cx, |this, _cx| {
                 if this.dock_save_gen != generation {
                     return;
                 }
-                let state = area.read(cx).dump(cx);
-                let Ok(json) = serde_json::to_string(&state) else {
+                let json = serde_json::json!({
+                    "version": crate::dock::LAYOUT_VERSION,
+                    "files": files.as_f32(),
+                    "archivist": archivist.as_f32(),
+                });
+                let Ok(json) = serde_json::to_string(&json) else {
                     return;
                 };
                 if json.len() > crate::dock::LAYOUT_LIMIT {
@@ -606,7 +613,7 @@ impl Render for Root {
             }
         });
         if let Some(pane) = self.pane.as_ref() {
-            title = title.child(pane::toolbar(pane, view, cx));
+            title = title.child(pane::toolbar(pane, cx));
         }
         let body = if self.pane.is_some() {
             div()
