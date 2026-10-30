@@ -188,7 +188,7 @@ pub(super) fn surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> im
             MouseButton::Left,
             on_root(&view, |this, _: &MouseDownEvent, _, cx| {
                 if let Some(pane) = this.pane.as_mut() {
-                    pane.clear_note_rows();
+                    pane.clear_note_rows(cx);
                 }
                 cx.notify();
             }),
@@ -868,7 +868,7 @@ fn row_actions(
                 window.defer(cx, move |_, cx| {
                     view.update(cx, |root, cx| {
                         if let Some(pane) = root.pane.as_mut() {
-                            pane.clear_note_rows();
+                            pane.clear_note_rows(cx);
                         }
                         cx.notify();
                     })
@@ -877,10 +877,10 @@ fn row_actions(
             }
         })
         .trigger(RowAnchor { row })
-        .child(row_menu(rewrite, view.clone(), cx))
+        .child(selection_menu(rewrite, view.clone(), cx))
 }
 
-fn row_menu(
+pub(super) fn selection_menu(
     rewrite: Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>,
     view: WeakEntity<Root>,
     cx: &App,
@@ -899,6 +899,9 @@ fn row_menu(
             cx.stop_propagation();
         })
         .on_mouse_up(MouseButton::Left, |_: &MouseUpEvent, _, cx| {
+            cx.stop_propagation();
+        })
+        .on_key_up(|_: &gpui_kit::KeyUpEvent, _, cx| {
             cx.stop_propagation();
         })
         .child(
@@ -925,7 +928,7 @@ fn row_menu(
                         .label(locale::text("preview.add"))
                         .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
                             if let Some(pane) = this.pane.as_mut() {
-                                pane.add_selected_rows_to_chat();
+                                pane.add_selected_rows_to_chat(cx);
                             }
                             cx.notify();
                         })),
@@ -961,7 +964,7 @@ fn row_menu(
                     .on_action(on_root(&view, |this, _: &Escape, _, cx| {
                         cx.stop_propagation();
                         if let Some(pane) = this.pane.as_mut() {
-                            pane.clear_note_rows();
+                            pane.clear_note_rows(cx);
                         }
                         cx.notify();
                     }))

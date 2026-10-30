@@ -9,7 +9,7 @@ mod view;
 pub(crate) use preview::queue_clips;
 pub(crate) use view::{files, note, status_bar, toolbar};
 
-use rows::{context_message, rewrite_message, selected_source, split_rows};
+use rows::{context_message, rewrite_message, selected_source, split_rows, usable_selection};
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -26,7 +26,7 @@ use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectState};
 use gpui_kit::component::{ActiveTheme, IndexPath, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AppContext, ClickEvent, Context, Entity, FocusHandle, Focusable, Image, ImageFormat,
+    App, AppContext, ClickEvent, Context, Entity, FocusHandle, Focusable, Image, ImageFormat,
     PathPromptOptions, RenderImage, SharedString, Subscription, Window, div, px,
 };
 use runebook::{
@@ -123,6 +123,10 @@ pub(super) struct EditorPane {
     latest: String,
     row_gesture: Option<rows::RowGesture>,
     row_rewrite: Option<Entity<InputState>>,
+    /// The source editor's selection menu. It opens after the pointer or a key goes up.
+    source_menu: bool,
+    /// The pointer is down in the source editor, so the menu stays hidden until it goes up.
+    source_pressing: bool,
     /// Focus for the preview, so Ctrl+C reaches the row selection.
     preview_focus: FocusHandle,
     dirty: bool,
@@ -370,6 +374,8 @@ impl EditorPane {
             collapsed: HashSet::new(),
             row_gesture: None,
             row_rewrite: None,
+            source_menu: false,
+            source_pressing: false,
             preview_focus: cx.focus_handle(),
             saved_text: text.clone(),
             latest: text,
@@ -452,6 +458,7 @@ impl EditorPane {
         if self.research_note_open() {
             return;
         }
+        self.clear_note_rows(cx);
         self.note_view = match self.note_view {
             NoteView::Preview => NoteView::Source,
             NoteView::Source => NoteView::Preview,
@@ -1911,7 +1918,7 @@ impl EditorPane {
 
     fn insert_block(&mut self, block: &str, window: &mut Window, cx: &mut Context<Root>) {
         let next = append_block(&self.latest, block);
-        self.clear_note_rows();
+        self.clear_note_rows(cx);
         self.latest = next.clone();
         self.dirty = self.open_note.is_some() && next != self.saved_text;
         self.notice = None;
@@ -1956,7 +1963,7 @@ impl EditorPane {
     pub(super) fn capture_edit(&mut self, cx: &mut Context<Root>) -> bool {
         let value = self.editor.read(cx).value().to_string();
         if value != self.latest {
-            self.clear_note_rows();
+            self.clear_note_rows(cx);
         }
         self.latest = value.clone();
         self.dirty = self.open_note.is_some() && value != self.saved_text;
@@ -1973,7 +1980,7 @@ impl EditorPane {
         };
         let value = self.editor.read(cx).value().to_string();
         if value != self.latest {
-            self.clear_note_rows();
+            self.clear_note_rows(cx);
         }
         self.latest = value.clone();
         if value == self.saved_text {
@@ -2005,7 +2012,7 @@ impl EditorPane {
         cx: &mut Context<Root>,
     ) -> Result<(), String> {
         let text = self.vault.read(&id).map_err(|err| err.to_string())?;
-        self.clear_note_rows();
+        self.clear_note_rows(cx);
         self.reveal(&id.parent());
         self.open_note = Some(id.clone());
         self.remember_note(&id);
@@ -2386,7 +2393,7 @@ impl EditorPane {
         self.open_note = None;
         self.open_kind = NoteKind::Book;
         self.tree_selection = TreeSelection::None;
-        self.clear_note_rows();
+        self.clear_note_rows(cx);
         self.saved_text.clear();
         self.latest.clear();
         self.dirty = false;
@@ -2743,24 +2750,79 @@ impl EditorPane {
         }
     }
 
-    fn clear_note_rows(&mut self) {
+    fn clear_note_rows(&mut self, cx: &mut Context<Root>) {
+        // Collapse only while the source menu is up. A later clear, such as a
+        // reload, must not move a caret the menu was not showing.
+        let drop_editor = self.source_menu && self.note_view == NoteView::Source;
         self.row_gesture = None;
+        self.row_rewrite = None;
+        self.source_menu = false;
+        self.source_pressing = false;
+        if !drop_editor {
+            return;
+        }
+        self.editor.update(cx, |editor, cx| {
+            let range = editor.selected_range();
+            if range.is_empty() {
+                return;
+            }
+            let at = editor.cursor();
+            editor.set_selected_range(at..at, cx);
+        });
+    }
+
+    /// Hide the source menu while the pointer is down.
+    fn press_source(&mut self) {
+        self.source_pressing = true;
+        self.source_menu = false;
         self.row_rewrite = None;
     }
 
-    fn selected_note_text(&self) -> Option<(String, String)> {
+    /// Open or close the source menu from the editor selection.
+    ///
+    /// Returns true when the menu state changed and the window should redraw.
+    fn sync_source_menu(&mut self, cx: &App) -> bool {
+        let open = self.note_view == NoteView::Source
+            && self.open_note.is_some()
+            && usable_selection(&self.editor.read(cx).selected_text().to_string()).is_some();
+        let changed = self.source_menu != open;
+        self.source_menu = open;
+        if !open && self.row_rewrite.take().is_some() {
+            return true;
+        }
+        changed
+    }
+
+    /// The pointer went up. Show the menu when the editor still has a selection.
+    fn release_source_press(&mut self, cx: &App) -> bool {
+        let was_pressing = self.source_pressing;
+        self.source_pressing = false;
+        if !was_pressing && !self.source_menu {
+            return false;
+        }
+        self.sync_source_menu(cx) || was_pressing
+    }
+
+    fn selected_note_text(&self, cx: &App) -> Option<(String, String)> {
         let note_id = self.open_note.as_ref()?.as_str().to_string();
+        if self.note_view == NoteView::Source {
+            if !self.source_menu {
+                return None;
+            }
+            let text = self.editor.read(cx).selected_text().to_string();
+            return usable_selection(&text).map(|text| (note_id, text));
+        }
         let gesture = self.row_gesture.as_ref()?;
         let source = selected_source(&self.latest, gesture)?;
         Some((note_id, source))
     }
 
-    /// Write the selected rows to the clipboard. The selection stays.
+    /// Write the selection to the clipboard. The selection stays.
     ///
     /// Returns false when nothing is selected, so the caller can let another
     /// copy handler run.
     fn copy_selected_rows(&self, cx: &mut Context<Root>) -> bool {
-        let Some((_, source)) = self.selected_note_text() else {
+        let Some((_, source)) = self.selected_note_text(cx) else {
             return false;
         };
         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(source));
@@ -2768,17 +2830,17 @@ impl EditorPane {
     }
 
     /// Park the selection in the Archivist column. Send delivers it.
-    fn add_selected_rows_to_chat(&mut self) {
-        let Some((note_id, source)) = self.selected_note_text() else {
+    fn add_selected_rows_to_chat(&mut self, cx: &mut Context<Root>) {
+        let Some((note_id, source)) = self.selected_note_text(cx) else {
             return;
         };
         self.archivist.hold_rows(note_id, source);
-        self.clear_note_rows();
+        self.clear_note_rows(cx);
     }
 
-    /// Open the rewrite prompt under the row menu.
+    /// Open the rewrite prompt under the selection menu.
     fn begin_row_rewrite(&mut self, window: &mut Window, cx: &mut Context<Root>) {
-        if self.selected_note_text().is_none() {
+        if self.selected_note_text(cx).is_none() {
             return;
         }
         if self.row_rewrite.is_none() {
@@ -2805,7 +2867,7 @@ impl EditorPane {
         if change.is_empty() {
             return;
         }
-        let Some((note_id, source)) = self.selected_note_text() else {
+        let Some((note_id, source)) = self.selected_note_text(cx) else {
             return;
         };
         if !self.archivist_ready() {
@@ -2827,7 +2889,7 @@ impl EditorPane {
             return;
         };
         self.archivist.drop_held_note(&note_id);
-        self.clear_note_rows();
+        self.clear_note_rows(cx);
         let Some(access) = self.archivist_access() else {
             return;
         };
@@ -2941,7 +3003,7 @@ impl EditorPane {
         cx: &mut Context<Root>,
     ) -> Result<(), String> {
         let text = self.vault.read(&id).map_err(|err| err.to_string())?;
-        self.clear_note_rows();
+        self.clear_note_rows(cx);
         self.reveal(&id.parent());
         self.open_note = Some(id.clone());
         if matches!(
@@ -2966,7 +3028,7 @@ impl EditorPane {
         let Some(next) = toggled_task_body(&self.latest, index) else {
             return false;
         };
-        self.clear_note_rows();
+        self.clear_note_rows(cx);
         self.latest = next.clone();
         self.dirty = self.open_note.is_some() && next != self.saved_text;
         self.editor

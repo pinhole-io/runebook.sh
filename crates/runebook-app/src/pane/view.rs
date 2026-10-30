@@ -6,16 +6,17 @@ use std::time::Duration;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Selectable;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Editor, Enter, Escape, Input, InputState};
+use gpui_kit::component::input::{Editor, EditorState, Enter, Escape, Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::toolbar::Toolbar;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme, Sizable};
+use gpui_kit::component::{ActiveTheme, Sizable, ThemeStyled};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt, App, AppContext, ClickEvent, Context, Hsla, Image, ImageFormat,
-    Render, SharedString, Transformation, WeakEntity, Window, black, div, img, px, relative, size,
+    KeyUpEvent, MouseDownEvent, MouseUpEvent, Pixels, Point, Render, SharedString, Transformation,
+    WeakEntity, Window, anchored, black, canvas, deferred, div, img, point, px, relative, size,
     svg,
 };
 
@@ -156,7 +157,7 @@ fn note_surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_kit
     } else {
         match pane.note_view {
             NoteView::Preview => super::preview::surface(pane, view.clone(), cx).into_any_element(),
-            NoteView::Source => source_surface(pane).into_any_element(),
+            NoteView::Source => source_surface(pane, view.clone(), cx).into_any_element(),
         }
     };
     let border = cx.theme().border;
@@ -190,8 +191,10 @@ fn note_header(
         })
 }
 
-fn source_surface(pane: &EditorPane) -> impl IntoElement {
+fn source_surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
+    let watch = view.clone();
     div()
+        .id("source")
         .flex_1()
         .h_full()
         .min_w(px(0.0))
@@ -199,6 +202,26 @@ fn source_surface(pane: &EditorPane) -> impl IntoElement {
         .flex()
         .flex_col()
         .overflow_hidden()
+        .on_mouse_down(
+            gpui_kit::MouseButton::Left,
+            on_root(&view, |this, _: &MouseDownEvent, _, cx| {
+                if let Some(pane) = this.pane.as_mut() {
+                    pane.press_source();
+                }
+                cx.notify();
+            }),
+        )
+        .on_key_up(on_root(&view, |this, _: &KeyUpEvent, _, cx| {
+            let Some(pane) = this.pane.as_mut() else {
+                return;
+            };
+            if pane.source_pressing {
+                return;
+            }
+            if pane.sync_source_menu(cx) {
+                cx.notify();
+            }
+        }))
         .child(
             Editor::new(&pane.editor)
                 .bordered(false)
@@ -207,6 +230,71 @@ fn source_surface(pane: &EditorPane) -> impl IntoElement {
                 .size_full()
                 .flex_1(),
         )
+        .children(source_selection_popup(pane, view, cx))
+        .child(source_release_watch(watch))
+}
+
+/// Window position for the menu: just under the selection, or under the caret.
+fn source_menu_point(editor: &EditorState) -> Option<Point<Pixels>> {
+    let range = editor.selected_range();
+    if range.is_empty() {
+        return None;
+    }
+    let origin = if let Some(bounds) = editor.range_to_bounds(&range) {
+        bounds.bottom_left()
+    } else {
+        editor.cursor_layout()?.0.bottom_left()
+    };
+    Some(point(origin.x, origin.y + px(4.)))
+}
+
+fn source_selection_popup(
+    pane: &EditorPane,
+    view: WeakEntity<Root>,
+    cx: &App,
+) -> Option<impl IntoElement> {
+    if !pane.source_menu {
+        return None;
+    }
+    let origin = source_menu_point(pane.editor.read(cx))?;
+    let menu = super::preview::selection_menu(pane.row_rewrite.clone(), view, cx);
+    Some(
+        deferred(
+            anchored().position(origin).snap_to_window().child(
+                div()
+                    .id("source-selection-menu")
+                    .occlude()
+                    .popover_style(cx)
+                    .p_3()
+                    .child(menu),
+            ),
+        )
+        .with_priority(1),
+    )
+}
+
+/// Hear the pointer go up even when it leaves the editor.
+fn source_release_watch(view: WeakEntity<Root>) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |_, _, window, _| {
+            let view = view.clone();
+            window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                if !phase.bubble() {
+                    return;
+                }
+                view.update(cx, |root, cx| {
+                    let Some(pane) = root.pane.as_mut() else {
+                        return;
+                    };
+                    if pane.release_source_press(cx) {
+                        cx.notify();
+                    }
+                })
+                .ok();
+            });
+        },
+    )
 }
 
 fn brand(pane: &EditorPane) -> impl IntoElement {

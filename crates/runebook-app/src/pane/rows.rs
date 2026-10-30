@@ -118,6 +118,13 @@ pub(super) fn selected_source(source: &str, gesture: &RowGesture) -> Option<Stri
     let rows = split_rows(source);
     let (lo, hi) = gesture.bounds(rows.len())?;
     let text = source.get(rows[lo].start..rows[hi].end)?;
+    usable_selection(text)
+}
+
+/// Selection text the menu can send. Surrounding newlines are dropped.
+///
+/// Whitespace alone is [`None`], so a caret or a blank drag does not open the menu.
+pub(super) fn usable_selection(text: &str) -> Option<String> {
     let text = text.trim_matches(['\n', '\r']);
     if text.trim().is_empty() {
         None
@@ -1044,6 +1051,21 @@ mod tests {
         let next = RowGesture::press(Some(gesture), 2, false).expect("next");
         assert_eq!(next.bounds(4), Some((2, 2)));
         assert!(!next.menu_open());
+    }
+
+    #[test]
+    fn usable_selection_drops_surrounding_newlines() {
+        assert_eq!(
+            usable_selection("\n## Heading\n"),
+            Some("## Heading".to_string())
+        );
+    }
+
+    #[test]
+    fn usable_selection_rejects_blank_text() {
+        assert_eq!(usable_selection(""), None);
+        assert_eq!(usable_selection("\n\n"), None);
+        assert_eq!(usable_selection("  \t"), None);
     }
 
     #[test]

@@ -84,5 +84,7 @@ Resolve `[[target]]` in this order:
 - Inline code uses the theme code color.
 - HTML in a note uses those same styles. `<details>` starts closed. A click opens it. `<pre>`, `<code>`, `<kbd>`, `<img>`, and `<a>` follow the markdown look. A script tag is dropped.
 - The window shows the preview until the user flips to the source.
-- A click selects preview rows. The row menu copies that markdown to the clipboard. Ctrl+C does the same when the source editor and the Archivist field do not have focus.
+- A click selects preview rows. A text selection in the source editor opens the same menu.
+- The menu copies that markdown, adds it to the Archivist, or asks the Archivist to rewrite it.
+- Ctrl+C copies the preview rows when the source editor and the Archivist field do not have focus.
 - Autosave is debounced. Also flush on note switch and window close.
