@@ -153,11 +153,7 @@ pub(crate) fn first_env(names: &[&str]) -> Option<String> {
 
 /// Saved key, or the first matching environment value.
 pub(crate) fn field_secret(saved: &str, names: &[&str]) -> String {
-    let saved = saved.trim();
-    if !saved.is_empty() {
-        return saved.to_string();
-    }
-    first_env(names).unwrap_or_default()
+    resolve_secret(saved, first_env(names).as_deref()).unwrap_or_default()
 }
 
 pub(crate) fn resolve_groq_key(saved: &str) -> Option<String> {
@@ -177,16 +173,6 @@ pub(crate) fn env_secrets() -> Vec<String> {
         .chain(OPENAI_KEY_ENVS.iter())
         .filter_map(|name| env_var(name))
         .collect()
-}
-
-/// First matching name in `values`. An empty value is skipped.
-pub(crate) fn pick_env<'a>(names: &[&str], values: &[(&'a str, &'a str)]) -> Option<&'a str> {
-    names.iter().find_map(|name| {
-        values
-            .iter()
-            .find(|(key, value)| key == name && !value.trim().is_empty())
-            .map(|(_, value)| value.trim())
-    })
 }
 
 /// How many model names the menu keeps.
@@ -350,8 +336,18 @@ pub(crate) fn redact_secrets<'a>(text: &str, secrets: impl IntoIterator<Item = &
 mod tests {
     use super::{
         LanguageEdit, OPENAI_KEY_ENVS, accept_language, accept_tool_rounds, model_choices,
-        models_url, parse_model_ids, pick_env, redact_secrets, resolve_secret,
+        models_url, parse_model_ids, redact_secrets, resolve_secret,
     };
+
+    /// First matching name in `values`. An empty value is skipped.
+    fn pick_env<'a>(names: &[&str], values: &[(&'a str, &'a str)]) -> Option<&'a str> {
+        names.iter().find_map(|name| {
+            values
+                .iter()
+                .find(|(key, value)| key == name && !value.trim().is_empty())
+                .map(|(_, value)| value.trim())
+        })
+    }
 
     #[test]
     fn an_empty_saved_key_uses_the_environment_value() {

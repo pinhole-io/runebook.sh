@@ -113,12 +113,58 @@ pub(super) fn split_rows(source: &str) -> Vec<SourceRow> {
     rows
 }
 
-/// Markdown source for the gesture, without surrounding newlines.
-pub(super) fn selected_source(source: &str, gesture: &RowGesture) -> Option<String> {
+/// Selected markdown, plus the inclusive 1-based lines it occupies in `source`.
+pub(super) fn selected_span(source: &str, gesture: &RowGesture) -> Option<(String, usize, usize)> {
     let rows = split_rows(source);
     let (lo, hi) = gesture.bounds(rows.len())?;
-    let text = source.get(rows[lo].start..rows[hi].end)?;
-    usable_selection(text)
+    let start = rows[lo].start;
+    let end = rows[hi].end;
+    let text = source.get(start..end)?;
+    let text = usable_selection(text)?;
+    let (start_line, end_line) = line_span(source, start, end);
+    Some((text, start_line, end_line))
+}
+
+/// Inclusive 1-based line numbers for the byte range `start..end`.
+///
+/// `end` is exclusive. A trailing newline stays on the line it ends.
+pub(super) fn line_span(source: &str, start: usize, end: usize) -> (usize, usize) {
+    let start = char_floor(source, start);
+    let end = char_floor(source, end).max(start);
+    let start_line = line_at(source, start);
+    if end == start {
+        return (start_line, start_line);
+    }
+    let last = char_floor(source, end - 1);
+    (start_line, line_at(source, last))
+}
+
+/// Label for one parked selection: `notes/day.md · 100-200`.
+///
+/// One line omits the end, so line 4 is `notes/day.md · 4`.
+pub(super) fn selection_label(note_id: &str, start_line: usize, end_line: usize) -> String {
+    let lines = if start_line == end_line {
+        start_line.to_string()
+    } else {
+        format!("{start_line}-{end_line}")
+    };
+    format!("{note_id}.md · {lines}")
+}
+
+fn line_at(source: &str, offset: usize) -> usize {
+    source[..offset]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1
+}
+
+fn char_floor(source: &str, offset: usize) -> usize {
+    let mut offset = offset.min(source.len());
+    while offset > 0 && !source.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
 }
 
 /// Selection text the menu can send. Surrounding newlines are dropped.
@@ -991,7 +1037,7 @@ mod tests {
         let source = "alpha\n\nbeta\n";
         let mut gesture = RowGesture::press(None, 0, false).expect("press");
         gesture.drag_over(1);
-        let selected = selected_source(source, &gesture).expect("two rows");
+        let (selected, _, _) = selected_span(source, &gesture).expect("two rows");
         assert_eq!(selected, "alpha\n\nbeta");
     }
 
@@ -999,10 +1045,40 @@ mod tests {
     fn one_row_omits_the_blank_line_around_it() {
         let source = "\n# Title\n\n";
         let gesture = RowGesture::press(None, 0, false).expect("press");
-        assert_eq!(
-            selected_source(source, &gesture).as_deref(),
-            Some("# Title")
-        );
+        let (text, _, _) = selected_span(source, &gesture).expect("title");
+        assert_eq!(text, "# Title");
+    }
+
+    #[test]
+    fn selected_span_names_the_lines_in_the_note() {
+        let source = "alpha\n\nbeta\n";
+        let mut gesture = RowGesture::press(None, 0, false).expect("press");
+        gesture.drag_over(1);
+        let (text, start, end) = selected_span(source, &gesture).expect("span");
+        assert_eq!(text, "alpha\n\nbeta");
+        assert_eq!((start, end), (1, 3));
+    }
+
+    #[test]
+    fn a_middle_row_keeps_its_own_line() {
+        let source = "\n# Title\n\n";
+        let gesture = RowGesture::press(None, 0, false).expect("press");
+        let (_, start, end) = selected_span(source, &gesture).expect("span");
+        assert_eq!((start, end), (2, 2));
+    }
+
+    #[test]
+    fn line_span_counts_a_partial_line() {
+        let source = "one\ntwo\nthree\n";
+        assert_eq!(line_span(source, 0, 4), (1, 1));
+        assert_eq!(line_span(source, 4, 7), (2, 2));
+        assert_eq!(line_span(source, 0, source.len()), (1, 3));
+    }
+
+    #[test]
+    fn selection_label_names_the_file_and_the_lines() {
+        assert_eq!(selection_label("test", 100, 200), "test.md · 100-200");
+        assert_eq!(selection_label("notes/day", 4, 4), "notes/day.md · 4");
     }
 
     #[test]
@@ -1072,7 +1148,7 @@ mod tests {
     fn stale_index_has_no_source() {
         let gesture = RowGesture::press(None, 4, false).expect("press");
         assert_eq!(gesture.bounds(2), None);
-        assert!(selected_source("only\n", &gesture).is_none());
+        assert!(selected_span("only\n", &gesture).is_none());
     }
 
     #[test]

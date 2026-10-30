@@ -278,9 +278,7 @@ fn held_rows(panel: &Panel, view: WeakEntity<Root>, cx: &App) -> impl IntoElemen
         .held
         .iter()
         .enumerate()
-        .map(|(index, row)| {
-            held_card(index, &row.note_id, &row.source, muted, view.clone()).into_any_element()
-        })
+        .map(|(index, row)| held_card(index, &row.label, muted, view.clone()).into_any_element())
         .collect();
     div()
         .flex_shrink_0()
@@ -292,43 +290,21 @@ fn held_rows(panel: &Panel, view: WeakEntity<Root>, cx: &App) -> impl IntoElemen
         .flex_col()
         .gap_2()
         .children(cards)
-        .child(
-            div()
-                .text_base()
-                .text_color(muted)
-                .child(locale::text("archivist.rows")),
-        )
 }
 
-fn held_card(
-    index: usize,
-    note_id: &str,
-    source: &str,
-    muted: Hsla,
-    view: WeakEntity<Root>,
-) -> impl IntoElement {
+fn held_card(index: usize, label: &str, muted: Hsla, view: WeakEntity<Root>) -> impl IntoElement {
     div()
         .flex()
-        .items_start()
+        .items_center()
         .gap_2()
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.))
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(div().text_base().text_color(muted).child(locale::format(
-                    "archivist.selected_rows",
-                    &[("note", note_id)],
-                )))
-                .child(
-                    div()
-                        .text_base()
-                        .w_full()
-                        .whitespace_normal()
-                        .child(held_excerpt(source)),
-                ),
+                .text_base()
+                .whitespace_normal()
+                .text_color(muted)
+                .child(label.to_string()),
         )
         .child(
             Button::new(SharedString::from(format!("held-remove-{index}")))
@@ -410,17 +386,6 @@ fn file_card(
                     cx.notify();
                 })),
         )
-}
-
-fn held_excerpt(source: &str) -> String {
-    let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut chars = flat.chars();
-    let short: String = chars.by_ref().take(120).collect();
-    if chars.next().is_some() {
-        format!("{short}…")
-    } else {
-        short
-    }
 }
 
 fn composer(

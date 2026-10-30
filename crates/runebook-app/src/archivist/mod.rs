@@ -125,6 +125,8 @@ pub(crate) struct Panel {
 struct HeldRows {
     note_id: String,
     source: String,
+    /// File name and line range shown in the column, such as `test.md · 100-200`.
+    label: String,
 }
 
 impl Panel {
@@ -156,19 +158,27 @@ impl Panel {
     }
 
     /// Remember rows until the next send. An empty body is ignored.
-    pub(crate) fn hold_rows(&mut self, note_id: String, source: String) {
+    ///
+    /// `label` is the file name and the line range. The same lines replace
+    /// the parked text, so a later edit of that range stays current.
+    pub(crate) fn hold_rows(&mut self, note_id: String, source: String, label: String) {
         let source = source.trim_matches(['\n', '\r']).to_string();
         if source.trim().is_empty() {
             return;
         }
-        if self
+        if let Some(row) = self
             .held
-            .iter()
-            .any(|row| row.note_id == note_id && row.source == source)
+            .iter_mut()
+            .find(|row| row.note_id == note_id && row.label == label)
         {
+            row.source = source;
             return;
         }
-        self.held.push(HeldRows { note_id, source });
+        self.held.push(HeldRows {
+            note_id,
+            source,
+            label,
+        });
     }
 
     pub(crate) fn dismiss_held(&mut self, index: usize) {
@@ -182,10 +192,10 @@ impl Panel {
         self.held.retain(|row| row.note_id != note_id);
     }
 
-    pub(crate) fn take_held(&mut self) -> Vec<(String, String)> {
+    pub(crate) fn take_held(&mut self) -> Vec<(String, String, String)> {
         self.held
             .drain(..)
-            .map(|row| (row.note_id, row.source))
+            .map(|row| (row.note_id, row.source, row.label))
             .collect()
     }
 

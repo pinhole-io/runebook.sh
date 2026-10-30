@@ -11,8 +11,6 @@
   "archivist.placeholder": "Ask the Archivist",
   "archivist.read_failed": "Cannot read the file.",
   "archivist.remove": "Remove",
-  "archivist.rows": "Send includes these rows.",
-  "archivist.selected_rows": "Selected rows · {note}",
   "archivist.send": "Send",
   "archivist.stopped": "The Archivist stopped.",
   "archivist.thinking": "Thinking",

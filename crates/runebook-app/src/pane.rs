@@ -9,7 +9,10 @@ mod view;
 pub(crate) use preview::queue_clips;
 pub(crate) use view::{files, note, status_bar, toolbar};
 
-use rows::{context_message, rewrite_message, selected_source, split_rows, usable_selection};
+use rows::{
+    context_message, line_span, rewrite_message, selected_span, selection_label, split_rows,
+    usable_selection,
+};
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -621,9 +624,7 @@ impl EditorPane {
         let watch = cx.subscribe(
             &select,
             move |root, _, event: &SelectEvent<SearchableVec<String>>, cx| {
-                let SelectEvent::Confirm(value) = event else {
-                    return;
-                };
+                let SelectEvent::Confirm(value) = event;
                 let Some(pane) = root.pane.as_mut() else {
                     return;
                 };
@@ -2635,11 +2636,11 @@ impl EditorPane {
         let held = self.archivist.take_held();
         let pairs: Vec<(&str, &str)> = held
             .iter()
-            .map(|(note_id, source)| (note_id.as_str(), source.as_str()))
+            .map(|(note_id, source, _)| (note_id.as_str(), source.as_str()))
             .collect();
         let Some(text) = context_message(pairs, &draft) else {
-            for (note_id, source) in held {
-                self.archivist.hold_rows(note_id, source);
+            for (note_id, source, label) in held {
+                self.archivist.hold_rows(note_id, source, label);
             }
             return;
         };
@@ -2803,18 +2804,23 @@ impl EditorPane {
         self.sync_source_menu(cx) || was_pressing
     }
 
-    fn selected_note_text(&self, cx: &App) -> Option<(String, String)> {
+    fn selected_note_text(&self, cx: &App) -> Option<(String, String, usize, usize)> {
         let note_id = self.open_note.as_ref()?.as_str().to_string();
         if self.note_view == NoteView::Source {
             if !self.source_menu {
                 return None;
             }
-            let text = self.editor.read(cx).selected_text().to_string();
-            return usable_selection(&text).map(|text| (note_id, text));
+            let editor = self.editor.read(cx);
+            let range = editor.selected_range();
+            let full = editor.text().to_string();
+            let text = editor.selected_text().to_string();
+            let text = usable_selection(&text)?;
+            let (start_line, end_line) = line_span(&full, range.start, range.end);
+            return Some((note_id, text, start_line, end_line));
         }
         let gesture = self.row_gesture.as_ref()?;
-        let source = selected_source(&self.latest, gesture)?;
-        Some((note_id, source))
+        let (source, start_line, end_line) = selected_span(&self.latest, gesture)?;
+        Some((note_id, source, start_line, end_line))
     }
 
     /// Write the selection to the clipboard. The selection stays.
@@ -2822,7 +2828,7 @@ impl EditorPane {
     /// Returns false when nothing is selected, so the caller can let another
     /// copy handler run.
     fn copy_selected_rows(&self, cx: &mut Context<Root>) -> bool {
-        let Some((_, source)) = self.selected_note_text(cx) else {
+        let Some((_, source, _, _)) = self.selected_note_text(cx) else {
             return false;
         };
         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(source));
@@ -2831,10 +2837,11 @@ impl EditorPane {
 
     /// Park the selection in the Archivist column. Send delivers it.
     fn add_selected_rows_to_chat(&mut self, cx: &mut Context<Root>) {
-        let Some((note_id, source)) = self.selected_note_text(cx) else {
+        let Some((note_id, source, start_line, end_line)) = self.selected_note_text(cx) else {
             return;
         };
-        self.archivist.hold_rows(note_id, source);
+        let label = selection_label(&note_id, start_line, end_line);
+        self.archivist.hold_rows(note_id, source, label);
         self.clear_note_rows(cx);
     }
 
@@ -2867,7 +2874,7 @@ impl EditorPane {
         if change.is_empty() {
             return;
         }
-        let Some((note_id, source)) = self.selected_note_text(cx) else {
+        let Some((note_id, source, _, _)) = self.selected_note_text(cx) else {
             return;
         };
         if !self.archivist_ready() {
