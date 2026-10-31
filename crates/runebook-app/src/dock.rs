@@ -47,7 +47,6 @@ impl Columns {
 
 impl Render for Columns {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.queue_clips(cx);
         let (files, note, archivist) = self.bodies(cx);
         let root = self.root.clone();
         div()
@@ -99,27 +98,6 @@ impl Render for Columns {
 }
 
 impl Columns {
-    fn queue_clips(&self, cx: &mut Context<Self>) {
-        let Some(root) = self.root.upgrade() else {
-            return;
-        };
-        let ready = root.read(cx).pane.is_some();
-        if !ready {
-            return;
-        }
-        let view = self.root.clone();
-        let root = self.root.clone();
-        cx.defer(move |cx| {
-            root.update(cx, |root, cx| {
-                let Some(pane) = root.pane.as_ref() else {
-                    return;
-                };
-                crate::pane::queue_clips(pane, view, cx);
-            })
-            .ok();
-        });
-    }
-
     fn bodies(
         &self,
         cx: &App,

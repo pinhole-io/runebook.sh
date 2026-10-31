@@ -14,10 +14,10 @@ mod icon;
 mod launch;
 mod locale;
 mod markdown_view;
+mod media;
 mod mermaid;
 mod models;
 mod pane;
-mod playback;
 mod theme;
 mod vscode_theme;
 
@@ -60,8 +60,40 @@ fn main() {
             std::process::exit(2);
         }
     };
-    gpui_kit::application()
-        .with_assets(gpui_kit::assets::AllAssets)
+    // On Windows the child view stays blank while DirectComposition owns the window.
+    #[cfg(target_os = "windows")]
+    // SAFETY: GPUI has not started, and this process has not spawned a thread
+    // that reads the variable. The assignment happens once, before `run`.
+    unsafe {
+        std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "true");
+    }
+    #[cfg(target_os = "linux")]
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty());
+    #[cfg(target_os = "linux")]
+    // SAFETY: GTK and GPUI have not started, and this process has not spawned
+    // a thread that reads these variables. The assignments happen once, before `run`.
+    // The note page is GTK. GTK must open the same display server as the window.
+    // A Wayland window draws at the output scale, so the type stays sharp.
+    // `GDK_SCALE` would pin the page to scale 1 on that same screen.
+    unsafe {
+        if wayland {
+            std::env::remove_var("GDK_SCALE");
+            std::env::remove_var("GDK_DPI_SCALE");
+            std::env::remove_var("GPUI_X11_SCALE_FACTOR");
+            std::env::set_var("GDK_BACKEND", "wayland");
+        } else {
+            std::env::set_var("GDK_BACKEND", "x11");
+        }
+    }
+    #[cfg(target_os = "linux")]
+    let app = if wayland {
+        gpui_kit::application()
+    } else {
+        gpui_kit::platform::linux(gpui_kit::WindowingModes::X11)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let app = gpui_kit::application();
+    app.with_assets(gpui_kit::assets::AllAssets)
         .with_http_client(http::client())
         .run(|cx| {
             gpui_kit::init(cx);
@@ -598,6 +630,7 @@ pub(crate) fn save_setting(change: impl FnOnce(&mut AppConfig)) -> Result<(), St
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::pane::flush_preview(self, window, cx);
         if let Some((path, must_be_new)) = self.pending_open.take() {
             let view = cx.weak_entity();
             window.defer(cx, move |window, app| {

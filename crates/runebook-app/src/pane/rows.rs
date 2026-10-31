@@ -315,17 +315,6 @@ fn row_is_heading(row: &str) -> bool {
         .is_some_and(|line| is_heading(line.trim_end_matches('\r')))
 }
 
-/// Left padding, in pixels, for a nested list item.
-pub(super) fn list_pad(row: &str) -> f32 {
-    let Some(line) = row.lines().next() else {
-        return 0.;
-    };
-    match list_indent(line) {
-        Some(indent) if indent > 0 => indent as f32 * 8.,
-        _ => 0.,
-    }
-}
-
 fn close_fence(lines: &[Line<'_>], start: usize, marker: char, count: usize) -> usize {
     for (index, line) in lines.iter().enumerate().skip(start + 1) {
         if closing_fence(line.body, marker, count) {
@@ -1262,11 +1251,5 @@ mod tests {
             row_texts(source),
             vec!["[id]: https://example.com\n  \"Title\"", "After"]
         );
-    }
-
-    #[test]
-    fn nested_list_pad_follows_the_marker() {
-        assert_eq!(list_pad("- top\n"), 0.);
-        assert_eq!(list_pad("  - nested\n"), 16.);
     }
 }

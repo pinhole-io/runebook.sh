@@ -1,12 +1,17 @@
 //! Vault workspace: file tree, source editor, markdown preview, and row selection.
 
+#[cfg(target_os = "linux")]
+mod overlay;
+mod page;
+#[cfg(target_os = "linux")]
+mod place;
 mod preview;
 mod research;
 mod rows;
 mod settings;
 mod view;
 
-pub(crate) use preview::queue_clips;
+pub(crate) use page::flush_preview;
 pub(crate) use view::{files, note, status_bar, toolbar};
 
 use rows::{
@@ -15,11 +20,11 @@ use rows::{
 };
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
@@ -29,8 +34,8 @@ use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectState};
 use gpui_kit::component::{ActiveTheme, IndexPath, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, AppContext, ClickEvent, Context, Entity, FocusHandle, Focusable, Image, ImageFormat,
-    PathPromptOptions, RenderImage, SharedString, Subscription, Window, div, px,
+    App, AppContext, ClickEvent, Context, Entity, Focusable, PathPromptOptions, SharedString,
+    Subscription, Window, div, px,
 };
 use runebook::{
     AppConfig, AutosavePace, Error, FolderId, NoteId, NoteKind, NoteViewChoice, SearchHit,
@@ -45,7 +50,6 @@ use crate::capture::{
 };
 use crate::locale;
 use crate::models::{self, ModelSettings};
-use crate::playback::{self, ClipKind};
 use crate::save_setting;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -130,23 +134,15 @@ pub(super) struct EditorPane {
     source_menu: bool,
     /// The pointer is down in the source editor, so the menu stays hidden until it goes up.
     source_pressing: bool,
-    /// Focus for the preview, so Ctrl+C reaches the row selection.
-    preview_focus: FocusHandle,
+    preview_view: Option<page::PreviewSurface>,
+    preview_book: Arc<Mutex<page::MediaBook>>,
+    preview_events: VecDeque<page::PageEvent>,
+    preview_stamp: u64,
+    preview_rewrite: bool,
+    preview_ready: Arc<AtomicBool>,
     dirty: bool,
     notice: Option<String>,
-    playback: Option<playback::Playback>,
-    playback_watch: u64,
-    hold: Option<ClipHold>,
     media_muted: bool,
-    seek_drag: bool,
-    seek_preview: Option<(String, Duration)>,
-    timings: HashMap<String, TimingState>,
-    posters: HashMap<String, PosterState>,
-    poster_epoch: u64,
-    film: Option<Film>,
-    loading: Option<String>,
-    load_stop: Option<Arc<AtomicBool>>,
-    picture_width: u32,
     capture: Capture,
     /// Note that owns the live voice or screen capture.
     recording_note: Option<NoteId>,
@@ -235,51 +231,6 @@ enum Capture {
     SavingScreen,
 }
 
-enum PosterState {
-    Pending,
-    Ready(Arc<Image>),
-    Missing,
-}
-
-struct ClipHold {
-    href: String,
-    position: Duration,
-    duration: Duration,
-}
-
-struct Film {
-    href: String,
-    frames: Vec<playback::FilmFrame>,
-    interval: Duration,
-    timing: playback::ClipTiming,
-}
-
-/// Note width in device pixels, minus the sidebar, capped for the atlas.
-fn note_frame_width(window: &Window) -> u32 {
-    let note = (window.viewport_size().width.as_f32() - 260.0).max(0.0);
-    let device = (note * window.scale_factor()).round().max(0.0) as u32;
-    playback::frame_width(device)
-}
-
-fn resume_point(hold: &ClipHold) -> Duration {
-    if !hold.duration.is_zero() && hold.position + Duration::from_millis(250) >= hold.duration {
-        Duration::ZERO
-    } else {
-        hold.position
-    }
-}
-
-fn drop_frames(frames: Vec<playback::FilmFrame>, window: &mut Window) {
-    for frame in frames {
-        let _ = window.drop_image(frame.image);
-    }
-}
-
-enum TimingState {
-    Pending,
-    Ready(playback::ClipTiming),
-}
-
 fn search_notice() -> &'static str {
     locale::text("search.failed")
 }
@@ -352,6 +303,7 @@ impl EditorPane {
                 cx,
             ),
         ];
+        let preview = page::install(window, cx);
         let open_note = starting_note(&index, &prefs);
         let (open_kind, text) = match &open_note {
             Some(id) => note_body(&vault.read(id)?),
@@ -379,7 +331,12 @@ impl EditorPane {
             row_rewrite: None,
             source_menu: false,
             source_pressing: false,
-            preview_focus: cx.focus_handle(),
+            preview_view: preview.view,
+            preview_book: preview.book,
+            preview_events: VecDeque::new(),
+            preview_stamp: 0,
+            preview_rewrite: false,
+            preview_ready: preview.ready,
             saved_text: text.clone(),
             latest: text,
             open_note,
@@ -420,19 +377,7 @@ impl EditorPane {
             editor,
             dirty: false,
             notice: None,
-            playback: None,
-            playback_watch: 0,
-            hold: None,
             media_muted: prefs.media_muted,
-            seek_drag: false,
-            seek_preview: None,
-            timings: HashMap::new(),
-            posters: HashMap::new(),
-            poster_epoch: 0,
-            film: None,
-            loading: None,
-            load_stop: None,
-            picture_width: note_frame_width(window),
             capture: Capture::Idle,
             recording_note: None,
             prompt: None,
@@ -840,9 +785,7 @@ impl EditorPane {
     fn choose_start_muted(&mut self, on: bool) {
         self.start_muted = on;
         self.media_muted = on;
-        if let Some(play) = &self.playback {
-            play.set_muted(on);
-        }
+        self.preview_stamp = 0;
         self.store_setting(move |config| config.media_muted = on);
     }
 
@@ -1041,606 +984,6 @@ impl EditorPane {
 
     pub(super) fn root(&self) -> &Path {
         self.vault.root()
-    }
-
-    /// The still preview for `href`.
-    pub(super) fn picture(&self, href: &str) -> Option<Arc<Image>> {
-        match self.posters.get(href) {
-            Some(PosterState::Ready(image)) => Some(Arc::clone(image)),
-            _ => None,
-        }
-    }
-
-    /// True when a still preview was already requested for `href`.
-    pub(super) fn poster_started(&self, href: &str) -> bool {
-        self.posters.contains_key(href)
-    }
-
-    /// Load the first frame of `href` so the preview can show it before play.
-    pub(super) fn request_poster(&mut self, href: &str, cx: &mut Context<Root>) {
-        if self.posters.contains_key(href) {
-            return;
-        }
-        let Some(id) = self.open_note.clone() else {
-            return;
-        };
-        let path = match self.vault.media_file(&id, href) {
-            Ok(path) => path,
-            Err(_) => {
-                self.posters.insert(href.to_string(), PosterState::Missing);
-                return;
-            }
-        };
-        self.posters.insert(href.to_string(), PosterState::Pending);
-        let href = href.to_string();
-        let epoch = self.poster_epoch;
-        let width = self.picture_width;
-        cx.spawn(async move |this, cx| {
-            let bytes = cx
-                .background_executor()
-                .spawn(async move { playback::poster_jpeg(&path, Duration::ZERO, width) })
-                .await;
-            this.update(cx, |root, cx| {
-                let Some(pane) = root.pane.as_mut() else {
-                    return;
-                };
-                pane.store_poster(epoch, href, bytes);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    fn store_poster(&mut self, epoch: u64, href: String, bytes: Option<Vec<u8>>) {
-        if self.poster_epoch != epoch {
-            return;
-        }
-        if matches!(self.posters.get(&href), Some(PosterState::Ready(_))) {
-            return;
-        }
-        let Some(bytes) = bytes else {
-            self.posters.insert(href, PosterState::Missing);
-            return;
-        };
-        self.posters.insert(
-            href,
-            PosterState::Ready(Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes))),
-        );
-    }
-
-    /// Remember the note width so a later still uses the same scale.
-    pub(super) fn sync_picture_width(&mut self, window: &Window) {
-        self.picture_width = note_frame_width(window);
-    }
-
-    /// Stop the speaker. The decoded frames stay until the note changes.
-    fn end_playback(&mut self, _window: &mut Window, _cx: &mut Context<Root>) {
-        self.playback_watch = self.playback_watch.wrapping_add(1);
-        self.playback.take();
-    }
-
-    fn pause_playback(&mut self, window: &mut Window, cx: &mut Context<Root>) {
-        let Some(play) = self.playback.as_ref() else {
-            return;
-        };
-        let hold = ClipHold {
-            href: play.href().to_string(),
-            position: play.position(),
-            duration: play.duration(),
-        };
-        self.end_playback(window, cx);
-        self.hold = Some(hold);
-    }
-
-    fn dismiss_media(&mut self, window: &mut Window, cx: &mut Context<Root>) {
-        let href = self.film.as_ref().map(|film| film.href.clone());
-        let position = href.as_deref().map(|href| self.clip_position(href));
-        self.cancel_load();
-        self.end_playback(window, cx);
-        let poster = position.and_then(|position| self.poster_from_film(position));
-        self.drop_film(window);
-        self.hold = None;
-        self.seek_drag = false;
-        self.seek_preview = None;
-        self.timings.clear();
-        self.posters.clear();
-        self.poster_epoch = self.poster_epoch.wrapping_add(1);
-        if let Some((href, image)) = poster {
-            self.posters.insert(href, PosterState::Ready(image));
-        }
-    }
-
-    fn cancel_load(&mut self) {
-        if let Some(stop) = self.load_stop.take() {
-            stop.store(true, Ordering::Relaxed);
-        }
-        if self.loading.take().is_some() {
-            self.playback_watch = self.playback_watch.wrapping_add(1);
-        }
-    }
-
-    fn drop_film(&mut self, window: &mut Window) {
-        if let Some(film) = self.film.take() {
-            drop_frames(film.frames, window);
-        }
-    }
-
-    fn poster_from_film(&self, position: Duration) -> Option<(String, Arc<Image>)> {
-        let film = self.film.as_ref()?;
-        let slot = playback::frame_slot(position, film.interval, film.frames.len())?;
-        let image = Arc::new(Image::from_bytes(
-            ImageFormat::Jpeg,
-            film.frames[slot].jpeg.clone(),
-        ));
-        Some((film.href.clone(), image))
-    }
-
-    /// The href of the clip that is playing, when one is playing.
-    pub(super) fn playing_href(&self) -> Option<&str> {
-        self.playback.as_ref().map(playback::Playback::href)
-    }
-
-    /// The decoded frame for `href`, when that clip is loaded and not still loading.
-    pub(super) fn live_picture(&self, href: &str) -> Option<Arc<RenderImage>> {
-        if self.is_loading(href) {
-            return None;
-        }
-        let position = self.clip_position(href);
-        let film = self.film.as_ref()?;
-        if film.href != href {
-            return None;
-        }
-        let slot = playback::frame_slot(position, film.interval, film.frames.len())?;
-        Some(Arc::clone(&film.frames[slot].image))
-    }
-
-    /// True while `href` is reading and decoding frames.
-    pub(super) fn is_loading(&self, href: &str) -> bool {
-        self.loading.as_deref() == Some(href)
-    }
-
-    /// Width divided by height for the loaded frames of `href`.
-    pub(super) fn film_ratio(&self, href: &str) -> Option<f32> {
-        let film = self.film.as_ref()?;
-        if film.href != href {
-            return None;
-        }
-        let frame = film.frames.first()?;
-        playback::jpeg_ratio(&frame.jpeg)
-    }
-
-    /// Play, pause, or resume `href`. Pause holds the place.
-    pub(super) fn toggle_playback(
-        &mut self,
-        href: &str,
-        kind: ClipKind,
-        window: &mut Window,
-        cx: &mut Context<Root>,
-    ) {
-        self.sync_picture_width(window);
-        if self.is_loading(href) {
-            self.cancel_load();
-            return;
-        }
-        if self.playing_href() == Some(href) {
-            self.pause_playback(window, cx);
-            return;
-        }
-        let at = if self.hold.as_ref().is_some_and(|hold| hold.href == href) {
-            let hold = self.hold.take().expect("hold");
-            resume_point(&hold)
-        } else {
-            self.hold = None;
-            Duration::ZERO
-        };
-        if self.playing_href().is_some() {
-            self.end_playback(window, cx);
-        }
-        if self.film.as_ref().is_some_and(|film| film.href != href) {
-            self.drop_film(window);
-        }
-        if kind == ClipKind::Video && self.film.as_ref().is_some_and(|film| film.href == href) {
-            self.start_video_clock(href, at, cx);
-            return;
-        }
-        self.start_clip(href, kind, at, cx);
-    }
-
-    pub(super) fn media_muted(&self) -> bool {
-        self.media_muted
-    }
-
-    pub(super) fn toggle_mute(&mut self) {
-        self.media_muted = !self.media_muted;
-        if let Some(play) = &self.playback {
-            play.set_muted(self.media_muted);
-        }
-    }
-
-    pub(super) fn clip_position(&self, href: &str) -> Duration {
-        if self.is_loading(href) {
-            return Duration::ZERO;
-        }
-        if let Some((seek_href, at)) = &self.seek_preview
-            && seek_href == href
-        {
-            return *at;
-        }
-        if let Some(play) = &self.playback
-            && play.href() == href
-        {
-            return play.position();
-        }
-        if let Some(hold) = &self.hold
-            && hold.href == href
-        {
-            return hold.position;
-        }
-        Duration::ZERO
-    }
-
-    pub(super) fn clip_duration(&self, href: &str) -> Duration {
-        if let Some(play) = &self.playback
-            && play.href() == href
-            && !play.duration().is_zero()
-        {
-            return play.duration();
-        }
-        if let Some(hold) = &self.hold
-            && hold.href == href
-            && !hold.duration.is_zero()
-        {
-            return hold.duration;
-        }
-        match self.timings.get(href) {
-            Some(TimingState::Ready(timing)) => timing.duration,
-            _ => Duration::ZERO,
-        }
-    }
-
-    pub(super) fn has_timing(&self, href: &str) -> bool {
-        self.timings.contains_key(href)
-    }
-
-    pub(super) fn ensure_timing(&mut self, href: &str, cx: &mut Context<Root>) {
-        if self.timings.contains_key(href) {
-            return;
-        }
-        let Some(id) = self.open_note.clone() else {
-            return;
-        };
-        let path = match self.vault.media_file(&id, href) {
-            Ok(path) => path,
-            Err(_) => {
-                self.timings.insert(
-                    href.to_string(),
-                    TimingState::Ready(playback::ClipTiming::default()),
-                );
-                return;
-            }
-        };
-        self.timings.insert(href.to_string(), TimingState::Pending);
-        let href = href.to_string();
-        let epoch = self.poster_epoch;
-        cx.spawn(async move |this, cx| {
-            let timing = cx
-                .background_executor()
-                .spawn(async move { playback::probe_timing(&path) })
-                .await;
-            this.update(cx, |root, cx| {
-                let Some(pane) = root.pane.as_mut() else {
-                    return;
-                };
-                if pane.poster_epoch != epoch {
-                    return;
-                }
-                pane.timings.insert(href, TimingState::Ready(timing));
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    pub(super) fn begin_seek(&mut self, href: &str, ratio: f32) {
-        self.place_seek(href, ratio, true);
-    }
-
-    pub(super) fn move_seek(&mut self, href: &str, ratio: f32) {
-        if self.seek_drag {
-            self.place_seek(href, ratio, true);
-        }
-    }
-
-    pub(super) fn finish_seek(
-        &mut self,
-        href: &str,
-        kind: ClipKind,
-        window: &mut Window,
-        cx: &mut Context<Root>,
-    ) {
-        if !self.seek_drag {
-            return;
-        }
-        let Some((seek_href, at)) = self.seek_preview.clone() else {
-            self.seek_drag = false;
-            return;
-        };
-        if seek_href != href {
-            self.seek_drag = false;
-            self.seek_preview = None;
-            return;
-        }
-        self.sync_picture_width(window);
-        self.seek_clip(href, kind, at, window, cx);
-    }
-
-    fn place_seek(&mut self, href: &str, ratio: f32, drag: bool) {
-        let duration = self.clip_duration(href);
-        if duration.is_zero() {
-            return;
-        }
-        let at = duration.mul_f32(ratio.clamp(0.0, 1.0));
-        self.seek_drag = drag;
-        self.seek_preview = Some((href.to_string(), at));
-    }
-
-    fn seek_clip(
-        &mut self,
-        href: &str,
-        kind: ClipKind,
-        at: Duration,
-        window: &mut Window,
-        cx: &mut Context<Root>,
-    ) {
-        let playing = self.playing_href() == Some(href);
-        self.seek_drag = false;
-        self.seek_preview = None;
-        let duration = self.clip_duration(href);
-        let at = if duration.is_zero() {
-            at
-        } else {
-            at.min(duration)
-        };
-        if playing && self.film.as_ref().is_some_and(|film| film.href == href) {
-            self.end_playback(window, cx);
-            self.start_video_clock(href, at, cx);
-            return;
-        }
-        if playing {
-            self.end_playback(window, cx);
-            self.start_clip(href, kind, at, cx);
-            return;
-        }
-        self.hold = Some(ClipHold {
-            href: href.to_string(),
-            position: at,
-            duration,
-        });
-        if self.film.as_ref().is_some_and(|film| film.href == href) {
-            return;
-        }
-        self.grab_still(href, at, cx);
-    }
-
-    fn grab_still(&mut self, href: &str, at: Duration, cx: &mut Context<Root>) {
-        let Some(id) = self.open_note.clone() else {
-            return;
-        };
-        let path = match self.vault.media_file(&id, href) {
-            Ok(path) => path,
-            Err(_) => return,
-        };
-        let href = href.to_string();
-        let epoch = self.poster_epoch;
-        let width = self.picture_width;
-        cx.spawn(async move |this, cx| {
-            let bytes = cx
-                .background_executor()
-                .spawn(async move { playback::poster_jpeg(&path, at, width) })
-                .await;
-            this.update(cx, |root, cx| {
-                let Some(pane) = root.pane.as_mut() else {
-                    return;
-                };
-                if pane.poster_epoch != epoch {
-                    return;
-                }
-                let Some(bytes) = bytes else {
-                    return;
-                };
-                pane.posters.insert(
-                    href,
-                    PosterState::Ready(Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes))),
-                );
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    fn start_clip(&mut self, href: &str, kind: ClipKind, at: Duration, cx: &mut Context<Root>) {
-        if kind == ClipKind::Video {
-            self.begin_film(href, at, cx);
-            return;
-        }
-        self.hold = None;
-        self.playback_watch = self.playback_watch.wrapping_add(1);
-        let watch = self.playback_watch;
-        let Some(id) = self.open_note.clone() else {
-            self.notice = Some(locale::text("media.open_note").to_string());
-            return;
-        };
-        let path = match self.vault.media_file(&id, href) {
-            Ok(path) => path,
-            Err(_) => {
-                self.notice = Some(locale::text("media.open_failed").to_string());
-                return;
-            }
-        };
-        match playback::start(&path, href.to_string(), kind, at, self.media_muted) {
-            Ok(started) => {
-                let href = started.playback.href().to_string();
-                self.timings
-                    .insert(href.clone(), TimingState::Ready(started.playback.timing()));
-                self.notice = started.notice;
-                self.playback = Some(started.playback);
-                self.watch_playback(href, watch, cx);
-            }
-            Err(err) => self.notice = Some(err),
-        }
-    }
-
-    fn begin_film(&mut self, href: &str, at: Duration, cx: &mut Context<Root>) {
-        self.cancel_load();
-        self.playback_watch = self.playback_watch.wrapping_add(1);
-        let watch = self.playback_watch;
-        let Some(id) = self.open_note.clone() else {
-            self.notice = Some(locale::text("media.open_note").to_string());
-            return;
-        };
-        let path = match self.vault.media_file(&id, href) {
-            Ok(path) => path,
-            Err(_) => {
-                self.notice = Some(locale::text("media.open_failed").to_string());
-                return;
-            }
-        };
-        let stop = Arc::new(AtomicBool::new(false));
-        self.load_stop = Some(Arc::clone(&stop));
-        self.loading = Some(href.to_string());
-        let href = href.to_string();
-        let width = self.picture_width;
-        let renderer = cx.svg_renderer();
-        cx.spawn(async move |this, cx| {
-            let loaded = cx
-                .background_executor()
-                .spawn(async move { playback::load_film(&path, width, renderer, &stop) })
-                .await;
-            this.update_in(cx, |root, window, cx| {
-                let Some(pane) = root.pane.as_mut() else {
-                    return;
-                };
-                if pane.playback_watch != watch {
-                    if let Ok(film) = loaded {
-                        drop_frames(film.frames, window);
-                    }
-                    return;
-                }
-                pane.loading = None;
-                pane.load_stop = None;
-                match loaded {
-                    Ok(loaded) if loaded.frames.is_empty() => {
-                        pane.notice = Some(locale::text("media.open_failed").to_string());
-                    }
-                    Ok(loaded) => {
-                        let mut timing = loaded.timing;
-                        timing.duration = loaded.duration;
-                        pane.film = Some(Film {
-                            href: href.clone(),
-                            interval: playback::frame_interval(timing.fps),
-                            timing,
-                            frames: loaded.frames,
-                        });
-                        pane.start_video_clock(&href, at, cx);
-                    }
-                    Err(err) => pane.notice = Some(err),
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    fn start_video_clock(&mut self, href: &str, at: Duration, cx: &mut Context<Root>) {
-        let Some(timing) = self
-            .film
-            .as_ref()
-            .filter(|film| film.href == href)
-            .map(|film| film.timing)
-        else {
-            self.begin_film(href, at, cx);
-            return;
-        };
-        self.hold = None;
-        self.playback_watch = self.playback_watch.wrapping_add(1);
-        let watch = self.playback_watch;
-        let Some(id) = self.open_note.clone() else {
-            self.notice = Some(locale::text("media.open_note").to_string());
-            return;
-        };
-        let path = match self.vault.media_file(&id, href) {
-            Ok(path) => path,
-            Err(_) => {
-                self.notice = Some(locale::text("media.open_failed").to_string());
-                return;
-            }
-        };
-        match playback::start_video(&path, href.to_string(), at, self.media_muted, timing) {
-            Ok(started) => {
-                let href = started.playback.href().to_string();
-                self.timings
-                    .insert(href.clone(), TimingState::Ready(started.playback.timing()));
-                self.notice = started.notice;
-                self.playback = Some(started.playback);
-                self.watch_playback(href, watch, cx);
-            }
-            Err(err) => self.notice = Some(err),
-        }
-    }
-
-    fn watch_playback(&self, href: String, watch: u64, cx: &mut Context<Root>) {
-        cx.spawn(async move |this, cx| {
-            loop {
-                let keep = this
-                    .update_in(cx, |root, window, cx| {
-                        let Some(pane) = root.pane.as_mut() else {
-                            return false;
-                        };
-                        let keep = pane.poll_playback(&href, watch, window, cx);
-                        cx.notify();
-                        keep
-                    })
-                    .unwrap_or(false);
-                if !keep {
-                    break;
-                }
-                cx.background_executor()
-                    .timer(Duration::from_millis(8))
-                    .await;
-            }
-        })
-        .detach();
-    }
-
-    fn poll_playback(
-        &mut self,
-        href: &str,
-        watch: u64,
-        window: &mut Window,
-        cx: &mut Context<Root>,
-    ) -> bool {
-        let finished = {
-            let Some(play) = self.playback.as_mut() else {
-                return false;
-            };
-            if self.playback_watch != watch || play.href() != href {
-                return false;
-            }
-            play.finished()
-        };
-        if finished {
-            self.pause_playback(window, cx);
-            if let Some(hold) = &mut self.hold
-                && !hold.duration.is_zero()
-            {
-                hold.position = hold.duration;
-            }
-            return false;
-        }
-        true
     }
 
     /// Resolve a media link in the open note.
@@ -2390,7 +1733,6 @@ impl EditorPane {
     }
 
     fn clear_editor(&mut self, window: &mut Window, cx: &mut Context<Root>) {
-        self.dismiss_media(window, cx);
         self.open_note = None;
         self.open_kind = NoteKind::Book;
         self.tree_selection = TreeSelection::None;
@@ -2736,40 +2078,13 @@ impl EditorPane {
             .launch_message(display, message, vault, epoch, access, cx);
     }
 
-    fn press_note_row(
-        &mut self,
-        index: usize,
-        shift: bool,
-        window: &mut Window,
-        cx: &mut Context<Root>,
-    ) {
-        self.row_rewrite = None;
-        self.row_gesture = rows::RowGesture::press(self.row_gesture.take(), index, shift);
-        // Leave the source editor and the Archivist field so Ctrl+C copies these rows.
-        self.preview_focus.focus(window, cx);
-    }
-
-    fn drag_note_row(&mut self, index: usize) -> bool {
-        self.row_gesture
-            .as_mut()
-            .is_some_and(|gesture| gesture.drag_over(index))
-    }
-
-    fn release_note_row(&mut self, window: &mut Window, cx: &mut Context<Root>) {
-        if let Some(gesture) = self.row_gesture.as_mut() {
-            gesture.release();
-        }
-        if self.row_gesture.is_some() {
-            self.preview_focus.focus(window, cx);
-        }
-    }
-
     fn clear_note_rows(&mut self, cx: &mut Context<Root>) {
         // Collapse only while the source menu is up. A later clear, such as a
         // reload, must not move a caret the menu was not showing.
         let drop_editor = self.source_menu && self.note_view == NoteView::Source;
         self.row_gesture = None;
         self.row_rewrite = None;
+        self.preview_rewrite = false;
         self.source_menu = false;
         self.source_pressing = false;
         if !drop_editor {
@@ -3063,7 +2378,6 @@ impl EditorPane {
     }
 
     fn apply_file(&mut self, text: &str, window: &mut Window, cx: &mut Context<Root>) {
-        self.dismiss_media(window, cx);
         let (kind, body) = note_body(text);
         self.open_kind = kind;
         self.saved_text = body.clone();
@@ -3092,7 +2406,6 @@ impl EditorPane {
 
 impl Drop for EditorPane {
     fn drop(&mut self) {
-        self.playback = None;
         if !self.dirty {
             return;
         }

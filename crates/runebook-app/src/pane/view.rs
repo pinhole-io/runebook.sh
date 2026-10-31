@@ -158,7 +158,21 @@ fn note_surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_kit
         super::research::report(pane, view.clone(), cx).into_any_element()
     } else {
         match pane.note_view {
-            NoteView::Preview => super::preview::surface(pane, view.clone(), cx).into_any_element(),
+            NoteView::Preview => match pane.preview_entity() {
+                Some(page) => div()
+                    .id("note-preview")
+                    .flex_1()
+                    .h_full()
+                    .min_h(px(0.))
+                    .min_w(px(0.))
+                    .child(super::page::preview_element(&page))
+                    .into_any_element(),
+                None => div()
+                    .flex_1()
+                    .p_4()
+                    .child(locale::text("preview.unavailable"))
+                    .into_any_element(),
+            },
             NoteView::Source => source_surface(pane, view.clone(), cx).into_any_element(),
         }
     };

@@ -999,6 +999,291 @@ fn longest_run(text: &str, needle: char) -> usize {
     longest
 }
 
+const DROP_BODY: &[&str] = &[
+    "script", "style", "iframe", "object", "embed", "frame", "frameset", "applet", "link", "meta",
+    "base", "form", "noscript", "template", "svg", "math",
+];
+
+const ALLOW: &[&str] = &[
+    "a",
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "ul",
+    "ol",
+    "li",
+    "blockquote",
+    "pre",
+    "code",
+    "em",
+    "strong",
+    "del",
+    "s",
+    "hr",
+    "br",
+    "img",
+    "table",
+    "thead",
+    "tbody",
+    "tfoot",
+    "tr",
+    "th",
+    "td",
+    "input",
+    "details",
+    "summary",
+    "kbd",
+    "span",
+    "div",
+    "sup",
+    "sub",
+    "figure",
+    "figcaption",
+    "dl",
+    "dt",
+    "dd",
+    "caption",
+    "abbr",
+    "mark",
+];
+
+/// Drop scripts, embedded frames, and event-handler attributes.
+///
+/// The result is a fragment. A tag outside the allow list loses its wrapper
+/// and keeps its text. A dropped element loses its contents as well.
+pub(crate) fn sanitize_fragment(html: &str) -> String {
+    let html = strip_comments(html);
+    let mut out = String::with_capacity(html.len());
+    let mut index = 0;
+    while let Some(tag) = next_tag(&html, index) {
+        out.push_str(&html[index..tag.start]);
+        index = tag.end;
+        if tag.close {
+            if allowed(&tag.name) && !is_void(&tag.name) {
+                out.push_str("</");
+                out.push_str(&tag.name);
+                out.push('>');
+            }
+            continue;
+        }
+        if drop_body(&tag.name) {
+            index = skip_body(&html, tag.end, &tag.name);
+            continue;
+        }
+        if !allowed(&tag.name) {
+            continue;
+        }
+        let raw = &html[tag.start..tag.end];
+        if tag.name == "input" && !is_checkbox(raw) {
+            continue;
+        }
+        out.push_str(&rewrite_open(raw, &tag.name));
+    }
+    out.push_str(&html[index..]);
+    out
+}
+
+/// Point each image at a token URL from `bind`.
+///
+/// `bind` receives the original source. `None` drops `src`. A token also
+/// stores that source on `data-open` so a click can open the same file.
+pub(crate) fn bind_images(html: &str, mut bind: impl FnMut(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut index = 0;
+    while let Some(tag) = next_tag(html, index) {
+        out.push_str(&html[index..tag.start]);
+        let raw = &html[tag.start..tag.end];
+        if !tag.close && tag.name == "img" {
+            out.push_str(&bind_img(raw, &mut bind));
+        } else {
+            out.push_str(raw);
+        }
+        index = tag.end;
+    }
+    out.push_str(&html[index..]);
+    out
+}
+
+fn bind_img(raw: &str, bind: &mut impl FnMut(&str) -> Option<String>) -> String {
+    let alt = attr_value(raw, "alt").unwrap_or_default();
+    let mut attrs = String::new();
+    if let Some(src) = attr_value(raw, "src").filter(|src| !src.trim().is_empty())
+        && let Some(token) = bind(src.trim())
+    {
+        push_attr(&mut attrs, "src", &token);
+        push_attr(&mut attrs, "data-open", src.trim());
+    }
+    push_attr(&mut attrs, "alt", &alt);
+    format!("<img{attrs}>")
+}
+
+fn strip_comments(html: &str) -> String {
+    let bytes = html.as_bytes();
+    let mut out = String::with_capacity(html.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index..].starts_with(b"<!--") {
+            match html[index + 4..].find("-->") {
+                Some(end) => {
+                    index += 4 + end + 3;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        let ch = html[index..].chars().next().unwrap_or('\u{FFFD}');
+        out.push(ch);
+        index += ch.len_utf8();
+    }
+    out
+}
+
+fn skip_body(html: &str, from: usize, name: &str) -> usize {
+    let mut depth = 1;
+    let mut index = from;
+    while let Some(tag) = next_tag(html, index) {
+        if tag.name == name && !tag.void {
+            if tag.close {
+                depth -= 1;
+                if depth == 0 {
+                    return tag.end;
+                }
+            } else {
+                depth += 1;
+            }
+        }
+        index = tag.end;
+    }
+    html.len()
+}
+
+fn allowed(name: &str) -> bool {
+    ALLOW.contains(&name)
+}
+
+fn drop_body(name: &str) -> bool {
+    DROP_BODY.contains(&name)
+}
+
+fn is_void(name: &str) -> bool {
+    matches!(name, "br" | "hr" | "img" | "input")
+}
+
+fn is_checkbox(raw: &str) -> bool {
+    match attr_value(raw, "type") {
+        None => true,
+        Some(kind) => kind.trim().eq_ignore_ascii_case("checkbox"),
+    }
+}
+
+fn rewrite_open(raw: &str, name: &str) -> String {
+    let mut attrs = String::new();
+    match name {
+        "a" => {
+            if let Some(href) = attr_value(raw, "href").filter(|href| safe_link(href)) {
+                push_attr(&mut attrs, "href", href.trim());
+            }
+        }
+        "img" => {
+            if let Some(src) = attr_value(raw, "src").filter(|src| safe_src(src)) {
+                push_attr(&mut attrs, "src", src.trim());
+            }
+            if let Some(alt) = attr_value(raw, "alt") {
+                push_attr(&mut attrs, "alt", &alt);
+            }
+        }
+        "input" => {
+            push_attr(&mut attrs, "type", "checkbox");
+            if attr_value(raw, "checked").is_some() {
+                push_attr(&mut attrs, "checked", "checked");
+            }
+        }
+        "code" => {
+            if let Some(class) = attr_value(raw, "class")
+                && let Some(lang) = language_class(&class)
+            {
+                push_attr(&mut attrs, "class", &format!("language-{lang}"));
+            }
+        }
+        "details" => {
+            if attr_value(raw, "open").is_some() {
+                push_attr(&mut attrs, "open", "open");
+            }
+        }
+        "td" | "th" => {
+            copy_number(&mut attrs, raw, "colspan");
+            copy_number(&mut attrs, raw, "rowspan");
+        }
+        "ol" => copy_number(&mut attrs, raw, "start"),
+        _ => {}
+    }
+    format!("<{name}{attrs}>")
+}
+
+fn copy_number(attrs: &mut String, raw: &str, name: &str) {
+    let Some(value) = attr_value(raw, name) else {
+        return;
+    };
+    let value = value.trim();
+    if !value.is_empty() && value.len() <= 4 && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        push_attr(attrs, name, value);
+    }
+}
+
+fn safe_link(url: &str) -> bool {
+    let url = url.trim();
+    if url.is_empty() || url.starts_with("//") || url.contains(['\n', '\r', '\0']) {
+        return false;
+    }
+    let Some((scheme, rest)) = url.split_once(':') else {
+        return true;
+    };
+    if !scheme.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        return false;
+    }
+    match scheme.to_ascii_lowercase().as_str() {
+        "http" | "https" => rest.starts_with("//"),
+        "mailto" | "runebook" => true,
+        _ => false,
+    }
+}
+
+fn safe_src(url: &str) -> bool {
+    let url = url.trim();
+    if url.is_empty() || url.starts_with("//") || url.contains(['\n', '\r', '\0']) {
+        return false;
+    }
+    match url.split_once(':') {
+        None => true,
+        Some((scheme, rest))
+            if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") =>
+        {
+            rest.starts_with("//")
+        }
+        Some(_) => false,
+    }
+}
+
+fn push_attr(attrs: &mut String, name: &str, value: &str) {
+    attrs.push(' ');
+    attrs.push_str(name);
+    attrs.push_str("=\"");
+    for ch in value.chars() {
+        match ch {
+            '&' => attrs.push_str("&amp;"),
+            '"' => attrs.push_str("&quot;"),
+            '<' => attrs.push_str("&lt;"),
+            '>' => attrs.push_str("&gt;"),
+            _ => attrs.push(ch),
+        }
+    }
+    attrs.push('"');
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1079,6 +1364,27 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].0, "Term");
         assert_eq!(items[0].1, "Means <em>this</em>.");
+    }
+
+    #[test]
+    fn a_script_and_an_event_handler_are_dropped() {
+        let html = sanitize_fragment(
+            "<p onclick=\"alert(1)\">Hi</p><script>alert(1)</script><a href=\"javascript:alert(1)\">x</a>",
+        );
+        assert!(!html.to_ascii_lowercase().contains("script"));
+        assert!(!html.contains("alert"));
+        assert!(!html.contains("onclick"));
+        assert!(!html.contains("javascript:"));
+        assert!(html.contains("Hi"));
+        assert!(html.contains(">x<"));
+    }
+
+    #[test]
+    fn an_image_keeps_a_relative_source() {
+        let html = sanitize_fragment("<img src=\"photo.png\" alt=\"Sun\" onload=\"no\">");
+        assert!(html.contains("src=\"photo.png\""));
+        assert!(html.contains("alt=\"Sun\""));
+        assert!(!html.contains("onload"));
     }
 
     #[test]

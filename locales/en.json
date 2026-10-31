@@ -104,6 +104,7 @@
   "preview.apply": "Apply",
   "preview.rewrite": "Rewrite",
   "preview.rewrite_placeholder": "How should these rows change?",
+  "preview.unavailable": "The note preview could not open.",
   "research.answer_then_start": "Answer the questions, then start the investigation.",
   "research.answers": "Answers",
   "research.ask": "What should this rune investigate?",

@@ -12,6 +12,10 @@ pub(crate) struct Prepared {
     pub source: String,
     /// `true` when this row carries definitions only so references resolve.
     pub hide_anchors: bool,
+    /// Definitions appended so a reference in this row can resolve.
+    ///
+    /// Empty when `hide_anchors` is false. The page omits this tail.
+    pub suffix: String,
 }
 
 /// Build the markdown a preview row should parse.
@@ -21,6 +25,7 @@ pub(crate) fn prepare(note: &str, row: &str) -> Prepared {
         return Prepared {
             source: preview_markdown(row),
             hide_anchors: false,
+            suffix: String::new(),
         };
     }
     let suffix = anchors.suffix(row);
@@ -29,13 +34,16 @@ pub(crate) fn prepare(note: &str, row: &str) -> Prepared {
         return Prepared {
             source,
             hide_anchors: false,
+            suffix: String::new(),
         };
     }
+    let suffix = preview_markdown(&suffix);
     source.push_str("\n\n");
-    source.push_str(&preview_markdown(&suffix));
+    source.push_str(&suffix);
     Prepared {
         source,
         hide_anchors: true,
+        suffix,
     }
 }
 

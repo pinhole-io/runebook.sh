@@ -21,14 +21,30 @@ const CONFIG: &str = r#"{"securityLevel":"strict","htmlLabels":false}"#;
 
 enum Slot {
     Pending,
-    Ready(Arc<Image>),
+    Ready(Arc<Vec<u8>>),
     Failed(SharedString),
 }
 
 enum Shown {
     Pending,
-    Ready(Arc<Image>),
+    Ready(Arc<Vec<u8>>),
     Failed(SharedString),
+}
+
+/// A mermaid fence the note page can embed.
+pub(crate) enum Diagram {
+    Pending,
+    Svg(Arc<Vec<u8>>),
+    Failed(SharedString),
+}
+
+/// Start a diagram render when this fence is new, and return what can be shown.
+pub(crate) fn diagram(cx: &mut App, source: &str, dark: bool) -> Diagram {
+    match shown(cx, source, dark) {
+        Shown::Pending => Diagram::Pending,
+        Shown::Ready(bytes) => Diagram::Svg(bytes),
+        Shown::Failed(message) => Diagram::Failed(message),
+    }
 }
 
 /// Markdown view that draws `mermaid` fences as diagrams.
@@ -71,10 +87,17 @@ pub(crate) fn render_block(node: &MarkdownNode, _: &mut Window, cx: &mut App) ->
     match shown(cx, source, dark) {
         Shown::Pending => note(crate::locale::text("mermaid.pending")),
         Shown::Failed(message) => note(message),
-        Shown::Ready(image) => div()
+        Shown::Ready(bytes) => div()
             .w_full()
             .min_w(px(0.))
-            .child(img(image).w_full().max_h(px(420.)))
+            .child(
+                img(Arc::new(Image::from_bytes(
+                    ImageFormat::Svg,
+                    bytes.as_ref().clone(),
+                )))
+                .w_full()
+                .max_h(px(420.)),
+            )
             .into_any_element(),
     }
 }
@@ -95,7 +118,7 @@ fn shown(cx: &mut App, source: &str, dark: bool) -> Shown {
         let mut slots = slots().lock().unwrap_or_else(|err| err.into_inner());
         match slots.get(&key) {
             Some(Slot::Pending) => return Shown::Pending,
-            Some(Slot::Ready(image)) => return Shown::Ready(Arc::clone(image)),
+            Some(Slot::Ready(bytes)) => return Shown::Ready(Arc::clone(bytes)),
             Some(Slot::Failed(message)) => return Shown::Failed(message.clone()),
             None => {
                 if slots.len() >= 64 {
@@ -114,7 +137,7 @@ fn shown(cx: &mut App, source: &str, dark: bool) -> Shown {
                 .await;
             cx.update(|cx| {
                 let slot = match rendered {
-                    Ok(bytes) => Slot::Ready(Arc::new(Image::from_bytes(ImageFormat::Svg, bytes))),
+                    Ok(bytes) => Slot::Ready(Arc::new(bytes)),
                     Err(message) => Slot::Failed(SharedString::from(message)),
                 };
                 slots()

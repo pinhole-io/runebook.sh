@@ -16,15 +16,20 @@ async-trait = "0.1"
 futures = "0.3"
 charlotte = { path = "../../../charlotte", default-features = false, features = ["notepad"] }
 cpal = "0.15"
-gpui-kit = { version = "0.8", features = ["tree-sitter-markdown"] }
+gpui-kit = { version = "0.8.1", features = ["tree-sitter-markdown", "gpui-fast"] }
+gpui-webview = { version = "0.8.1", features = ["gpui-fast"] }
 hound = "3.5"
 image = { version = "0.25", default-features = false, features = ["png"] }
+markdown = "1"
 reqwest = { version = "0.12", features = ["blocking", "json", "multipart"] }
 runebook = { path = "../runebook" }
 serde_json = "1"
 superglue = { path = "../../../superglue", default-features = false }
 tokio = { version = "1", features = ["net", "rt-multi-thread", "sync", "time"] }
+wry = { package = "lb-wry", version = "0.53.3" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+webkit2gtk = { version = "=2.0.1", features = ["v2_38"] }
 wayland-client = "0.31.15"
 wayland-protocols-wlr = { version = "0.3.12", default-features = false, features = ["client"] }

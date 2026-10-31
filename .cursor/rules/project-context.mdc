@@ -35,8 +35,9 @@ kind: speech
 - A preview checkbox toggles that task line in the note.
 - A media file beside a note uses a video, audio, or image extension: `mp4`, `webm`, `mkv`, `mov`, `mp3`, `wav`, `ogg`, `m4a`, `flac`, `png`, `jpg`, `jpeg`, `gif`, `webp`.
 - Folder delete removes those files. Any other non-note file still blocks folder delete.
-- A preview row that is only a video or audio link plays in the note. The picture follows the file frame rate. Pause holds the place. The bar seeks. Mute silences the sound.
+- A preview row that is only a video or audio link is an HTML5 `video` or `audio` element with controls. `media_muted` sets `muted`.
 - A preview image shows in the row. A click opens a vault file. A remote image loads from an `http` or `https` address. The file must be 8 MiB or smaller.
+- The page asks for that file through a vault protocol. The page does not receive a filesystem path.
 - The alt text shows when that image does not load. The path must stay inside the vault.
 - Skip hidden paths and symlinks. Do not follow a symlink out of the vault.
 - There is no sidecar database. The index is rebuilt from the files.
@@ -70,6 +71,7 @@ Resolve `[[target]]` in this order:
 - Each settings row has a sentence. The label tooltip adds the default or the environment name.
 - Research and the Archivist pick a model from the host list at `/v1/models`. The menu search filters that list. Default leaves that field empty.
 - On Linux, the window id is `runebook`. Startup writes `$XDG_DATA_HOME/runebook/icon.png` and `$XDG_DATA_HOME/applications/runebook.desktop`. When `XDG_DATA_HOME` is unset, that directory is `~/.local/share`. The shell uses the desktop file for the book icon.
+- On Linux, a Wayland session keeps the window on Wayland. The note page is a second Wayland surface over the preview column, so the type stays sharp. A session with no Wayland display uses an X11 window, and the page is a child of that window. Startup sets `GDK_BACKEND` to the same display server. Screen capture still follows `WAYLAND_DISPLAY`.
 - One folder argument opens that folder. No argument opens `last_vault`. A folder with no `runebook.toml` becomes a new vault. Two paths, an empty path, a path that starts with `-`, or a path that is not UTF-8 exits with status 2. A second launch is a second process.
 - On macOS, startup writes `~/Library/Services/Open in Runebook.workflow`. Finder shows **Open in Runebook** under Quick Actions for a folder. The service starts the binary with that folder.
 - On macOS, a right-click on a folder in the file tree shows **Open in Finder**. That item reveals the folder.
@@ -82,13 +84,15 @@ Resolve `[[target]]` in this order:
 - A drag stops at the sidebar minimum in `chrome.rs`. The note column stops at `NOTE_MIN_WIDTH`.
 - An older layout names the panels `files`, `note`, and `archivist`.
 - `dock_layout` stores the files width and the Archivist width. An older dock JSON still supplies those widths. A bad value uses the default split.
-- The source pane is the Kit `Editor`. The preview pane is Kit markdown.
-- A heading uses the theme heading color.
-- A fenced code block uses the theme code color. A language with a grammar uses the theme syntax colors.
-- Inline code uses the theme code color.
-- HTML in a note uses those same styles. `<details>` starts closed. A click opens it. `<pre>`, `<code>`, `<kbd>`, `<img>`, and `<a>` follow the markdown look. A script tag is dropped.
-- The window shows the preview until the user flips to the source.
-- A click selects preview rows. A text selection in the source editor opens the same menu.
-- The menu copies that markdown, adds it to the Archivist, or asks the Archivist to rewrite it.
-- Ctrl+C copies the preview rows when the source editor and the Archivist field do not have focus.
+- The source pane is the Kit `Editor`. The note preview is one webview page.
+- The Archivist column and the research report stay on the Kit text view.
+- The page takes its colors, font, radius, and heading scale from the active theme.
+- A heading uses the theme heading color. Code uses the theme code color.
+- The Kit text view uses the theme syntax colors when a code fence has a grammar.
+- HTML in the page is sanitized. A script tag, an embedded frame, and every `on*` attribute are dropped.
+- The window shows the preview until the user flips to the source. Source, settings, and the research report hide the page.
+- A click selects preview rows. The page paints the range Rust sends back.
+- The page menu copies that markdown, adds it to the Archivist, or asks the Archivist to rewrite it.
+- The source editor keeps its own selection menu.
+- Ctrl+C in the page asks Rust for the markdown.
 - Autosave is debounced. Also flush on note switch and window close.
