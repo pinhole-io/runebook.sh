@@ -42,7 +42,9 @@ pub(crate) fn column(
         .text_color(foreground)
         .child(
             panel_header(div().id("archivist-header").px_2().text_base(), border)
-                .child(locale::text("archivist.title")),
+                .child(locale::text("archivist.title"))
+                .child(div().flex_1())
+                .child(clear_button(view.clone())),
         )
         .child(transcript(panel, muted, danger, busy, cx))
         .when(!panel.held.is_empty(), |column| {
@@ -52,6 +54,21 @@ pub(crate) fn column(
             column.child(file_rows(panel, view.clone(), cx))
         })
         .child(composer(panel, ready, blocked, busy, danger, view, cx))
+}
+
+fn clear_button(view: WeakEntity<Root>) -> impl IntoElement {
+    Button::new("archivist-clear")
+        .ghost()
+        .small()
+        .flex_shrink_0()
+        .cursor_pointer()
+        .label(locale::text("archivist.clear"))
+        .on_click(on_root(&view, |this, _: &ClickEvent, _, cx| {
+            if let Some(pane) = this.pane.as_mut() {
+                pane.clear_archivist();
+            }
+            cx.notify();
+        }))
 }
 
 fn transcript(
@@ -91,7 +108,7 @@ fn transcript(
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .when(empty, |log| {
+                        .when(empty && !busy, |log| {
                             log.child(
                                 div()
                                     .px_2()

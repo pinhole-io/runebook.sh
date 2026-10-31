@@ -2486,10 +2486,13 @@ impl EditorPane {
             return;
         }
         if let Err(err) = self.reload() {
-            self.fail_disk_scan(err.to_string());
+            if self.fail_disk_scan(err.to_string()) {
+                present_scan(window);
+            }
             return;
         }
         self.finish_disk_refresh(window, cx);
+        present_scan(window);
     }
 
     /// Install a scan that started from `base`. A newer local edit wins.
@@ -2593,6 +2596,11 @@ impl EditorPane {
     /// The Archivist session drawn in the dock panel.
     pub(crate) fn archivist(&self) -> &crate::archivist::Panel {
         &self.archivist
+    }
+
+    /// Drop the Archivist transcript. The next send starts a new conversation.
+    pub(crate) fn clear_archivist(&mut self) {
+        self.archivist.clear_conversation();
     }
 
     /// Send the draft to the Archivist. A busy turn or a missing key does nothing.
@@ -2703,6 +2711,8 @@ impl EditorPane {
     }
 
     /// The file read succeeded. Drop the sent files and start the model turn.
+    ///
+    /// Clear stops a read before this runs, so that send does not start.
     pub(crate) fn accept_archivist_files(
         &mut self,
         display: String,
@@ -2716,6 +2726,9 @@ impl EditorPane {
         window: &mut Window,
         cx: &mut Context<Root>,
     ) {
+        if !self.archivist.is_reading() {
+            return;
+        }
         self.archivist.drop_sent_held(held);
         self.archivist.drop_sent_files(paths);
         self.archivist.clear_draft_if(draft, window, cx);
@@ -2870,7 +2883,13 @@ impl EditorPane {
         let Some(input) = self.row_rewrite.clone() else {
             return;
         };
-        let change = input.read(cx).value().trim().to_string();
+        let change = input.read(cx).value().to_string();
+        self.rewrite_selection(&change, cx);
+    }
+
+    /// Ask the Archivist to rewrite the selected rows with `change`.
+    pub(super) fn rewrite_selection(&mut self, change: &str, cx: &mut Context<Root>) {
+        let change = change.trim();
         if change.is_empty() {
             return;
         }
@@ -3082,6 +3101,16 @@ impl Drop for EditorPane {
             let _ = self.vault.write(&id, &file);
         }
     }
+}
+
+/// Draw the window after a vault scan.
+///
+/// Wayland stops asking for frames while the window is idle. `notify`
+/// marks the view dirty and does not start a frame, so the last picture
+/// stays up until a resize. This asks for the next frame.
+pub(super) fn present_scan(window: &mut Window) {
+    window.refresh();
+    window.on_next_frame(|_, _| {});
 }
 
 fn tree_refresh_prefix() -> &'static str {
@@ -3386,6 +3415,16 @@ fn toggled_task_body(source: &str, index: usize) -> Option<String> {
     next.push_str(&toggled);
     next.push_str(&source[row.start + raw.len()..]);
     Some(next)
+}
+
+/// Absolute path of `id` inside the vault at `root`.
+#[cfg(any(test, target_os = "macos"))]
+fn folder_on_disk(root: &Path, id: &FolderId) -> std::path::PathBuf {
+    if id.is_root() {
+        root.to_path_buf()
+    } else {
+        root.join(id.as_str())
+    }
 }
 
 fn child_name(parent: &FolderId, name: &str) -> String {
@@ -3784,5 +3823,27 @@ mod capture_note_tests {
         assert_eq!(kind, NoteKind::Speech);
         assert!(body.contains("hello"));
         assert!(body.contains("# speech"));
+    }
+}
+
+#[cfg(test)]
+mod folder_path_tests {
+    use super::folder_on_disk;
+    use runebook::FolderId;
+    use std::path::Path;
+
+    #[test]
+    fn the_root_id_is_the_vault_root() {
+        let root = Path::new("/tmp/notes");
+        assert_eq!(folder_on_disk(root, &FolderId::root()), root);
+    }
+
+    #[test]
+    fn a_nested_id_joins_the_vault_root() {
+        let id = FolderId::parse("journal/2026").unwrap();
+        assert_eq!(
+            folder_on_disk(Path::new("/tmp/notes"), &id),
+            Path::new("/tmp/notes/journal/2026")
+        );
     }
 }

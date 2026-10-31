@@ -7,9 +7,11 @@ mod archivist;
 mod capture;
 mod chrome;
 mod dock;
+mod finder;
 mod html_style;
 mod http;
 mod icon;
+mod launch;
 mod locale;
 mod markdown_view;
 mod mermaid;
@@ -51,6 +53,13 @@ A wiki link looks like [[inbox]]. Click a missing link to create that note.
 const TREE_POLL: Duration = Duration::from_millis(500);
 
 fn main() {
+    let requested = match launch::vault_path(std::env::args_os()) {
+        Ok(path) => path,
+        Err(message) => {
+            eprintln!("runebook: {message}");
+            std::process::exit(2);
+        }
+    };
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
         .with_http_client(http::client())
@@ -67,11 +76,13 @@ fn main() {
             let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
             let config = AppConfig::load().unwrap_or_default();
             locale::activate(&config.locale);
-            let last = config.last_vault.clone();
+            let last = requested.or(config.last_vault.clone());
             let saved_theme = config.theme.clone();
             let text_size = config.text_size;
             #[cfg(target_os = "linux")]
             icon::install();
+            #[cfg(target_os = "macos")]
+            finder::install();
             let window_icon = icon::rgba();
             gpui_kit::open_window(
                 WindowOptions {
@@ -496,6 +507,7 @@ impl Root {
                         };
                         if changed {
                             cx.notify();
+                            pane::present_scan(window);
                         }
                         true
                     })
@@ -596,9 +608,6 @@ impl Render for Root {
             });
         }
 
-        if let Some(pane) = self.pane.as_mut() {
-            pane.sync_picture_width(window);
-        }
         let view = cx.weak_entity();
         let background = cx.theme().background;
         let foreground = cx.theme().foreground;

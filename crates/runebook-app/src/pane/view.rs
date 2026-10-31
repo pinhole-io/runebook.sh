@@ -7,6 +7,8 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::Selectable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Editor, EditorState, Enter, Escape, Input, InputState};
+#[cfg(target_os = "macos")]
+use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::toolbar::Toolbar;
@@ -747,6 +749,39 @@ fn note_icon(kind: NoteKind) -> IconName {
     }
 }
 
+/// Right-click menu that shows the folder in Finder.
+///
+/// The shell `open` command returns at once. A spawn error uses the notice line.
+#[cfg(target_os = "macos")]
+fn folder_finder_menu(
+    row: impl gpui_kit::InteractiveElement + gpui_kit::ParentElement + gpui_kit::Styled,
+    folder: runebook::FolderId,
+    view: WeakEntity<Root>,
+) -> impl IntoElement {
+    row.context_menu(move |menu, _, _| {
+        let folder = folder.clone();
+        let view = view.clone();
+        menu.item(
+            PopupMenuItem::new(locale::text("tree.open_in_finder")).on_click(on_root(
+                &view,
+                move |this, _: &ClickEvent, _, cx| {
+                    let Some(pane) = this.pane.as_ref() else {
+                        return;
+                    };
+                    let path = super::folder_on_disk(pane.root(), &folder);
+                    if let Err(err) = crate::markdown_view::spawn_desktop_open(&path) {
+                        this.set_notice(locale::format(
+                            "tree.open_finder_failed",
+                            &[("err", &err.to_string())],
+                        ));
+                        cx.notify();
+                    }
+                },
+            )),
+        )
+    })
+}
+
 fn render_entry(
     entry: runebook::TreeEntry,
     depth: usize,
@@ -770,70 +805,69 @@ fn render_entry(
             let folder_id = id.clone();
             let renaming = rename_input(prompt, &TreeSelection::Folder(id.clone()));
             let select_id = folder_id.clone();
-            div()
-                .child(
-                    div()
-                        .id(SharedString::from(key.clone()))
-                        .group(SharedString::from(format!("row-{key}")))
-                        .pl(pad)
-                        .pr_2()
-                        .min_h(px(28.))
-                        .w_full()
-                        .min_w(px(0.))
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .bg(if open { accent } else { sidebar })
-                        .text_color(if open { accent_foreground } else { foreground })
-                        .cursor_pointer()
-                        .child(folder_toggle(&key, folded, folder_id.clone(), view.clone()))
-                        .child(if folded {
-                            IconName::Folder
-                        } else {
-                            IconName::FolderOpen
-                        })
-                        .child(row_label(&key, name, renaming))
-                        .when(renaming.is_none(), |row| {
-                            let select_id = select_id.clone();
-                            row.child(row_actions(
-                                &key,
-                                open,
-                                TreeSelection::Folder(id),
-                                view.clone(),
-                                cx,
-                            ))
-                            .on_click(on_root(
-                                &view,
-                                move |this, _: &ClickEvent, _, cx| {
-                                    if let Some(pane) = this.pane.as_mut() {
-                                        pane.select_tree_folder(select_id.clone());
-                                    }
-                                    cx.notify();
-                                },
-                            ))
-                        })
-                        .when(renaming.is_some(), |row| rename_keys(row, view.clone()))
-                        .can_drop({
-                            let folder = folder_id.clone();
-                            move |value, _, _| {
-                                value
-                                    .downcast_ref::<NoteMove>()
-                                    .is_some_and(|drag| drag.id.parent() != folder)
+            let row = div()
+                .id(SharedString::from(key.clone()))
+                .group(SharedString::from(format!("row-{key}")))
+                .pl(pad)
+                .pr_2()
+                .min_h(px(28.))
+                .w_full()
+                .min_w(px(0.))
+                .flex()
+                .items_center()
+                .gap_2()
+                .bg(if open { accent } else { sidebar })
+                .text_color(if open { accent_foreground } else { foreground })
+                .cursor_pointer()
+                .child(folder_toggle(&key, folded, folder_id.clone(), view.clone()))
+                .child(if folded {
+                    IconName::Folder
+                } else {
+                    IconName::FolderOpen
+                })
+                .child(row_label(&key, name, renaming))
+                .when(renaming.is_none(), |row| {
+                    let select_id = select_id.clone();
+                    row.child(row_actions(
+                        &key,
+                        open,
+                        TreeSelection::Folder(id),
+                        view.clone(),
+                        cx,
+                    ))
+                    .on_click(on_root(
+                        &view,
+                        move |this, _: &ClickEvent, _, cx| {
+                            if let Some(pane) = this.pane.as_mut() {
+                                pane.select_tree_folder(select_id.clone());
                             }
-                        })
-                        .drag_over::<NoteMove>(|style, _, _, cx| {
-                            style.bg(cx.theme().sidebar_accent)
-                        })
-                        .on_drop({
-                            let folder = folder_id.clone();
-                            on_root(&view, move |this, drag: &NoteMove, _, cx| {
-                                if let Some(pane) = this.pane.as_mut() {
-                                    pane.move_note(&drag.id, &folder);
-                                }
-                                cx.notify();
-                            })
-                        }),
-                )
+                            cx.notify();
+                        },
+                    ))
+                })
+                .when(renaming.is_some(), |row| rename_keys(row, view.clone()))
+                .can_drop({
+                    let folder = folder_id.clone();
+                    move |value, _, _| {
+                        value
+                            .downcast_ref::<NoteMove>()
+                            .is_some_and(|drag| drag.id.parent() != folder)
+                    }
+                })
+                .drag_over::<NoteMove>(|style, _, _, cx| style.bg(cx.theme().sidebar_accent))
+                .on_drop({
+                    let folder = folder_id.clone();
+                    on_root(&view, move |this, drag: &NoteMove, _, cx| {
+                        if let Some(pane) = this.pane.as_mut() {
+                            pane.move_note(&drag.id, &folder);
+                        }
+                        cx.notify();
+                    })
+                });
+            #[cfg(target_os = "macos")]
+            let row = folder_finder_menu(row, folder_id, view.clone());
+            div()
+                .child(row)
                 .when(!folded, |row| {
                     row.children(children.into_iter().map(|child| {
                         render_entry(

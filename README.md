@@ -39,6 +39,18 @@ brew install ffmpeg pkgconf
 
 Screen recording captures the full display. Playback needs `ffmpeg`. A click on a vault file uses `open`.
 
+The first start writes a Finder Quick Action. Right-click a folder in Finder. Choose **Quick Actions**, then **Open in Runebook**. That folder opens as the vault. A folder with no `runebook.toml` becomes a new vault. Finder may need one restart before the item shows.
+
+In the file tree, right-click a folder. Choose **Open in Finder**. Finder shows that folder.
+
+One launch argument is a folder path.
+
+```bash
+runebook /path/to/folder
+```
+
+No argument opens the last vault. Two paths exit with status 2. A second launch is a second process.
+
 ## Voice and screen
 
 A Speech note stores a transcript. Record voice while that note is open. Another note can open while the capture runs. The transcript still lands in the Speech note. Set `GROQ_API_KEY` before you start the app. The audio clip is sent to Groq. The app does not save the audio file.

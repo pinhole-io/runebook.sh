@@ -70,10 +70,14 @@ Resolve `[[target]]` in this order:
 - Each settings row has a sentence. The label tooltip adds the default or the environment name.
 - Research and the Archivist pick a model from the host list at `/v1/models`. The menu search filters that list. Default leaves that field empty.
 - On Linux, the window id is `runebook`. Startup writes `$XDG_DATA_HOME/runebook/icon.png` and `$XDG_DATA_HOME/applications/runebook.desktop`. When `XDG_DATA_HOME` is unset, that directory is `~/.local/share`. The shell uses the desktop file for the book icon.
+- One folder argument opens that folder. No argument opens `last_vault`. A folder with no `runebook.toml` becomes a new vault. Two paths, an empty path, a path that starts with `-`, or a path that is not UTF-8 exits with status 2. A second launch is a second process.
+- On macOS, startup writes `~/Library/Services/Open in Runebook.workflow`. Finder shows **Open in Runebook** under Quick Actions for a folder. The service starts the binary with that folder.
+- On macOS, a right-click on a folder in the file tree shows **Open in Finder**. That item reveals the folder.
 - The file tree, the note, and the Archivist column sit in one horizontal split.
 - The file tree reads the vault every 500 ms. A change made outside the app shows up on that read. The refresh button reads immediately.
 - A clean open note reloads when its file changed. Unsaved text stays in the editor.
 - The Archivist can attach up to 8 files. An image or a PDF goes to the model. UTF-8 text (`txt`, `md`, `csv`, `json`, `html`) stays in the message. Each file must be 8 MiB or smaller. The transcript shows the file name.
+- Clear in the Archivist header drops the transcript. The next send starts a new conversation. A turn that is still running does not write its reply.
 - Search lists notes whose body contains the query, and a click opens that note.
 - A drag stops at the sidebar minimum in `chrome.rs`. The note column stops at `NOTE_MIN_WIDTH`.
 - An older layout names the panels `files`, `note`, and `archivist`.

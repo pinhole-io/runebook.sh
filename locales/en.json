@@ -1,5 +1,6 @@
 {
   "archivist.add_file": "Add file",
+  "archivist.clear": "Clear",
   "archivist.empty": "Ask the Archivist to add, change, or delete a note.",
   "archivist.empty_file": "{name} is empty.",
   "archivist.not_utf8": "{name} is not UTF-8 text.",
@@ -251,6 +252,8 @@
   "tree.delete_note_body": "Delete note {id}? This removes the file.",
   "tree.folder_inside": "Select a folder inside the vault",
   "tree.new_folder": "New folder",
+  "tree.open_finder_failed": "Could not show the folder in Finder: {err}",
+  "tree.open_in_finder": "Open in Finder",
   "tree.refresh_error": "Could not refresh the file tree: {message}",
   "tree.select_first": "Select a note or folder first",
   "vault.already": "{path} is already a vault",

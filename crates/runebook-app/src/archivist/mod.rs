@@ -112,6 +112,8 @@ pub(crate) struct Panel {
     log_scroll: ScrollHandle,
     session: Option<Session>,
     drop_session: bool,
+    /// Turn whose reply must not return to the transcript.
+    discarded_turn: Option<u64>,
     turn: u64,
     /// Rows parked by Add to chat. The next send includes them.
     held: Vec<HeldRows>,
@@ -146,6 +148,7 @@ impl Panel {
             log_scroll: ScrollHandle::new(),
             session: None,
             drop_session: false,
+            discarded_turn: None,
             turn: 0,
             held: Vec::new(),
             files: Vec::new(),
@@ -298,6 +301,32 @@ impl Panel {
 
     pub(crate) fn is_busy(&self) -> bool {
         self.busy
+    }
+
+    /// `true` while parked files are read, before the model turn starts.
+    pub(crate) fn is_reading(&self) -> bool {
+        self.reading
+    }
+
+    /// Drop the transcript and the model memory of this chat.
+    ///
+    /// A running turn stays busy until it ends, and its reply is not shown.
+    /// A file read that has not reached the model stops. Parked files stay.
+    pub(crate) fn clear_conversation(&mut self) {
+        self.lines.clear();
+        self.live = LiveText::default();
+        self.live_rendered = RenderedMarkdown::default();
+        self.session = None;
+        self.log_scroll.scroll_to_bottom();
+        if self.reading {
+            self.reading = false;
+            self.busy = false;
+            return;
+        }
+        if self.busy {
+            self.drop_session = true;
+            self.discarded_turn = Some(self.turn);
+        }
     }
 
     /// Draft text with surrounding whitespace removed.
@@ -470,7 +499,8 @@ impl Panel {
 
     /// Replace the in-progress reply for this turn. Returns whether the text changed.
     pub(crate) fn show_live(&mut self, turn: u64, next: LiveText) -> bool {
-        if turn != self.turn || !self.busy || next == self.live {
+        if turn != self.turn || !self.busy || self.discarded_turn == Some(turn) || next == self.live
+        {
             return false;
         }
         self.live_rendered = RenderedMarkdown {
@@ -489,15 +519,21 @@ impl Panel {
         if turn != self.turn {
             return Vec::new();
         }
+        let discard = self.discarded_turn == Some(turn);
+        self.discarded_turn = None;
         self.busy = false;
         self.live = LiveText::default();
         self.live_rendered = RenderedMarkdown::default();
-        self.session = if self.drop_session {
+        self.session = if self.drop_session || discard {
             self.drop_session = false;
             None
         } else {
             done.session
         };
+        if discard {
+            self.follow_log();
+            return done.changes;
+        }
         let empty = done.thinking.trim().is_empty() && done.body.trim().is_empty();
         if done.error.is_none() && empty {
             self.lines.push(Line::Archivist {
