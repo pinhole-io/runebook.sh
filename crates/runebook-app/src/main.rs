@@ -68,29 +68,15 @@ fn main() {
         std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "true");
     }
     #[cfg(target_os = "linux")]
-    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty());
-    #[cfg(target_os = "linux")]
     // SAFETY: GTK and GPUI have not started, and this process has not spawned
-    // a thread that reads these variables. The assignments happen once, before `run`.
-    // The note page is GTK. GTK must open the same display server as the window.
-    // A Wayland window draws at the output scale, so the type stays sharp.
-    // `GDK_SCALE` would pin the page to scale 1 on that same screen.
+    // a thread that reads this variable. The assignment happens once, before `run`.
+    // The note page is a GTK child of the window. `gpui-webview` builds that
+    // child only for an X11 window. On a Wayland session the window is XWayland.
     unsafe {
-        if wayland {
-            std::env::remove_var("GDK_SCALE");
-            std::env::remove_var("GDK_DPI_SCALE");
-            std::env::remove_var("GPUI_X11_SCALE_FACTOR");
-            std::env::set_var("GDK_BACKEND", "wayland");
-        } else {
-            std::env::set_var("GDK_BACKEND", "x11");
-        }
+        std::env::set_var("GDK_BACKEND", "x11");
     }
     #[cfg(target_os = "linux")]
-    let app = if wayland {
-        gpui_kit::application()
-    } else {
-        gpui_kit::platform::linux(gpui_kit::WindowingModes::X11)
-    };
+    let app = gpui_kit::platform::linux(gpui_kit::WindowingModes::X11);
     #[cfg(not(target_os = "linux"))]
     let app = gpui_kit::application();
     app.with_assets(gpui_kit::assets::AllAssets)

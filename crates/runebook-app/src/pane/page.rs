@@ -16,9 +16,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use gpui_kit::component::{ActiveTheme, ThemeMode};
-use gpui_kit::{
-    AnyElement, App, AppContext, Bounds, Context, Entity, Hsla, IntoElement, Pixels, Window,
-};
+use gpui_kit::{AnyElement, App, AppContext, Context, Entity, Hsla, IntoElement, Window};
 use gpui_webview::WebView;
 use runebook::NoteId;
 use runebook::Vault;
@@ -234,6 +232,10 @@ pub(crate) fn flush_preview(
         root.schedule_autosave(cx);
     }
     if let Some(pane) = root.pane.as_mut() {
+        // A push that the page has not confirmed is sent again on a later frame.
+        if PREVIEW_WAIT.load(Ordering::Relaxed) {
+            pane.retry_preview();
+        }
         pane.sync_preview(cx);
     }
 }
@@ -250,12 +252,10 @@ pub(super) fn install(window: &mut Window, cx: &mut Context<crate::Root>) -> Pre
     PreviewHost { view, book, ready }
 }
 
-/// The native page. On Wayland it is its own surface. On X11 it is a child window.
+/// The note page. It is a child of the window.
 #[derive(Clone)]
 pub(super) enum PreviewSurface {
     Child(Entity<WebView>),
-    #[cfg(target_os = "linux")]
-    Overlay(Entity<super::overlay::NoteOverlay>),
 }
 
 pub(super) struct PreviewHost {
@@ -267,15 +267,11 @@ pub(super) struct PreviewHost {
 pub(super) fn preview_element(surface: &PreviewSurface) -> AnyElement {
     match surface {
         PreviewSurface::Child(page) => page.clone().into_any_element(),
-        #[cfg(target_os = "linux")]
-        PreviewSurface::Overlay(page) => page.clone().into_any_element(),
     }
 }
 
 impl PreviewSurface {
-    fn set_showing(&self, showing: bool, rewrite: bool, cx: &mut Context<crate::Root>) {
-        #[cfg(not(target_os = "linux"))]
-        let _ = rewrite;
+    fn set_showing(&self, showing: bool, cx: &mut Context<crate::Root>) {
         match self {
             Self::Child(view) => {
                 view.update(cx, |webview, _| {
@@ -286,38 +282,6 @@ impl PreviewSurface {
                     }
                 });
             }
-            #[cfg(target_os = "linux")]
-            Self::Overlay(view) => {
-                view.update(cx, |overlay, _| overlay.set_showing(showing, rewrite));
-            }
-        }
-    }
-
-    /// The new-note menu rectangle, in window coordinates. `None` closes the hole.
-    ///
-    /// `true` when the rectangle changed and the window should draw again.
-    pub(super) fn set_menu_bounds(
-        &self,
-        bounds: Option<Bounds<Pixels>>,
-        cx: &mut Context<crate::Root>,
-    ) -> bool {
-        match self {
-            Self::Child(_) => {
-                let _ = (bounds, cx);
-                false
-            }
-            #[cfg(target_os = "linux")]
-            Self::Overlay(view) => view.update(cx, |overlay, _| overlay.set_menu_bounds(bounds)),
-        }
-    }
-
-    fn set_page_color(&self, color: (u8, u8, u8), cx: &mut Context<crate::Root>) {
-        match self {
-            Self::Child(_) => {}
-            #[cfg(target_os = "linux")]
-            Self::Overlay(view) => {
-                view.update(cx, |overlay, _| overlay.set_page_color(color));
-            }
         }
     }
 
@@ -326,8 +290,6 @@ impl PreviewSurface {
             Self::Child(view) => view.update(cx, |webview, _| {
                 webview.raw().evaluate_script(script).is_ok()
             }),
-            #[cfg(target_os = "linux")]
-            Self::Overlay(view) => view.update(cx, |overlay, _| overlay.eval(script)),
         }
     }
 }
@@ -393,16 +355,6 @@ fn shell_builder(
         })
 }
 
-#[cfg(target_os = "linux")]
-fn host_on_wayland(window: &Window) -> bool {
-    // `Window::window_handle` is GPUI's own handle. The raw display handle is the trait.
-    matches!(
-        wry::raw_window_handle::HasWindowHandle::window_handle(window)
-            .map(|handle| handle.as_raw()),
-        Ok(wry::raw_window_handle::RawWindowHandle::Wayland(_))
-    )
-}
-
 fn open_view(
     window: &mut Window,
     cx: &mut Context<crate::Root>,
@@ -411,15 +363,6 @@ fn open_view(
     tx: futures::channel::mpsc::UnboundedSender<String>,
 ) -> Option<PreviewSurface> {
     let builder = shell_builder(book, ready, tx);
-    #[cfg(target_os = "linux")]
-    if host_on_wayland(window) {
-        let dark = cx.theme().mode == ThemeMode::Dark;
-        let opened = super::overlay::open(builder, dark, theme_rgb(cx), cx);
-        if opened.is_none() {
-            eprintln!("runebook: the note preview could not open");
-        }
-        return opened.map(PreviewSurface::Overlay);
-    }
     let webview = match WebView::build(builder, window, cx) {
         Ok(webview) => webview,
         Err(_) => {
@@ -609,8 +552,7 @@ impl EditorPane {
             return;
         };
         let showing = self.preview_showing();
-        view.set_page_color(theme_rgb(cx), cx);
-        view.set_showing(showing, self.preview_rewrite, cx);
+        view.set_showing(showing, cx);
         if !showing || !self.preview_ready.load(Ordering::Acquire) {
             if !showing {
                 self.preview_stamp = 0;
@@ -908,12 +850,6 @@ fn syntax_color(cx: &App, name: &str) -> Option<Hsla> {
         .syntax
         .style(name)
         .and_then(|style| style.color)
-}
-
-fn theme_rgb(cx: &App) -> (u8, u8, u8) {
-    let rgb = cx.theme().background.to_rgb();
-    let byte = |channel: f32| (channel * 255.0).round().clamp(0.0, 255.0) as u8;
-    (byte(rgb.r), byte(rgb.g), byte(rgb.b))
 }
 
 fn css_color(color: Hsla) -> String {
@@ -1333,27 +1269,6 @@ video{background:var(--panel,transparent)}
       };
       if (document.fonts && document.fonts.ready) document.fonts.ready.then(confirm);
       else confirm();
-    },
-    reveal: function (x, y, w, h) {
-      const root = document.documentElement;
-      if (w == null || w < 1 || h < 1) {
-        root.style.webkitMaskImage = "";
-        root.style.maskImage = "";
-        return;
-      }
-      const image = "linear-gradient(#000,#000), linear-gradient(#000,#000)";
-      const size = "100% 100%, " + w + "px " + h + "px";
-      const position = "0 0, " + x + "px " + y + "px";
-      root.style.webkitMaskImage = image;
-      root.style.webkitMaskSize = size;
-      root.style.webkitMaskPosition = position;
-      root.style.webkitMaskRepeat = "no-repeat, no-repeat";
-      root.style.webkitMaskComposite = "destination-out";
-      root.style.maskImage = image;
-      root.style.maskSize = size;
-      root.style.maskPosition = position;
-      root.style.maskRepeat = "no-repeat, no-repeat";
-      root.style.maskComposite = "exclude";
     }
   };
   post({kind:"live"});
