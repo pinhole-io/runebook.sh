@@ -10,7 +10,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -40,6 +40,10 @@ const PREVIEW_PUSH_LIMIT: u8 = 80;
 pub(super) static PREVIEW_WAIT: AtomicBool = AtomicBool::new(false);
 /// The page was off the screen and has just been shown again.
 pub(super) static PREVIEW_RESHOWN: AtomicBool = AtomicBool::new(false);
+/// How many times the shell has finished loading.
+pub(super) static LOAD_GEN: AtomicU64 = AtomicU64::new(0);
+/// The load generation whose note is on screen.
+pub(super) static ACK_GEN: AtomicU64 = AtomicU64::new(0);
 
 /// One message from the preview page.
 #[derive(Debug)]
@@ -274,6 +278,16 @@ impl PreviewSurface {
         }
     }
 
+    fn set_page_color(&self, color: (u8, u8, u8), cx: &mut Context<crate::Root>) {
+        match self {
+            Self::Child(_) => {}
+            #[cfg(target_os = "linux")]
+            Self::Overlay(view) => {
+                view.update(cx, |overlay, _| overlay.set_page_color(color));
+            }
+        }
+    }
+
     fn eval(&self, script: &str, cx: &mut Context<crate::Root>) -> bool {
         match self {
             Self::Child(view) => view.update(cx, |webview, _| {
@@ -340,6 +354,7 @@ fn shell_builder(
         .with_on_page_load_handler(move |event, _url| {
             if matches!(event, wry::PageLoadEvent::Finished) {
                 ready.store(true, Ordering::Release);
+                LOAD_GEN.fetch_add(1, Ordering::Relaxed);
                 let _ = tx.unbounded_send(String::new());
             }
         })
@@ -366,7 +381,7 @@ fn open_view(
     #[cfg(target_os = "linux")]
     if host_on_wayland(window) {
         let dark = cx.theme().mode == ThemeMode::Dark;
-        let opened = super::overlay::open(builder, dark, cx);
+        let opened = super::overlay::open(builder, dark, theme_rgb(cx), cx);
         if opened.is_none() {
             eprintln!("runebook: the note preview could not open");
         }
@@ -516,6 +531,7 @@ impl EditorPane {
                     self.preview_retry = false;
                     self.preview_tries = 0;
                     PREVIEW_WAIT.store(false, Ordering::Relaxed);
+                    ACK_GEN.store(LOAD_GEN.load(Ordering::Relaxed), Ordering::Relaxed);
                 }
                 false
             }
@@ -560,6 +576,7 @@ impl EditorPane {
             return;
         };
         let showing = self.preview_showing();
+        view.set_page_color(theme_rgb(cx), cx);
         view.set_showing(showing, self.preview_rewrite, cx);
         if !showing || !self.preview_ready.load(Ordering::Acquire) {
             if !showing {
@@ -858,6 +875,12 @@ fn syntax_color(cx: &App, name: &str) -> Option<Hsla> {
         .syntax
         .style(name)
         .and_then(|style| style.color)
+}
+
+fn theme_rgb(cx: &App) -> (u8, u8, u8) {
+    let rgb = cx.theme().background.to_rgb();
+    let byte = |channel: f32| (channel * 255.0).round().clamp(0.0, 255.0) as u8;
+    (byte(rgb.r), byte(rgb.g), byte(rgb.b))
 }
 
 fn css_color(color: Hsla) -> String {
@@ -1267,7 +1290,16 @@ video{background:var(--panel,transparent)}
           if (field) field.focus();
         }
       }
-      post({kind:"ack", stamp: payload.stamp});
+      const stamp = payload.stamp;
+      const confirm = function () {
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () {
+            post({kind:"ack", stamp: stamp});
+          });
+        });
+      };
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(confirm);
+      else confirm();
     }
   };
   post({kind:"live"});
@@ -1379,6 +1411,12 @@ mod tests {
         assert!(parse_event("").is_none());
         let huge = format!(r#"{{"kind":"open","url":"{}"}}"#, "a".repeat(3000));
         assert!(parse_event(&huge).is_none());
+    }
+
+    #[test]
+    fn the_note_is_confirmed_after_it_is_painted() {
+        assert!(SHELL.contains("document.fonts.ready.then(confirm)"));
+        assert!(SHELL.contains("requestAnimationFrame"));
     }
 
     #[test]

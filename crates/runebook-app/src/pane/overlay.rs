@@ -6,12 +6,12 @@
 //!
 //! A failure hides the page. It does not print a path.
 
-use super::place::{Origin, sway_covered, sway_origin};
+use super::place::{Cover, Origin, sway_cover, sway_origin};
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
@@ -27,26 +27,38 @@ const LAYER_TOP: i32 = 2;
 const KEYBOARD_NONE: i32 = 0;
 const KEYBOARD_EXCLUSIVE: i32 = 1;
 const ORIGIN_HOLD: Duration = Duration::from_millis(100);
+const PAINT_HOLD: Duration = Duration::from_millis(400);
+/// Stay hidden briefly after the note is confirmed, so the drawn frame is ready.
+const PAINT_GAP: Duration = Duration::from_millis(48);
 const MAX_SIDE: i32 = 16_000;
 
 /// The note page for a Wayland window.
 pub(super) struct NoteOverlay {
     webview: wry::WebView,
     window: gtk::Window,
-    wanted: Cell<bool>,
+    wanted: Rc<Cell<bool>>,
     rewrite: Cell<bool>,
     keyboard: Rc<Cell<i32>>,
     placed: Rc<Cell<Option<(i32, i32, i32, i32)>>>,
     parked: Cell<bool>,
-    /// Preview was closed. Load the shell again the next time it is shown.
-    needs_shell: Cell<bool>,
+    /// The page left the screen. Load the shell again the next time it is shown.
+    needs_shell: Rc<Cell<bool>>,
+    /// Hide the window until this load's note is confirmed. `(started, generation)`.
+    held: Cell<Option<(Instant, u64)>>,
+    /// When the note was confirmed. The page stays hidden for `PAINT_GAP`.
+    acked_at: Cell<Option<(u64, Instant)>>,
+    /// The page is hidden until the note is drawn. Keep asking for frames.
+    needs_frame: Rc<Cell<bool>>,
     monitor: Cell<Option<(i32, i32)>>,
     cache: Cell<Option<CachedOrigin>>,
+    /// Last color painted behind the page. A clear color leaves light specks.
+    page_color: Cell<Option<(u8, u8, u8)>>,
 }
 
 #[derive(Clone, Copy)]
 struct CachedOrigin {
     at: Instant,
+    epoch: u64,
     origin: Option<Origin>,
 }
 
@@ -65,6 +77,7 @@ struct LayerApi {
 pub(super) fn open(
     builder: wry::WebViewBuilder<'static>,
     dark: bool,
+    color: (u8, u8, u8),
     cx: &mut Context<crate::Root>,
 ) -> Option<Entity<NoteOverlay>> {
     if !ensure_gtk(cx) {
@@ -84,6 +97,13 @@ pub(super) fn open(
     window.set_skip_taskbar_hint(true);
     window.set_skip_pager_hint(true);
     window.set_accept_focus(true);
+    // An RGB window cannot fade. The layer would show the note while it loads.
+    window.set_app_paintable(true);
+    if let Some(screen) = gtk::prelude::WidgetExt::screen(&window)
+        && let Some(visual) = screen.rgba_visual()
+    {
+        window.set_visual(Some(&visual));
+    }
     let raw = gtk_ptr(&window);
     // SAFETY: `raw` is the window above. The layer calls run before the window is mapped.
     // The function pointers come from the loaded layer-shell library.
@@ -99,22 +119,62 @@ pub(super) fn open(
     }
     let webview =
         wry::WebViewBuilderExtUnix::build_gtk(builder.with_visible(false), &window).ok()?;
+    paint_page_color(&webview, &window, color);
     super::page::allow_media_scheme(&webview);
     let keyboard = Rc::new(Cell::new(KEYBOARD_NONE));
     let placed = Rc::new(Cell::new(None));
-    remember_page(&window, Rc::clone(&keyboard), Rc::clone(&placed));
+    let needs_shell = Rc::new(Cell::new(false));
+    let wanted = Rc::new(Cell::new(false));
+    let needs_frame = Rc::new(Cell::new(false));
+    remember_page(
+        &window,
+        Rc::clone(&keyboard),
+        Rc::clone(&placed),
+        Rc::clone(&needs_shell),
+        Rc::clone(&wanted),
+        Rc::clone(&needs_frame),
+    );
     Some(cx.new(|_| NoteOverlay {
         webview,
         window,
-        wanted: Cell::new(false),
+        wanted,
         rewrite: Cell::new(false),
         keyboard,
         placed,
         parked: Cell::new(false),
-        needs_shell: Cell::new(false),
+        needs_shell,
+        held: Cell::new(None),
+        acked_at: Cell::new(None),
+        needs_frame,
         monitor: Cell::new(None),
         cache: Cell::new(None),
+        page_color: Cell::new(Some(color)),
     }))
+}
+
+/// Fill the page with the theme color.
+///
+/// A clear WebKit background leaves light specks on the left edge.
+fn paint_page_color(webview: &wry::WebView, window: &gtk::Window, color: (u8, u8, u8)) {
+    let (red, green, blue) = color;
+    {
+        use webkit2gtk::WebViewExt;
+        use wry::WebViewExtUnix;
+        webview.webview().set_background_color(&gtk::gdk::RGBA::new(
+            f64::from(red) / 255.0,
+            f64::from(green) / 255.0,
+            f64::from(blue) / 255.0,
+            1.0,
+        ));
+    }
+    let provider = gtk::CssProvider::new();
+    let css = format!("window {{ background-color: rgb({red}, {green}, {blue}); }}");
+    if provider.load_from_data(css.as_bytes()).is_err() {
+        return;
+    }
+    window
+        .style_context()
+        .add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 }
 
 impl NoteOverlay {
@@ -136,15 +196,36 @@ impl NoteOverlay {
         self.webview.evaluate_script(script).is_ok()
     }
 
+    /// Match the unpainted page to the theme. Skip the call when the color is unchanged.
+    pub(super) fn set_page_color(&self, color: (u8, u8, u8)) {
+        if self.page_color.get() == Some(color) {
+            return;
+        }
+        self.page_color.set(Some(color));
+        paint_page_color(&self.webview, &self.window, color);
+    }
+
     fn place(&self, bounds: Bounds<Pixels>, window: &Window) {
         if !self.wanted.get() {
             self.hide_native();
             return;
         }
         let Some(origin) = self.origin(window) else {
+            // The window is not in the tree. The compositor drops the page.
+            self.needs_shell.set(true);
             self.hide_native();
             return;
         };
+        if !origin.visible {
+            self.needs_shell.set(true);
+        } else if self
+            .monitor
+            .get()
+            .is_some_and(|pinned| pinned != (origin.output_x, origin.output_y))
+        {
+            // The window changed output. The old layer stays on the old output.
+            self.needs_shell.set(true);
+        }
         if origin.covered() || page_covered() {
             self.hide_native();
             return;
@@ -171,6 +252,14 @@ impl NoteOverlay {
         // and show. That is the Settings and Edit return path.
         let reload = self.needs_shell.replace(false);
         let remap = reload || !self.window.is_visible();
+        if reload {
+            let generation = super::page::LOAD_GEN
+                .load(Ordering::Relaxed)
+                .saturating_add(1);
+            self.held.set(Some((Instant::now(), generation)));
+            self.acked_at.set(None);
+            self.paint_alpha(0.0);
+        }
         if remap {
             self.window.hide();
             self.monitor.set(None);
@@ -195,16 +284,51 @@ impl NoteOverlay {
             self.window.show_all();
         }
         if reload {
+            self.paint_alpha(0.0);
             super::page::reload_shell(&self.webview);
         }
     }
 
-    /// Show the page again. The window stays mapped, so WebKit keeps the document.
+    /// Show the page. A shell reload stays invisible until the note is drawn.
     fn reveal(&self) {
-        self.window.set_opacity(1.0);
+        let Some((started, generation)) = self.held.get() else {
+            self.needs_frame.set(false);
+            self.paint_alpha(1.0);
+            return;
+        };
+        let now = Instant::now();
+        let timed_out = now.saturating_duration_since(started) >= PAINT_HOLD;
+        let acked = super::page::ACK_GEN.load(Ordering::Relaxed) >= generation;
+        if timed_out || (acked && self.paint_settled(generation, now)) {
+            self.held.set(None);
+            self.acked_at.set(None);
+            self.needs_frame.set(false);
+            self.paint_alpha(1.0);
+            return;
+        }
+        self.needs_frame.set(true);
+        self.paint_alpha(0.0);
+    }
+
+    /// `true` once the confirmed note has had time to reach the screen.
+    fn paint_settled(&self, generation: u64, now: Instant) -> bool {
+        match self.acked_at.get() {
+            Some((seen, at)) if seen == generation => {
+                now.saturating_duration_since(at) >= PAINT_GAP
+            }
+            _ => {
+                self.acked_at.set(Some((generation, now)));
+                false
+            }
+        }
+    }
+
+    fn paint_alpha(&self, opacity: f64) {
+        use wry::WebViewExtUnix;
+        self.window.set_opacity(opacity);
+        self.webview.webview().set_opacity(opacity);
         if let Some(gdk_window) = self.window.window() {
-            gdk_window.set_opacity(1.0);
-            gdk_window.set_pass_through(false);
+            gdk_window.set_opacity(opacity);
         }
     }
 
@@ -253,7 +377,9 @@ impl NoteOverlay {
 
     fn origin(&self, window: &Window) -> Option<Origin> {
         let now = Instant::now();
+        let epoch = ORIGIN_EPOCH.load(Ordering::Relaxed);
         if let Some(cached) = self.cache.get()
+            && cached.epoch == epoch
             && now.saturating_duration_since(cached.at) < ORIGIN_HOLD
         {
             return cached.origin;
@@ -265,7 +391,11 @@ impl NoteOverlay {
             round_px(size.height),
         );
         let origin = fresh.or_else(|| self.cache.get().and_then(|cached| cached.origin));
-        self.cache.set(Some(CachedOrigin { at: now, origin }));
+        self.cache.set(Some(CachedOrigin {
+            at: now,
+            epoch,
+            origin,
+        }));
         origin
     }
 
@@ -334,18 +464,22 @@ fn drive_gtk(cx: &mut Context<crate::Root>) {
                 hide_when_covered();
                 next_cover = Instant::now() + ORIGIN_HOLD;
             }
-            // The first push can run before WebKit will run the script.
-            if super::page::PREVIEW_WAIT.load(Ordering::Relaxed)
-                || super::page::PREVIEW_RESHOWN.load(Ordering::Relaxed)
-            {
+            // Wayland does not draw an idle window. `notify` does not start a
+            // frame, so the page stayed blank until the mouse moved.
+            let preview = super::page::PREVIEW_WAIT.load(Ordering::Relaxed)
+                || super::page::PREVIEW_RESHOWN.load(Ordering::Relaxed);
+            if preview || page_needs_frame() {
                 root.update(cx, |this, cx| {
-                    let retry = this
-                        .pane
-                        .as_mut()
-                        .is_some_and(|pane| pane.retry_preview());
-                    if retry {
-                        cx.notify();
+                    if preview {
+                        let retry = this
+                            .pane
+                            .as_mut()
+                            .is_some_and(|pane| pane.retry_preview());
+                        if retry {
+                            cx.notify();
+                        }
                     }
+                    ask_frame(cx);
                 })
                 .ok();
             }
@@ -361,6 +495,9 @@ struct PageSlot {
     window: gtk::Window,
     keyboard: Rc<Cell<i32>>,
     placed: Rc<Cell<Option<(i32, i32, i32, i32)>>>,
+    needs_shell: Rc<Cell<bool>>,
+    wanted: Rc<Cell<bool>>,
+    needs_frame: Rc<Cell<bool>>,
 }
 
 thread_local! {
@@ -368,17 +505,25 @@ thread_local! {
 }
 
 static COVERED: AtomicBool = AtomicBool::new(false);
+/// Bumped when focus changes, so a stale "covered" position is not reused.
+static ORIGIN_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 fn remember_page(
     window: &gtk::Window,
     keyboard: Rc<Cell<i32>>,
     placed: Rc<Cell<Option<(i32, i32, i32, i32)>>>,
+    needs_shell: Rc<Cell<bool>>,
+    wanted: Rc<Cell<bool>>,
+    needs_frame: Rc<Cell<bool>>,
 ) {
     PAGES.with(|pages| {
         pages.borrow_mut().push(PageSlot {
             window: window.clone(),
             keyboard,
             placed,
+            needs_shell,
+            wanted,
+            needs_frame,
         });
     });
 }
@@ -414,21 +559,55 @@ fn page_covered() -> bool {
     COVERED.load(Ordering::Relaxed)
 }
 
+/// Hide the page while another window is in front.
+///
+/// A return asks GPUI to draw until the page is placed. A workspace change
+/// asks for a new shell. A focus change does not.
 fn hide_when_covered() {
-    let Some(covered) = sway_covered(crate::icon::APP_ID, 0, 0) else {
+    let Some(cover) = sway_cover(crate::icon::APP_ID, 0, 0) else {
         return;
     };
-    COVERED.store(covered, Ordering::Relaxed);
+    let covered = !matches!(cover, Cover::Clear);
+    let was = COVERED.swap(covered, Ordering::Relaxed);
+    if was != covered {
+        ORIGIN_EPOCH.fetch_add(1, Ordering::Relaxed);
+    }
     if !covered {
         return;
     }
+    let absent = matches!(cover, Cover::Absent);
     PAGES.with(|pages| {
         for page in pages.borrow().iter() {
+            if absent {
+                page.needs_shell.set(true);
+            }
             if page.window.is_visible() {
                 conceal_window(&page.window, &page.keyboard, &page.placed);
             }
         }
     });
+}
+
+/// `true` while a shown page is off screen, or hidden until the note is drawn.
+fn page_needs_frame() -> bool {
+    if COVERED.load(Ordering::Relaxed) {
+        return false;
+    }
+    PAGES.with(|pages| {
+        pages.borrow().iter().any(|page| {
+            page.wanted.get() && (page.placed.get().is_none() || page.needs_frame.get())
+        })
+    })
+}
+
+/// Start a Wayland frame. `notify` alone leaves the window idle.
+fn ask_frame(cx: &mut Context<crate::Root>) {
+    cx.notify();
+    for window in cx.windows() {
+        let _ = window.update(cx, |_, window, _| {
+            super::present_scan(window);
+        });
+    }
 }
 
 fn release_egl() {

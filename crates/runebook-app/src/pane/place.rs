@@ -35,16 +35,36 @@ pub(super) fn sway_origin(app_id: &str, width: i32, height: i32) -> Option<Origi
     layout_origin(&tree, u64::from(std::process::id()), app_id, width, height)
 }
 
-/// `Some(true)` when the note page should leave the screen.
-///
-/// `None` when the Sway tree cannot be read. A tree with no matching window
-/// hides the page, because the window is gone.
-pub(super) fn sway_covered(app_id: &str, width: i32, height: i32) -> Option<bool> {
+/// Why the note page should leave the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Cover {
+    /// The window is on screen and focused, or nothing else is focused.
+    Clear,
+    /// Another window is focused. This window is still on its workspace.
+    Focus,
+    /// This window is not on the current workspace, or it is gone.
+    Absent,
+}
+
+pub(super) fn cover_of(origin: Option<Origin>) -> Cover {
+    match origin {
+        None => Cover::Absent,
+        Some(origin) if !origin.visible => Cover::Absent,
+        Some(origin) if origin.covered() => Cover::Focus,
+        Some(_) => Cover::Clear,
+    }
+}
+
+/// `None` when the Sway tree cannot be read.
+pub(super) fn sway_cover(app_id: &str, width: i32, height: i32) -> Option<Cover> {
     let tree = read_tree()?;
-    Some(
-        layout_origin(&tree, u64::from(std::process::id()), app_id, width, height)
-            .is_none_or(Origin::covered),
-    )
+    Some(cover_of(layout_origin(
+        &tree,
+        u64::from(std::process::id()),
+        app_id,
+        width,
+        height,
+    )))
 }
 
 fn read_tree() -> Option<serde_json::Value> {
@@ -306,6 +326,52 @@ mod tests {
         assert!(!origin.focused);
         assert!(!origin.other_focused);
         assert!(!origin.covered());
+    }
+
+    #[test]
+    fn a_window_on_another_workspace_is_absent() {
+        let tree = json!({
+            "type": "con",
+            "pid": 42,
+            "app_id": "runebook",
+            "visible": false,
+            "focused": false,
+            "rect": {"x": 10, "y": 10, "width": 400, "height": 300}
+        });
+        let origin = layout_origin(&tree, 42, "runebook", 400, 300).expect("origin");
+        assert_eq!(super::cover_of(Some(origin)), super::Cover::Absent);
+    }
+
+    #[test]
+    fn another_focused_window_is_only_a_focus_cover() {
+        let tree = json!({
+            "type": "root",
+            "nodes": [
+                {
+                    "type": "con",
+                    "pid": 42,
+                    "app_id": "runebook",
+                    "visible": true,
+                    "focused": false,
+                    "rect": {"x": 10, "y": 10, "width": 400, "height": 300}
+                },
+                {
+                    "type": "con",
+                    "pid": 99,
+                    "app_id": "cursor",
+                    "focused": true,
+                    "visible": true,
+                    "rect": {"x": 500, "y": 10, "width": 400, "height": 300}
+                }
+            ]
+        });
+        let origin = layout_origin(&tree, 42, "runebook", 400, 300).expect("origin");
+        assert_eq!(super::cover_of(Some(origin)), super::Cover::Focus);
+    }
+
+    #[test]
+    fn a_missing_window_is_absent() {
+        assert_eq!(super::cover_of(None), super::Cover::Absent);
     }
 
     #[test]
