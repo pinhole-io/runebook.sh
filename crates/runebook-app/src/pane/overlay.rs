@@ -38,6 +38,8 @@ pub(super) struct NoteOverlay {
     keyboard: Rc<Cell<i32>>,
     placed: Rc<Cell<Option<(i32, i32, i32, i32)>>>,
     parked: Cell<bool>,
+    /// Preview was closed. Load the shell again the next time it is shown.
+    needs_shell: Cell<bool>,
     monitor: Cell<Option<(i32, i32)>>,
     cache: Cell<Option<CachedOrigin>>,
 }
@@ -109,6 +111,7 @@ pub(super) fn open(
         keyboard,
         placed,
         parked: Cell::new(false),
+        needs_shell: Cell::new(false),
         monitor: Cell::new(None),
         cache: Cell::new(None),
     }))
@@ -116,10 +119,16 @@ pub(super) fn open(
 
 impl NoteOverlay {
     pub(super) fn set_showing(&self, showing: bool, rewrite: bool) {
-        self.wanted.set(showing);
+        let was = self.wanted.replace(showing);
         self.rewrite.set(rewrite);
         if !showing {
             self.hide_native();
+            return;
+        }
+        // Settings and Edit take the page out of the tree. WebKit drops the
+        // document while it is parked. Load the shell once it is on screen.
+        if !was && self.parked.get() {
+            self.needs_shell.set(true);
         }
     }
 
@@ -157,7 +166,16 @@ impl NoteOverlay {
         };
         let raw = gtk_ptr(&self.window);
         let next = (x, y, w, h);
-        if self.placed.get() != Some(next) {
+        // Parking moves the page off every output. GTK still reports it as
+        // visible, so the compositor will not map it again until a real hide
+        // and show. That is the Settings and Edit return path.
+        let reload = self.needs_shell.replace(false);
+        let remap = reload || !self.window.is_visible();
+        if remap {
+            self.window.hide();
+            self.monitor.set(None);
+        }
+        if remap || self.placed.get() != Some(next) {
             // SAFETY: `raw` is this overlay's window. The process still owns it.
             unsafe {
                 (api.set_margin)(raw, EDGE_LEFT, x);
@@ -172,9 +190,12 @@ impl NoteOverlay {
         self.reveal();
         self.parked.set(false);
         self.apply_keyboard(api, raw);
-        if !self.window.is_visible() {
+        if remap {
             self.pin_monitor(api, origin);
             self.window.show_all();
+        }
+        if reload {
+            super::page::reload_shell(&self.webview);
         }
     }
 
@@ -314,7 +335,9 @@ fn drive_gtk(cx: &mut Context<crate::Root>) {
                 next_cover = Instant::now() + ORIGIN_HOLD;
             }
             // The first push can run before WebKit will run the script.
-            if super::page::PREVIEW_WAIT.load(Ordering::Relaxed) {
+            if super::page::PREVIEW_WAIT.load(Ordering::Relaxed)
+                || super::page::PREVIEW_RESHOWN.load(Ordering::Relaxed)
+            {
                 root.update(cx, |this, cx| {
                     let retry = this
                         .pane
@@ -369,17 +392,11 @@ fn forget_page(window: &gtk::Window) {
 }
 
 /// Keep the page mapped and move it off the output.
-/// A later show does not load the shell again.
 fn conceal_window(
     window: &gtk::Window,
     keyboard: &Cell<i32>,
     placed: &Cell<Option<(i32, i32, i32, i32)>>,
 ) {
-    window.set_opacity(0.0);
-    if let Some(gdk_window) = window.window() {
-        gdk_window.set_opacity(0.0);
-        gdk_window.set_pass_through(true);
-    }
     if let Some(api) = layer_api() {
         let raw = gtk_ptr(window);
         // SAFETY: `raw` is a note page this process owns. The library is loaded.

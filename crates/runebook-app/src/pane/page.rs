@@ -38,6 +38,8 @@ const PREVIEW_PUSH_LIMIT: u8 = 80;
 
 /// The note was pushed and the page has not confirmed it.
 pub(super) static PREVIEW_WAIT: AtomicBool = AtomicBool::new(false);
+/// The page was off the screen and has just been shown again.
+pub(super) static PREVIEW_RESHOWN: AtomicBool = AtomicBool::new(false);
 
 /// One message from the preview page.
 #[derive(Debug)]
@@ -400,7 +402,16 @@ pub(super) fn allow_media_scheme(webview: &wry::WebView) {
         manager.register_uri_scheme_as_local("rbmedia");
         manager.register_uri_scheme_as_cors_enabled("rbmedia");
     }
-    native.load_html(SHELL, Some(SHELL_URL));
+    reload_shell(webview);
+}
+
+/// Load the shell again. The script then asks for the note.
+#[cfg(target_os = "linux")]
+pub(super) fn reload_shell(webview: &wry::WebView) {
+    use webkit2gtk::WebViewExt;
+    use wry::WebViewExtUnix;
+
+    webview.webview().load_html(SHELL, Some(SHELL_URL));
 }
 
 impl EditorPane {
@@ -522,6 +533,15 @@ impl EditorPane {
         if !self.preview_showing() || !self.preview_ready.load(Ordering::Acquire) {
             return false;
         }
+        if PREVIEW_RESHOWN.swap(false, Ordering::Relaxed) {
+            // Settings, or another window, moved the page off the screen.
+            // The old confirmation belongs to that hidden document.
+            self.preview_stamp = 0;
+            self.preview_sent = 0;
+            self.preview_retry = true;
+            self.preview_tries = 0;
+            return true;
+        }
         if self.preview_sent != 0 && self.preview_stamp == self.preview_sent {
             PREVIEW_WAIT.store(false, Ordering::Relaxed);
             return false;
@@ -542,11 +562,23 @@ impl EditorPane {
         let showing = self.preview_showing();
         view.set_showing(showing, self.preview_rewrite, cx);
         if !showing || !self.preview_ready.load(Ordering::Acquire) {
+            if !showing {
+                self.preview_stamp = 0;
+                self.preview_sent = 0;
+                self.preview_retry = true;
+                self.preview_tries = 0;
+                PREVIEW_WAIT.store(false, Ordering::Relaxed);
+            }
             return;
         }
+        if PREVIEW_RESHOWN.swap(false, Ordering::Relaxed) {
+            self.preview_stamp = 0;
+            self.preview_sent = 0;
+            self.preview_retry = true;
+            self.preview_tries = 0;
+        }
         let payload = self.preview_payload(cx);
-        if payload.stamp == self.preview_stamp {
-            self.preview_retry = false;
+        if payload.stamp == self.preview_stamp && !self.preview_retry {
             PREVIEW_WAIT.store(false, Ordering::Relaxed);
             return;
         }
