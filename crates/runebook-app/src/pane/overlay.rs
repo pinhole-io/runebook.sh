@@ -30,6 +30,10 @@ const ORIGIN_HOLD: Duration = Duration::from_millis(100);
 const PAINT_HOLD: Duration = Duration::from_millis(400);
 /// Stay hidden briefly after the note is confirmed, so the drawn frame is ready.
 const PAINT_GAP: Duration = Duration::from_millis(48);
+/// Stay unmapped after a return until the page rect stops moving.
+const POSE_HOLD: Duration = Duration::from_millis(48);
+/// Show anyway if the rect never settles.
+const POSE_LIMIT: Duration = Duration::from_millis(300);
 const MAX_SIDE: i32 = 16_000;
 
 /// The note page for a Wayland window.
@@ -49,10 +53,19 @@ pub(super) struct NoteOverlay {
     acked_at: Cell<Option<(u64, Instant)>>,
     /// The page is hidden until the note is drawn. Keep asking for frames.
     needs_frame: Rc<Cell<bool>>,
+    /// Coming back from off screen. Unmapped until the rect holds.
+    landing: Cell<Option<Landing>>,
     monitor: Cell<Option<(i32, i32)>>,
     cache: Cell<Option<CachedOrigin>>,
     /// Last color painted behind the page. A clear color leaves light specks.
     page_color: Cell<Option<(u8, u8, u8)>>,
+}
+
+#[derive(Clone, Copy)]
+struct Landing {
+    goal: (i32, i32, i32, i32),
+    changed: Instant,
+    started: Instant,
 }
 
 #[derive(Clone, Copy)]
@@ -146,6 +159,7 @@ pub(super) fn open(
         held: Cell::new(None),
         acked_at: Cell::new(None),
         needs_frame,
+        landing: Cell::new(None),
         monitor: Cell::new(None),
         cache: Cell::new(None),
         page_color: Cell::new(Some(color)),
@@ -247,11 +261,15 @@ impl NoteOverlay {
         };
         let raw = gtk_ptr(&self.window);
         let next = (x, y, w, h);
+        let was = self.placed.get();
         // Parking moves the page off every output. GTK still reports it as
         // visible, so the compositor will not map it again until a real hide
         // and show. That is the Settings and Edit return path.
         let reload = self.needs_shell.replace(false);
-        let remap = reload || !self.window.is_visible();
+        // A mapped page slides in from off screen when the margins change.
+        // Unmap first. Show only after the rect has stopped moving.
+        let arriving = was.is_none();
+        let remap = reload || arriving || !self.window.is_visible();
         if reload {
             let generation = super::page::LOAD_GEN
                 .load(Ordering::Relaxed)
@@ -264,7 +282,7 @@ impl NoteOverlay {
             self.window.hide();
             self.monitor.set(None);
         }
-        if remap || self.placed.get() != Some(next) {
+        if remap || was != Some(next) {
             // SAFETY: `raw` is this overlay's window. The process still owns it.
             unsafe {
                 (api.set_margin)(raw, EDGE_LEFT, x);
@@ -275,11 +293,19 @@ impl NoteOverlay {
             self.window.set_size_request(w, h);
             self.window.resize(w, h);
             self.placed.set(Some(next));
+            if arriving {
+                let now = Instant::now();
+                self.landing.set(Some(Landing {
+                    goal: next,
+                    changed: now,
+                    started: now,
+                }));
+            }
         }
-        self.reveal();
+        self.settle_landing(next);
         self.parked.set(false);
         self.apply_keyboard(api, raw);
-        if remap {
+        if self.landing.get().is_none() && !self.window.is_visible() {
             self.pin_monitor(api, origin);
             self.window.show_all();
         }
@@ -287,6 +313,35 @@ impl NoteOverlay {
             self.paint_alpha(0.0);
             super::page::reload_shell(&self.webview);
         }
+        if self.landing.get().is_some() {
+            self.needs_frame.set(true);
+        } else {
+            self.reveal();
+        }
+    }
+
+    /// Keep the page unmapped while its rect is still moving.
+    fn settle_landing(&self, next: (i32, i32, i32, i32)) {
+        let Some(mut landing) = self.landing.get() else {
+            return;
+        };
+        let now = Instant::now();
+        if now.saturating_duration_since(landing.started) >= POSE_LIMIT {
+            self.landing.set(None);
+            return;
+        }
+        if landing.goal != next {
+            landing.goal = next;
+            landing.changed = now;
+            self.landing.set(Some(landing));
+            self.needs_frame.set(true);
+            return;
+        }
+        if now.saturating_duration_since(landing.changed) < POSE_HOLD {
+            self.needs_frame.set(true);
+            return;
+        }
+        self.landing.set(None);
     }
 
     /// Show the page. A shell reload stays invisible until the note is drawn.
