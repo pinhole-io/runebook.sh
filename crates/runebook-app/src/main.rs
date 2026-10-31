@@ -14,10 +14,10 @@ mod icon;
 mod launch;
 mod locale;
 mod markdown_view;
-mod media;
 mod mermaid;
 mod models;
 mod pane;
+mod playback;
 mod theme;
 mod vscode_theme;
 
@@ -67,17 +67,6 @@ fn main() {
     unsafe {
         std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "true");
     }
-    #[cfg(target_os = "linux")]
-    // SAFETY: GTK and GPUI have not started, and this process has not spawned
-    // a thread that reads this variable. The assignment happens once, before `run`.
-    // The note page is a GTK child of the window. `gpui-webview` builds that
-    // child only for an X11 window. On a Wayland session the window is XWayland.
-    unsafe {
-        std::env::set_var("GDK_BACKEND", "x11");
-    }
-    #[cfg(target_os = "linux")]
-    let app = gpui_kit::platform::linux(gpui_kit::WindowingModes::X11);
-    #[cfg(not(target_os = "linux"))]
     let app = gpui_kit::application();
     app.with_assets(gpui_kit::assets::AllAssets)
         .with_http_client(http::client())
@@ -616,7 +605,6 @@ pub(crate) fn save_setting(change: impl FnOnce(&mut AppConfig)) -> Result<(), St
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::pane::flush_preview(self, window, cx);
         if let Some((path, must_be_new)) = self.pending_open.take() {
             let view = cx.weak_entity();
             window.defer(cx, move |window, app| {

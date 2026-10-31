@@ -31,22 +31,6 @@ enum Shown {
     Failed(SharedString),
 }
 
-/// A mermaid fence the note page can embed.
-pub(crate) enum Diagram {
-    Pending,
-    Svg(Arc<Vec<u8>>),
-    Failed(SharedString),
-}
-
-/// Start a diagram render when this fence is new, and return what can be shown.
-pub(crate) fn diagram(cx: &mut App, source: &str, dark: bool) -> Diagram {
-    match shown(cx, source, dark) {
-        Shown::Pending => Diagram::Pending,
-        Shown::Ready(bytes) => Diagram::Svg(bytes),
-        Shown::Failed(message) => Diagram::Failed(message),
-    }
-}
-
 /// Markdown view that draws `mermaid` fences as diagrams.
 pub(crate) fn view(
     id: impl Into<gpui_kit::ElementId>,
