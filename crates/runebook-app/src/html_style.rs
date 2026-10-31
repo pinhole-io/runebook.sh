@@ -1038,6 +1038,7 @@ const ALLOW: &[&str] = &[
     "summary",
     "kbd",
     "span",
+    "section",
     "div",
     "sup",
     "sub",
@@ -1187,6 +1188,7 @@ fn rewrite_open(raw: &str, name: &str) -> String {
             if let Some(href) = attr_value(raw, "href").filter(|href| safe_link(href)) {
                 push_attr(&mut attrs, "href", href.trim());
             }
+            copy_reading_attrs(&mut attrs, raw);
         }
         "img" => {
             if let Some(src) = attr_value(raw, "src").filter(|src| safe_src(src)) {
@@ -1203,10 +1205,12 @@ fn rewrite_open(raw: &str, name: &str) -> String {
             }
         }
         "code" => {
-            if let Some(class) = attr_value(raw, "class")
-                && let Some(lang) = language_class(&class)
-            {
-                push_attr(&mut attrs, "class", &format!("language-{lang}"));
+            if let Some(class) = attr_value(raw, "class") {
+                if let Some(kept) = kept_class(&class) {
+                    push_attr(&mut attrs, "class", &kept);
+                } else if let Some(lang) = language_class(&class) {
+                    push_attr(&mut attrs, "class", &format!("language-{lang}"));
+                }
             }
         }
         "details" => {
@@ -1217,11 +1221,65 @@ fn rewrite_open(raw: &str, name: &str) -> String {
         "td" | "th" => {
             copy_number(&mut attrs, raw, "colspan");
             copy_number(&mut attrs, raw, "rowspan");
+            copy_align(&mut attrs, raw);
         }
         "ol" => copy_number(&mut attrs, raw, "start"),
+        "section" | "h2" | "li" | "sup" => copy_reading_attrs(&mut attrs, raw),
         _ => {}
     }
     format!("<{name}{attrs}>")
+}
+
+fn copy_align(attrs: &mut String, raw: &str) {
+    let Some(value) = attr_value(raw, "align") else {
+        return;
+    };
+    let value = value.trim();
+    if matches!(value, "left" | "center" | "right") {
+        push_attr(attrs, "align", value);
+    }
+}
+
+fn copy_reading_attrs(attrs: &mut String, raw: &str) {
+    if let Some(class) = attr_value(raw, "class").and_then(|class| kept_class(&class)) {
+        push_attr(attrs, "class", &class);
+    }
+    if let Some(id) = kept_fn_id(raw) {
+        push_attr(attrs, "id", &id);
+    }
+}
+
+/// A class survives only when every token is one the page styles on purpose.
+fn kept_class(class: &str) -> Option<String> {
+    let mut kept = Vec::new();
+    for token in class.split_whitespace() {
+        if !matches!(
+            token,
+            "footnotes" | "sr-only" | "math-inline" | "math-display" | "language-math"
+        ) {
+            return None;
+        }
+        kept.push(token);
+    }
+    if kept.is_empty() {
+        None
+    } else {
+        Some(kept.join(" "))
+    }
+}
+
+fn kept_fn_id(raw: &str) -> Option<String> {
+    let id = attr_value(raw, "id")?;
+    let rest = id.strip_prefix("user-content-fn")?;
+    if rest.is_empty()
+        || rest.len() > 64
+        || !rest
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return None;
+    }
+    Some(id)
 }
 
 fn copy_number(attrs: &mut String, raw: &str, name: &str) {
@@ -1377,6 +1435,34 @@ mod tests {
         assert!(!html.contains("javascript:"));
         assert!(html.contains("Hi"));
         assert!(html.contains(">x<"));
+    }
+
+    #[test]
+    fn a_centered_cell_keeps_its_align() {
+        let html = sanitize_fragment(
+            "<table><tr><td align=\"center\" onclick=\"x\">A</td><td align=\"middle\">B</td></tr></table>",
+        );
+        assert!(html.contains("align=\"center\""));
+        assert!(!html.contains("onclick"));
+        assert!(!html.contains("middle"));
+    }
+
+    #[test]
+    fn a_footnote_label_stays_hidden_and_keeps_its_id() {
+        let html = sanitize_fragment(
+            "<section class=\"footnotes extra\"><h2 class=\"sr-only\" id=\"footnote-label\">Footnotes</h2><ol><li id=\"user-content-fn-1\"><a id=\"user-content-fnref-1\" href=\"#user-content-fn-1\">1</a></li></ol></section>",
+        );
+        assert!(html.contains("<section>"));
+        assert!(!html.contains("extra"));
+        assert!(html.contains("class=\"sr-only\""));
+        assert!(html.contains("id=\"user-content-fn-1\""));
+        assert!(html.contains("id=\"user-content-fnref-1\""));
+        assert!(!html.contains("footnote-label"));
+        let clean = sanitize_fragment(
+            "<section class=\"footnotes\"><h2 class=\"sr-only\">Footnotes</h2></section>",
+        );
+        assert!(clean.contains("class=\"footnotes\""));
+        assert!(clean.contains("class=\"sr-only\""));
     }
 
     #[test]

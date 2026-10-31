@@ -34,6 +34,10 @@ const URL_LIMIT: usize = 2048;
 const TEXT_LIMIT: usize = 8 * 1024;
 const ROW_LIMIT: usize = 100_000;
 const BLOB_LIMIT: usize = 64;
+const PREVIEW_PUSH_LIMIT: u8 = 80;
+
+/// The note was pushed and the page has not confirmed it.
+pub(super) static PREVIEW_WAIT: AtomicBool = AtomicBool::new(false);
 
 /// One message from the preview page.
 #[derive(Debug)]
@@ -48,6 +52,10 @@ pub(super) enum PageEvent {
     Cancel,
     Toggle { index: usize },
     Open { url: String },
+    /// The page script is ready for the note.
+    Live,
+    /// The page applied this stamp.
+    Ack { stamp: u64 },
 }
 
 /// Read one page message. An unknown kind or an oversized body is `None`.
@@ -93,6 +101,12 @@ pub(super) fn parse_event(raw: &str) -> Option<PageEvent> {
             Some(PageEvent::Open {
                 url: url.to_string(),
             })
+        }
+        "live" => Some(PageEvent::Live),
+        "ack" => {
+            let stamp = value.get("stamp")?.as_str()?;
+            let stamp = stamp.parse().ok()?;
+            Some(PageEvent::Ack { stamp })
         }
         _ => None,
     }
@@ -402,7 +416,16 @@ impl EditorPane {
     }
 
     pub(super) fn push_page_raw(&mut self, raw: &str) {
-        if raw.is_empty() || self.preview_events.len() >= QUEUE_LIMIT {
+        if raw.is_empty() {
+            // A finished load replaced the document. Push the note again.
+            self.preview_stamp = 0;
+            self.preview_sent = 0;
+            self.preview_retry = true;
+            self.preview_tries = 0;
+            PREVIEW_WAIT.store(true, Ordering::Relaxed);
+            return;
+        }
+        if self.preview_events.len() >= QUEUE_LIMIT {
             return;
         }
         if let Some(event) = parse_event(raw) {
@@ -423,6 +446,7 @@ impl EditorPane {
     ) -> bool {
         match event {
             PageEvent::Press { index, shift } => {
+                self.arm_preview();
                 self.row_rewrite = None;
                 self.preview_rewrite = false;
                 self.row_gesture =
@@ -460,12 +484,55 @@ impl EditorPane {
                 false
             }
             PageEvent::Cancel => {
+                self.arm_preview();
                 self.clear_note_rows(cx);
                 false
             }
             PageEvent::Toggle { index } => self.toggle_task(index, window, cx),
             PageEvent::Open { .. } => false,
+            PageEvent::Live => {
+                // The script can run after a push into an empty document.
+                self.preview_stamp = 0;
+                self.preview_sent = 0;
+                self.preview_retry = true;
+                self.preview_tries = 0;
+                PREVIEW_WAIT.store(true, Ordering::Relaxed);
+                false
+            }
+            PageEvent::Ack { stamp } => {
+                if stamp == self.preview_sent {
+                    self.preview_stamp = stamp;
+                    self.preview_retry = false;
+                    self.preview_tries = 0;
+                    PREVIEW_WAIT.store(false, Ordering::Relaxed);
+                }
+                false
+            }
         }
+    }
+
+    fn arm_preview(&mut self) {
+        self.preview_retry = true;
+        self.preview_tries = 0;
+        PREVIEW_WAIT.store(true, Ordering::Relaxed);
+    }
+
+    /// The last push was not confirmed. `true` when the caller should draw again.
+    pub(super) fn retry_preview(&mut self) -> bool {
+        if !self.preview_showing() || !self.preview_ready.load(Ordering::Acquire) {
+            return false;
+        }
+        if self.preview_sent != 0 && self.preview_stamp == self.preview_sent {
+            PREVIEW_WAIT.store(false, Ordering::Relaxed);
+            return false;
+        }
+        if self.preview_tries >= PREVIEW_PUSH_LIMIT {
+            PREVIEW_WAIT.store(false, Ordering::Relaxed);
+            return false;
+        }
+        self.preview_tries = self.preview_tries.saturating_add(1);
+        self.preview_retry = true;
+        true
     }
 
     pub(super) fn sync_preview(&mut self, cx: &mut Context<crate::Root>) {
@@ -479,11 +546,23 @@ impl EditorPane {
         }
         let payload = self.preview_payload(cx);
         if payload.stamp == self.preview_stamp {
+            self.preview_retry = false;
+            PREVIEW_WAIT.store(false, Ordering::Relaxed);
             return;
         }
-        let pushed = view.eval(&payload.script, cx);
-        if pushed {
-            self.preview_stamp = payload.stamp;
+        if payload.stamp != self.preview_sent {
+            self.preview_tries = 0;
+        }
+        if payload.stamp == self.preview_sent && !self.preview_retry {
+            return;
+        }
+        if self.preview_tries >= PREVIEW_PUSH_LIMIT {
+            return;
+        }
+        self.preview_retry = false;
+        if view.eval(&payload.script, cx) {
+            self.preview_sent = payload.stamp;
+            PREVIEW_WAIT.store(true, Ordering::Relaxed);
         }
     }
 
@@ -537,6 +616,7 @@ impl EditorPane {
             "menu": menu,
             "rewrite": self.preview_rewrite,
             "muted": self.media_muted,
+            "stamp": stamp.to_string(),
             "labels": {
                 "copy": locale::text("preview.copy"),
                 "add": locale::text("preview.add"),
@@ -600,8 +680,13 @@ fn row_body(
     } else {
         prepared.source.as_str()
     };
+    let visible = super::rich::expand_emoji(visible);
+    if let Some(html) = super::rich::definition_list(&visible, compile_markdown) {
+        let html = super::rich::render_math(&html);
+        return crate::html_style::bind_images(&html, |src| bind_src(src, book));
+    }
     let markdown = if prepared.suffix.is_empty() {
-        visible.to_string()
+        visible
     } else {
         format!("{visible}\n\n{}", prepared.suffix)
     };
@@ -618,6 +703,7 @@ fn row_body(
             .to_string()
     };
     let safe = crate::html_style::sanitize_fragment(&rendered);
+    let safe = super::rich::render_math(&safe);
     crate::html_style::bind_images(&safe, |src| bind_src(src, book))
 }
 
@@ -700,6 +786,8 @@ fn compile_markdown(source: &str) -> String {
     // drops the element, so the filter stays off.
     options.compile.gfm_tagfilter = false;
     options.compile.gfm_task_list_item_checkable = true;
+    options.parse.constructs.math_text = true;
+    options.parse.constructs.math_flow = true;
     markdown::to_html_with_options(source, &options).unwrap_or_default()
 }
 
@@ -963,19 +1051,35 @@ const SHELL: &str = r##"<!DOCTYPE html>
 <meta charset="utf-8">
 <style id="theme"></style>
 <style>
-html,body{height:100%;margin:0;background:var(--bg,#111);color:var(--fg,#eee)}
-body{display:flex;flex-direction:column;font-family:var(--font,sans-serif);font-size:var(--body,14px)}
-#note{flex:1;overflow:auto;padding:16px;min-height:0}
+html{height:100%}
+html,body{margin:0;background:var(--bg,#111);color:var(--fg,#eee)}
+body{min-height:100%;font-family:var(--font,sans-serif);font-size:var(--body,14px)}
+#note{padding:16px}
 section.row{border-radius:var(--radius,6px);padding:2px 8px;cursor:pointer}
 section.row.selected{background:var(--selection,#345)}
 section.row.room{margin-top:calc(var(--before,1) * 1rem)}
 h1,h2,h3,h4,h5,h6{color:var(--heading,inherit);font-weight:600;margin:0.4em 0}
 h1{font-size:calc(var(--body,14px) * var(--h1,1.4))}
 h2{font-size:calc(var(--body,14px) * var(--h2,1.2))}
-p,ul,ol,pre,blockquote,table{margin:calc(var(--gap,1) * 0.4rem) 0}
+p,ul,ol,pre,blockquote,table,dl{margin:calc(var(--gap,1) * 0.4rem) 0}
+section.row:has(> ul),section.row:has(> ol){padding-top:0;padding-bottom:0}
+section.row > ul,section.row > ol{margin-top:0;margin-bottom:0}
 a{color:var(--heading,inherit)}
+blockquote{margin-left:0;margin-right:0;padding:0.2em 0 0.2em 0.8em;border-left:3px solid var(--border,#444)}
+hr{border:0;border-top:1px solid var(--border,#444);margin:calc(var(--gap,1) * 0.8rem) 0}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--border,#444);padding:0.4em 0.7em;vertical-align:top}
+th{background:var(--panel,transparent);font-weight:600}
 pre,code,kbd{font-family:var(--mono,monospace);color:var(--code,inherit)}
+:not(pre)>code{background:var(--panel,transparent);padding:0.1em 0.35em;border-radius:var(--radius,6px)}
 pre{background:var(--panel,transparent);border-radius:var(--radius,6px);padding:8px;overflow:auto}
+pre code{background:transparent;padding:0}
+dt{font-weight:600}
+dd{margin:0.2em 0 0.6em 1.2em}
+.footnotes{font-size:0.92em}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+li:has(> input[type=checkbox]){list-style:none}
+.math-display{display:block;text-align:center;overflow-x:auto}
 img,video,audio{max-width:100%}
 video{background:var(--panel,transparent)}
 #menu{margin:8px 0;display:flex;flex-wrap:wrap;gap:8px;padding:8px;background:var(--panel,#222);border:1px solid var(--border,#444);border-radius:var(--radius,6px)}
@@ -1118,21 +1222,23 @@ video{background:var(--panel,transparent)}
         menu.innerHTML = "";
         rewriteOpen = false;
         parkMenu();
-        return;
+      } else {
+        const row = note.querySelector('section[data-row="' + payload.hi + '"]');
+        if (row) row.after(menu);
+        else parkMenu();
+        menu.hidden = false;
+        const keep = payload.rewrite && rewriteOpen && document.getElementById("rewrite");
+        if (!keep) {
+          menu.innerHTML = menuHtml(payload);
+          rewriteOpen = !!payload.rewrite;
+          const field = document.getElementById("rewrite");
+          if (field) field.focus();
+        }
       }
-      const row = note.querySelector('section[data-row="' + payload.hi + '"]');
-      if (row) row.after(menu);
-      else parkMenu();
-      menu.hidden = false;
-      const keep = payload.rewrite && rewriteOpen && document.getElementById("rewrite");
-      if (!keep) {
-        menu.innerHTML = menuHtml(payload);
-        rewriteOpen = !!payload.rewrite;
-        const field = document.getElementById("rewrite");
-        if (field) field.focus();
-      }
+      post({kind:"ack", stamp: payload.stamp});
     }
   };
+  post({kind:"live"});
 })();
 </script>
 </body>
@@ -1176,10 +1282,63 @@ mod tests {
     }
 
     #[test]
+    fn a_definition_row_is_a_list() {
+        let (html, _) = html_of("Markdown\n: A lightweight markup language.\n");
+        assert!(html.contains("<dt>"));
+        assert!(html.contains("<dd>"));
+        assert!(html.contains("lightweight"));
+    }
+
+    #[test]
+    fn inline_math_becomes_mathml() {
+        let (html, _) = html_of("Energy $E = mc^2$ here.\n");
+        assert!(html.contains("<math"));
+        let (display, _) = html_of("$$\nE = mc^2\n$$\n");
+        assert!(display.contains("math-display"));
+        assert!(display.contains("<math"));
+    }
+
+    #[test]
+    fn a_footnote_keeps_its_hidden_label() {
+        let (html, _) = html_of("See[^1].\n\n[^1]: Note text.\n");
+        assert!(html.contains("sr-only"));
+        assert!(html.contains("user-content-fn"));
+    }
+
+    #[test]
+    fn a_math_tag_in_a_note_does_not_survive() {
+        let (html, _) = html_of("<math><mi>x</mi></math>\n");
+        assert!(!html.to_ascii_lowercase().contains("<math"));
+    }
+
+    #[test]
+    fn a_rocket_shortcode_becomes_the_character() {
+        let (html, _) = html_of("Go :rocket: now.\n");
+        assert!(html.contains('🚀'));
+        assert!(!html.contains(":rocket:"));
+        let (fenced, _) = html_of("```\n:rocket:\n```\n");
+        assert!(fenced.contains(":rocket:"));
+        assert!(!fenced.contains('🚀'));
+    }
+
+    #[test]
     fn a_script_in_a_note_does_not_survive() {
         let (html, _) = html_of("<script>alert(1)</script>\n");
         assert!(!html.to_ascii_lowercase().contains("<script"));
         assert!(!html.contains("alert(1)"));
+    }
+
+    #[test]
+    fn a_live_message_asks_for_the_note() {
+        assert!(matches!(parse_event(r#"{"kind":"live"}"#), Some(PageEvent::Live)));
+    }
+
+    #[test]
+    fn an_ack_keeps_the_stamp_string() {
+        match parse_event(r#"{"kind":"ack","stamp":"42"}"#) {
+            Some(PageEvent::Ack { stamp }) => assert_eq!(stamp, 42),
+            other => panic!("ack was {other:?}"),
+        }
     }
 
     #[test]

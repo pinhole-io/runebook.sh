@@ -7,6 +7,7 @@ mod page;
 mod place;
 mod preview;
 mod research;
+mod rich;
 mod rows;
 mod settings;
 mod view;
@@ -138,6 +139,11 @@ pub(super) struct EditorPane {
     preview_book: Arc<Mutex<page::MediaBook>>,
     preview_events: VecDeque<page::PageEvent>,
     preview_stamp: u64,
+    /// The stamp of the last note pushed to the page.
+    preview_sent: u64,
+    /// Send `preview_sent` again. The last push had no confirmation.
+    preview_retry: bool,
+    preview_tries: u8,
     preview_rewrite: bool,
     preview_ready: Arc<AtomicBool>,
     dirty: bool,
@@ -335,6 +341,9 @@ impl EditorPane {
             preview_book: preview.book,
             preview_events: VecDeque::new(),
             preview_stamp: 0,
+            preview_sent: 0,
+            preview_retry: false,
+            preview_tries: 0,
             preview_rewrite: false,
             preview_ready: preview.ready,
             saved_text: text.clone(),

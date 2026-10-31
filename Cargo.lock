@@ -1874,6 +1874,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "emojis"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99e1f1df1f181f2539bac8bf027d31ca5ffbf9e559e3f2d09413b9107b5c02f4"
+dependencies = [
+ "phf 0.11.3",
+]
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4681,6 +4690,12 @@ dependencies = [
  "polycool",
  "smallvec",
 ]
+
+[[package]]
+name = "latex2mathml"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "678cf5bdb3ba63a264e6e0c9eee36538ca1d2da0afa4dd801c1f96309e710765"
 
 [[package]]
 name = "lazy_static"
@@ -7565,12 +7580,14 @@ dependencies = [
  "async-trait",
  "charlotte",
  "cpal",
+ "emojis",
  "futures",
  "gpui-kit",
  "gpui-webview",
  "gtk",
  "hound",
  "image",
+ "latex2mathml",
  "lb-wry",
  "markdown",
  "reqwest 0.12.28",

@@ -10,6 +10,7 @@ use super::place::{Origin, sway_covered, sway_origin};
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -34,8 +35,9 @@ pub(super) struct NoteOverlay {
     window: gtk::Window,
     wanted: Cell<bool>,
     rewrite: Cell<bool>,
-    keyboard: Cell<i32>,
-    placed: Cell<Option<(i32, i32, i32, i32)>>,
+    keyboard: Rc<Cell<i32>>,
+    placed: Rc<Cell<Option<(i32, i32, i32, i32)>>>,
+    parked: Cell<bool>,
     monitor: Cell<Option<(i32, i32)>>,
     cache: Cell<Option<CachedOrigin>>,
 }
@@ -96,14 +98,17 @@ pub(super) fn open(
     let webview =
         wry::WebViewBuilderExtUnix::build_gtk(builder.with_visible(false), &window).ok()?;
     super::page::allow_media_scheme(&webview);
-    remember_page(&window);
+    let keyboard = Rc::new(Cell::new(KEYBOARD_NONE));
+    let placed = Rc::new(Cell::new(None));
+    remember_page(&window, Rc::clone(&keyboard), Rc::clone(&placed));
     Some(cx.new(|_| NoteOverlay {
         webview,
         window,
         wanted: Cell::new(false),
         rewrite: Cell::new(false),
-        keyboard: Cell::new(KEYBOARD_NONE),
-        placed: Cell::new(None),
+        keyboard,
+        placed,
+        parked: Cell::new(false),
         monitor: Cell::new(None),
         cache: Cell::new(None),
     }))
@@ -164,10 +169,21 @@ impl NoteOverlay {
             self.window.resize(w, h);
             self.placed.set(Some(next));
         }
+        self.reveal();
+        self.parked.set(false);
         self.apply_keyboard(api, raw);
         if !self.window.is_visible() {
             self.pin_monitor(api, origin);
             self.window.show_all();
+        }
+    }
+
+    /// Show the page again. The window stays mapped, so WebKit keeps the document.
+    fn reveal(&self) {
+        self.window.set_opacity(1.0);
+        if let Some(gdk_window) = self.window.window() {
+            gdk_window.set_opacity(1.0);
+            gdk_window.set_pass_through(false);
         }
     }
 
@@ -233,10 +249,12 @@ impl NoteOverlay {
     }
 
     fn hide_native(&self) {
-        if self.window.is_visible() {
-            self.window.hide();
+        if self.parked.get() {
+            return;
         }
-        self.placed.set(None);
+        // Unmapping the window makes WebKit load the shell again.
+        conceal_window(&self.window, &self.keyboard, &self.placed);
+        self.parked.set(true);
     }
 }
 
@@ -278,7 +296,7 @@ fn drive_gtk(cx: &mut Context<crate::Root>) {
     if STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
-    cx.spawn(async move |_root, cx| {
+    cx.spawn(async move |root, cx| {
         let mut next_cover = Instant::now();
         loop {
             // A page that always has events must not keep the main thread.
@@ -295,6 +313,19 @@ fn drive_gtk(cx: &mut Context<crate::Root>) {
                 hide_when_covered();
                 next_cover = Instant::now() + ORIGIN_HOLD;
             }
+            // The first push can run before WebKit will run the script.
+            if super::page::PREVIEW_WAIT.load(Ordering::Relaxed) {
+                root.update(cx, |this, cx| {
+                    let retry = this
+                        .pane
+                        .as_mut()
+                        .is_some_and(|pane| pane.retry_preview());
+                    if retry {
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }
             cx.background_executor()
                 .timer(Duration::from_millis(16))
                 .await;
@@ -303,22 +334,63 @@ fn drive_gtk(cx: &mut Context<crate::Root>) {
     .detach();
 }
 
+struct PageSlot {
+    window: gtk::Window,
+    keyboard: Rc<Cell<i32>>,
+    placed: Rc<Cell<Option<(i32, i32, i32, i32)>>>,
+}
+
 thread_local! {
-    static PAGES: RefCell<Vec<gtk::Window>> = const { RefCell::new(Vec::new()) };
+    static PAGES: RefCell<Vec<PageSlot>> = RefCell::new(Vec::new());
 }
 
 static COVERED: AtomicBool = AtomicBool::new(false);
 
-fn remember_page(window: &gtk::Window) {
-    PAGES.with(|pages| pages.borrow_mut().push(window.clone()));
+fn remember_page(
+    window: &gtk::Window,
+    keyboard: Rc<Cell<i32>>,
+    placed: Rc<Cell<Option<(i32, i32, i32, i32)>>>,
+) {
+    PAGES.with(|pages| {
+        pages.borrow_mut().push(PageSlot {
+            window: window.clone(),
+            keyboard,
+            placed,
+        });
+    });
 }
 
 fn forget_page(window: &gtk::Window) {
     PAGES.with(|pages| {
         pages
             .borrow_mut()
-            .retain(|page| page.as_ptr() != window.as_ptr());
+            .retain(|page| page.window.as_ptr() != window.as_ptr());
     });
+}
+
+/// Keep the page mapped and move it off the output.
+/// A later show does not load the shell again.
+fn conceal_window(
+    window: &gtk::Window,
+    keyboard: &Cell<i32>,
+    placed: &Cell<Option<(i32, i32, i32, i32)>>,
+) {
+    window.set_opacity(0.0);
+    if let Some(gdk_window) = window.window() {
+        gdk_window.set_opacity(0.0);
+        gdk_window.set_pass_through(true);
+    }
+    if let Some(api) = layer_api() {
+        let raw = gtk_ptr(window);
+        // SAFETY: `raw` is a note page this process owns. The library is loaded.
+        unsafe {
+            (api.set_margin)(raw, EDGE_LEFT, -MAX_SIDE);
+            (api.set_margin)(raw, EDGE_TOP, -MAX_SIDE);
+            (api.set_keyboard)(raw, KEYBOARD_NONE);
+        }
+    }
+    placed.set(None);
+    keyboard.set(KEYBOARD_NONE);
 }
 
 fn page_covered() -> bool {
@@ -334,9 +406,9 @@ fn hide_when_covered() {
         return;
     }
     PAGES.with(|pages| {
-        for window in pages.borrow().iter() {
-            if window.is_visible() {
-                window.hide();
+        for page in pages.borrow().iter() {
+            if page.window.is_visible() {
+                conceal_window(&page.window, &page.keyboard, &page.placed);
             }
         }
     });

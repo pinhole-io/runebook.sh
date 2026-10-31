@@ -16,6 +16,8 @@ async-trait = "0.1"
 futures = "0.3"
 charlotte = { path = "../../../charlotte", default-features = false, features = ["notepad"] }
 cpal = "0.15"
+emojis = "0.6"
+latex2mathml = "0.2"
 gpui-kit = { version = "0.8.1", features = ["tree-sitter-markdown", "gpui-fast"] }
 gpui-webview = { version = "0.8.1", features = ["gpui-fast"] }
 hound = "3.5"
