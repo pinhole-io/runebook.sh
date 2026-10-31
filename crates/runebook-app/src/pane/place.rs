@@ -17,16 +17,21 @@ pub(super) struct Origin {
     pub(super) output_x: i32,
     pub(super) output_y: i32,
     pub(super) visible: bool,
+    #[cfg(test)]
     pub(super) focused: bool,
+    #[cfg(test)]
     pub(super) other_focused: bool,
+    /// Another window's rectangle meets this window.
+    pub(super) overlapped: bool,
 }
 
 impl Origin {
     /// The page should leave the screen.
     ///
-    /// Another focused window covers it. A click that focuses no window does not.
+    /// The window is not on this workspace, or another window covers its
+    /// rectangle. A window that is only unfocused stays on screen.
     pub(super) fn covered(self) -> bool {
-        !self.visible || (self.other_focused && !self.focused)
+        !self.visible || self.overlapped
     }
 }
 
@@ -40,7 +45,7 @@ pub(super) fn sway_origin(app_id: &str, width: i32, height: i32) -> Option<Origi
 pub(super) enum Cover {
     /// The window is on screen and focused, or nothing else is focused.
     Clear,
-    /// Another window is focused. This window is still on its workspace.
+    /// Another window covers this window's rectangle.
     Focus,
     /// This window is not on the current workspace, or it is gone.
     Absent,
@@ -107,17 +112,17 @@ fn layout_origin(
         hits: Vec::new(),
         outputs: Vec::new(),
         nodes: 0,
-        other_focused: false,
+        others: Vec::new(),
     };
     walk_node(tree, 0, pid, app_id, &mut walk);
-    choose(&walk.hits, &walk.outputs, walk.other_focused, width, height)
+    choose(&walk.hits, &walk.outputs, &walk.others, width, height)
 }
 
 struct Walk {
     hits: Vec<Hit>,
     outputs: Vec<Rect>,
     nodes: usize,
-    other_focused: bool,
+    others: Vec<Rect>,
 }
 
 struct Hit {
@@ -172,7 +177,7 @@ fn walk_node(node: &serde_json::Value, depth: usize, pid: u64, app_id: &str, wal
 }
 
 fn note_other_focus(node: &serde_json::Value, pid: u64, app_id: &str, walk: &mut Walk) {
-    if walk.other_focused || !flag(node, "focused") || is_our_window(node, pid, app_id) {
+    if !walk.others.is_empty() || !flag(node, "focused") || is_our_window(node, pid, app_id) {
         return;
     }
     let named = node
@@ -180,8 +185,14 @@ fn note_other_focus(node: &serde_json::Value, pid: u64, app_id: &str, walk: &mut
         .and_then(|value| value.as_str())
         .is_some();
     let owned = node.get("pid").and_then(|value| value.as_u64()).is_some();
-    if named || owned {
-        walk.other_focused = true;
+    if !named && !owned {
+        return;
+    }
+    if let Some(rect) = read_rect(node)
+        && rect.w > 0
+        && rect.h > 0
+    {
+        walk.others.push(rect);
     }
 }
 
@@ -215,7 +226,7 @@ fn json_i32(value: &serde_json::Value) -> Option<i32> {
 fn choose(
     hits: &[Hit],
     outputs: &[Rect],
-    other_focused: bool,
+    others: &[Rect],
     width: i32,
     height: i32,
 ) -> Option<Origin> {
@@ -233,15 +244,26 @@ fn choose(
         .iter()
         .find(|output| contains(output, center_x, center_y));
     let (output_x, output_y) = output.map(|output| (output.x, output.y)).unwrap_or((0, 0));
+    let overlapped = others.iter().any(|rect| intersects(&hit.rect, rect));
     Some(Origin {
         x: hit.rect.x.saturating_sub(output_x),
         y: hit.rect.y.saturating_sub(output_y),
         output_x,
         output_y,
         visible: hit.visible,
+        #[cfg(test)]
         focused: hit.focused,
-        other_focused,
+        #[cfg(test)]
+        other_focused: !others.is_empty(),
+        overlapped,
     })
+}
+
+fn intersects(a: &Rect, b: &Rect) -> bool {
+    a.x < b.x.saturating_add(b.w)
+        && b.x < a.x.saturating_add(a.w)
+        && a.y < b.y.saturating_add(b.h)
+        && b.y < a.y.saturating_add(a.h)
 }
 
 fn contains(outer: &Rect, x: i32, y: i32) -> bool {
@@ -283,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn another_focused_window_covers_the_page() {
+    fn an_unfocused_window_beside_another_keeps_the_page() {
         let tree = json!({
             "type": "root",
             "nodes": [
@@ -309,7 +331,37 @@ mod tests {
         assert!(origin.visible);
         assert!(!origin.focused);
         assert!(origin.other_focused);
+        assert!(!origin.overlapped);
+        assert!(!origin.covered());
+    }
+
+    #[test]
+    fn a_window_over_this_one_covers_the_page() {
+        let tree = json!({
+            "type": "root",
+            "nodes": [
+                {
+                    "type": "con",
+                    "pid": 42,
+                    "app_id": "runebook",
+                    "visible": true,
+                    "focused": false,
+                    "rect": {"x": 10, "y": 10, "width": 400, "height": 300}
+                },
+                {
+                    "type": "con",
+                    "pid": 99,
+                    "app_id": "cursor",
+                    "focused": true,
+                    "visible": true,
+                    "rect": {"x": 200, "y": 10, "width": 400, "height": 300}
+                }
+            ]
+        });
+        let origin = layout_origin(&tree, 42, "runebook", 400, 300).expect("origin");
+        assert!(origin.overlapped);
         assert!(origin.covered());
+        assert_eq!(super::cover_of(Some(origin)), super::Cover::Focus);
     }
 
     #[test]
@@ -343,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn another_focused_window_is_only_a_focus_cover() {
+    fn an_unfocused_window_beside_another_is_clear() {
         let tree = json!({
             "type": "root",
             "nodes": [
@@ -366,7 +418,7 @@ mod tests {
             ]
         });
         let origin = layout_origin(&tree, 42, "runebook", 400, 300).expect("origin");
-        assert_eq!(super::cover_of(Some(origin)), super::Cover::Focus);
+        assert_eq!(super::cover_of(Some(origin)), super::Cover::Clear);
     }
 
     #[test]

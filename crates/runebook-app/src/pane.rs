@@ -31,12 +31,13 @@ use std::time::Duration;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::dialog::{Cancel, Confirm, DialogFooter};
 use gpui_kit::component::input::{EditorState, Input, InputEvent, InputState};
+use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectState};
 use gpui_kit::component::{ActiveTheme, IndexPath, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, AppContext, ClickEvent, Context, Entity, Focusable, PathPromptOptions, SharedString,
-    Subscription, Window, div, px,
+    App, AppContext, ClickEvent, Context, DismissEvent, Entity, Focusable, PathPromptOptions,
+    Pixels, Point, SharedString, Subscription, Window, div, px,
 };
 use runebook::{
     AppConfig, AutosavePace, Error, FolderId, NoteId, NoteKind, NoteViewChoice, SearchHit,
@@ -133,6 +134,12 @@ pub(super) struct EditorPane {
     row_rewrite: Option<Entity<InputState>>,
     /// The source editor's selection menu. It opens after the pointer or a key goes up.
     source_menu: bool,
+    /// The new-note menu. It stays in this window, so the page cuts a hole for it.
+    kind_menu: Option<Entity<PopupMenu>>,
+    /// Bottom-left of the new-note button, in window coordinates.
+    kind_anchor: Option<Point<Pixels>>,
+    /// When the menu last closed. A click in that moment must not open it again.
+    kind_menu_closed: Option<std::time::Instant>,
     /// The pointer is down in the source editor, so the menu stays hidden until it goes up.
     source_pressing: bool,
     preview_view: Option<page::PreviewSurface>,
@@ -336,6 +343,9 @@ impl EditorPane {
             row_gesture: None,
             row_rewrite: None,
             source_menu: false,
+            kind_menu: None,
+            kind_anchor: None,
+            kind_menu_closed: None,
             source_pressing: false,
             preview_view: preview.view,
             preview_book: preview.book,
@@ -1390,6 +1400,52 @@ impl EditorPane {
             .map_err(|err| err.to_string())?;
         self.reload().map_err(|err| err.to_string())?;
         self.load_note(id, window, cx)
+    }
+
+    pub(super) fn set_kind_anchor(&mut self, origin: Point<Pixels>) {
+        self.kind_anchor = Some(origin);
+    }
+
+    /// Show the new-note menu and listen for its dismiss.
+    pub(super) fn open_kind_menu(
+        &mut self,
+        menu: Entity<PopupMenu>,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) {
+        if self
+            .kind_menu_closed
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(250))
+        {
+            return;
+        }
+        self.kind_menu_closed = None;
+        menu.focus_handle(cx).focus(window, cx);
+        cx.subscribe(&menu, |_this, _, _: &DismissEvent, cx| {
+            let root = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                root.update(cx, |this, cx| {
+                    if let Some(pane) = this.pane.as_mut() {
+                        pane.close_kind_menu(cx);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            });
+        })
+        .detach();
+        self.kind_menu = Some(menu);
+    }
+
+    pub(super) fn close_kind_menu(&mut self, cx: &mut Context<Root>) {
+        if self.kind_menu.is_none() {
+            return;
+        }
+        self.kind_menu = None;
+        self.kind_menu_closed = Some(std::time::Instant::now());
+        if let Some(view) = &self.preview_view {
+            view.set_menu_bounds(None, cx);
+        }
     }
 
     pub(super) fn begin_create_note(&mut self, window: &mut Window, cx: &mut Context<Root>) {

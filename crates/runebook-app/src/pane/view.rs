@@ -9,7 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Editor, EditorState, Enter, Escape, Input, InputState};
 #[cfg(target_os = "macos")]
 use gpui_kit::component::menu::ContextMenuExt;
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::toolbar::Toolbar;
 use gpui_kit::component::tooltip::Tooltip;
@@ -165,7 +165,19 @@ fn note_surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_kit
                     .h_full()
                     .min_h(px(0.))
                     .min_w(px(0.))
-                    .child(super::page::preview_element(&page))
+                    .flex()
+                    .flex_row()
+                    // The divider is this column's left pixel. The page is
+                    // another surface, so it has to start to the right of it.
+                    .child(div().w(px(1.)).h_full().flex_shrink_0())
+                    .child(
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .min_h(px(0.))
+                            .min_w(px(0.))
+                            .child(super::page::preview_element(&page)),
+                    )
                     .into_any_element(),
                 None => div()
                     .flex_1()
@@ -430,6 +442,7 @@ pub(crate) fn files(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl
         .bg(sidebar)
         .text_color(foreground)
         .child(create_actions(pane, view.clone(), cx))
+        .children(kind_menu(pane, view.clone()))
         .when_some(pane.search.clone(), |column, input| {
             column.child(search_field(&input, view.clone()))
         })
@@ -660,27 +673,62 @@ fn create_actions(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl I
         border,
     )
     .child(
-        Button::new("new-note")
-            .ghost()
-            .small()
+        div()
+            .relative()
             .flex_shrink_0()
-            .cursor_pointer()
-            .icon(IconName::FilePlus)
-            .accessibility_label(locale::text("toolbar.new_note"))
-            .tooltip_with_action(locale::text("toolbar.new_note"), &NewNote, None)
-            .dropdown_menu({
+            .child(
+                Button::new("new-note")
+                    .ghost()
+                    .small()
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .icon(IconName::FilePlus)
+                    .accessibility_label(locale::text("toolbar.new_note"))
+                    .tooltip_with_action(locale::text("toolbar.new_note"), &NewNote, None)
+                    .on_click(on_root(&view, {
+                        let view = view.clone();
+                        move |this, _: &ClickEvent, window, cx| {
+                            let Some(pane) = this.pane.as_mut() else {
+                                return;
+                            };
+                            if pane.kind_menu.is_some() {
+                                pane.close_kind_menu(cx);
+                                cx.notify();
+                                return;
+                            }
+                            let view = view.clone();
+                            let recording = pane.capture_status().is_some();
+                            let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+                                let mut menu =
+                                    menu.item(new_kind_item(view.clone(), NoteKind::Book));
+                                if !recording {
+                                    menu = menu
+                                        .item(new_kind_item(view.clone(), NoteKind::Speech))
+                                        .item(new_kind_item(view.clone(), NoteKind::Sight));
+                                }
+                                menu.item(new_kind_item(view.clone(), NoteKind::Deed))
+                                    .item(new_kind_item(view.clone(), NoteKind::Research))
+                            });
+                            pane.open_kind_menu(menu, window, cx);
+                            cx.notify();
+                        }
+                    })),
+            )
+            .child({
                 let view = view.clone();
-                let recording = pane.capture_status().is_some();
-                move |menu, _, _| {
-                    let mut menu = menu.item(new_kind_item(view.clone(), NoteKind::Book));
-                    if !recording {
-                        menu = menu
-                            .item(new_kind_item(view.clone(), NoteKind::Speech))
-                            .item(new_kind_item(view.clone(), NoteKind::Sight));
-                    }
-                    menu.item(new_kind_item(view.clone(), NoteKind::Deed))
-                        .item(new_kind_item(view.clone(), NoteKind::Research))
-                }
+                canvas(
+                    move |bounds, _, cx| {
+                        view.update(cx, |root, _| {
+                            if let Some(pane) = root.pane.as_mut() {
+                                pane.set_kind_anchor(bounds.bottom_left());
+                            }
+                        })
+                        .ok();
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full()
             }),
     )
     .child(header_rule(border))
@@ -739,6 +787,42 @@ fn create_actions(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl I
 
 fn header_rule(border: gpui_kit::Hsla) -> impl IntoElement {
     div().h(px(16.)).w(px(1.)).flex_shrink_0().bg(border)
+}
+
+/// The new-note menu, placed under its button.
+///
+/// The page is another surface above this window. The menu reports its
+/// bounds so the page can leave that rectangle clear.
+fn kind_menu(pane: &EditorPane, view: WeakEntity<Root>) -> Option<impl IntoElement> {
+    let menu = pane.kind_menu.clone()?;
+    let origin = pane.kind_anchor?;
+    Some(
+        deferred(anchored().position(origin).snap_to_window().child(
+            div().id("kind-menu").occlude().child(menu).child({
+                let view = view.clone();
+                canvas(
+                    move |bounds, _, cx| {
+                        view.update(cx, |root, cx| {
+                            let Some(pane) = root.pane.as_mut() else {
+                                return;
+                            };
+                            let Some(surface) = pane.preview_entity() else {
+                                return;
+                            };
+                            if surface.set_menu_bounds(Some(bounds), cx) {
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full()
+            }),
+        ))
+        .with_priority(2),
+    )
 }
 
 fn new_kind_item(view: gpui_kit::WeakEntity<Root>, kind: NoteKind) -> PopupMenuItem {

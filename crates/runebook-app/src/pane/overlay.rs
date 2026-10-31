@@ -35,6 +35,8 @@ const POSE_HOLD: Duration = Duration::from_millis(48);
 /// Show anyway if the rect never settles.
 const POSE_LIMIT: Duration = Duration::from_millis(300);
 const MAX_SIDE: i32 = 16_000;
+/// Extra pixels around the menu so its shadow is not covered by the page.
+const MENU_PAD: i32 = 12;
 
 /// The note page for a Wayland window.
 pub(super) struct NoteOverlay {
@@ -59,6 +61,10 @@ pub(super) struct NoteOverlay {
     cache: Cell<Option<CachedOrigin>>,
     /// Last color painted behind the page. A clear color leaves light specks.
     page_color: Cell<Option<(u8, u8, u8)>>,
+    /// The new-note menu, in window coordinates.
+    menu_bounds: Cell<Option<Bounds<Pixels>>>,
+    /// The hole last cut into the page, in page pixels.
+    hole: Cell<Option<(i32, i32, i32, i32)>>,
 }
 
 #[derive(Clone, Copy)]
@@ -132,7 +138,7 @@ pub(super) fn open(
     }
     let webview =
         wry::WebViewBuilderExtUnix::build_gtk(builder.with_visible(false), &window).ok()?;
-    paint_page_color(&webview, &window, color);
+    paint_page_color(&webview, &window, color, 1.0);
     super::page::allow_media_scheme(&webview);
     let keyboard = Rc::new(Cell::new(KEYBOARD_NONE));
     let placed = Rc::new(Cell::new(None));
@@ -163,14 +169,17 @@ pub(super) fn open(
         monitor: Cell::new(None),
         cache: Cell::new(None),
         page_color: Cell::new(Some(color)),
+        menu_bounds: Cell::new(None),
+        hole: Cell::new(None),
     }))
 }
 
 /// Fill the page with the theme color.
 ///
 /// A clear WebKit background leaves light specks on the left edge.
-fn paint_page_color(webview: &wry::WebView, window: &gtk::Window, color: (u8, u8, u8)) {
+fn paint_page_color(webview: &wry::WebView, window: &gtk::Window, color: (u8, u8, u8), alpha: f64) {
     let (red, green, blue) = color;
+    let alpha = alpha.clamp(0.0, 1.0);
     {
         use webkit2gtk::WebViewExt;
         use wry::WebViewExtUnix;
@@ -178,11 +187,15 @@ fn paint_page_color(webview: &wry::WebView, window: &gtk::Window, color: (u8, u8
             f64::from(red) / 255.0,
             f64::from(green) / 255.0,
             f64::from(blue) / 255.0,
-            1.0,
+            alpha,
         ));
     }
     let provider = gtk::CssProvider::new();
-    let css = format!("window {{ background-color: rgb({red}, {green}, {blue}); }}");
+    let css = if alpha < 1.0 {
+        "window { background-color: transparent; }".to_string()
+    } else {
+        format!("window {{ background-color: rgb({red}, {green}, {blue}); }}")
+    };
     if provider.load_from_data(css.as_bytes()).is_err() {
         return;
     }
@@ -216,7 +229,17 @@ impl NoteOverlay {
             return;
         }
         self.page_color.set(Some(color));
-        paint_page_color(&self.webview, &self.window, color);
+        self.paint_backing();
+    }
+
+    /// Remember the menu rectangle. `true` when it changed.
+    pub(super) fn set_menu_bounds(&self, bounds: Option<Bounds<Pixels>>) -> bool {
+        let next = bounds.map(bounds_rect);
+        if self.menu_bounds.get().map(bounds_rect) == next {
+            return false;
+        }
+        self.menu_bounds.set(bounds);
+        true
     }
 
     fn place(&self, bounds: Bounds<Pixels>, window: &Window) {
@@ -253,6 +276,8 @@ impl NoteOverlay {
             return;
         }
         self.move_to(origin, x, y, w, h);
+        let note = (round_px(bounds.origin.x), round_px(bounds.origin.y), w, h);
+        self.apply_hole(page_hole(self.menu_bounds.get().map(bounds_rect), note));
     }
 
     fn move_to(&self, origin: Origin, x: i32, y: i32, w: i32, h: i32) {
@@ -387,6 +412,54 @@ impl NoteOverlay {
         }
     }
 
+    fn paint_backing(&self) {
+        let color = self.page_color.get().unwrap_or((0x11, 0x11, 0x11));
+        let alpha = if self.hole.get().is_some() { 0.0 } else { 1.0 };
+        paint_page_color(&self.webview, &self.window, color, alpha);
+    }
+
+    /// Cut the menu out of the page so the menu, which is in this window, can show.
+    fn apply_hole(&self, hole: Option<(i32, i32, i32, i32)>) {
+        if self.hole.get() == hole {
+            return;
+        }
+        let was_open = self.hole.get().is_some();
+        self.hole.set(hole);
+        if was_open != hole.is_some() {
+            self.paint_backing();
+        }
+        self.clip_input(hole);
+        let script = match hole {
+            Some((x, y, w, h)) => {
+                format!("window.runebook&&window.runebook.reveal({x},{y},{w},{h})")
+            }
+            None => "window.runebook&&window.runebook.reveal()".to_string(),
+        };
+        let _ = self.webview.evaluate_script(&script);
+    }
+
+    /// Clicks in the hole reach the menu. The rest of the page keeps the pointer.
+    fn clip_input(&self, hole: Option<(i32, i32, i32, i32)>) {
+        let Some((x, y, w, h)) = hole else {
+            self.window.input_shape_combine_region(None);
+            return;
+        };
+        let Some((_, _, width, height)) = self.placed.get() else {
+            return;
+        };
+        if width < 1 || height < 1 || w < 1 || h < 1 {
+            return;
+        }
+        let full = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
+            0, 0, width, height,
+        ));
+        let cut = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(x, y, w, h));
+        if full.subtract(&cut).is_err() {
+            return;
+        }
+        self.window.input_shape_combine_region(Some(&full));
+    }
+
     fn apply_keyboard(&self, api: &LayerApi, raw: *mut c_void) {
         let mode = if self.rewrite.get() {
             KEYBOARD_EXCLUSIVE
@@ -513,8 +586,8 @@ fn drive_gtk(cx: &mut Context<crate::Root>) {
                 gtk::main_iteration_do(false);
             }
             release_egl();
-            // The page is a layer above other windows. Hide it when another
-            // window is focused. GPUI may stop painting after focus leaves.
+            // Hide the page when this window leaves the workspace, or when
+            // another window covers it. An unfocused window keeps the page.
             if Instant::now() >= next_cover {
                 hide_when_covered();
                 next_cover = Instant::now() + ORIGIN_HOLD;
@@ -523,13 +596,11 @@ fn drive_gtk(cx: &mut Context<crate::Root>) {
             // frame, so the page stayed blank until the mouse moved.
             let preview = super::page::PREVIEW_WAIT.load(Ordering::Relaxed)
                 || super::page::PREVIEW_RESHOWN.load(Ordering::Relaxed);
-            if preview || page_needs_frame() {
+            let cover_draw = COVER_DRAW.swap(false, Ordering::Relaxed);
+            if preview || page_needs_frame() || cover_draw {
                 root.update(cx, |this, cx| {
                     if preview {
-                        let retry = this
-                            .pane
-                            .as_mut()
-                            .is_some_and(|pane| pane.retry_preview());
+                        let retry = this.pane.as_mut().is_some_and(|pane| pane.retry_preview());
                         if retry {
                             cx.notify();
                         }
@@ -560,6 +631,8 @@ thread_local! {
 }
 
 static COVERED: AtomicBool = AtomicBool::new(false);
+/// The cover state changed. The window must draw so a clear note fills in again.
+static COVER_DRAW: AtomicBool = AtomicBool::new(false);
 /// Bumped when focus changes, so a stale "covered" position is not reused.
 static ORIGIN_EPOCH: AtomicU64 = AtomicU64::new(0);
 
@@ -614,10 +687,10 @@ fn page_covered() -> bool {
     COVERED.load(Ordering::Relaxed)
 }
 
-/// Hide the page while another window is in front.
+/// Hide the page when this window is gone, or when another window covers it.
 ///
 /// A return asks GPUI to draw until the page is placed. A workspace change
-/// asks for a new shell. A focus change does not.
+/// asks for a new shell. Losing focus does not.
 fn hide_when_covered() {
     let Some(cover) = sway_cover(crate::icon::APP_ID, 0, 0) else {
         return;
@@ -626,6 +699,7 @@ fn hide_when_covered() {
     let was = COVERED.swap(covered, Ordering::Relaxed);
     if was != covered {
         ORIGIN_EPOCH.fetch_add(1, Ordering::Relaxed);
+        COVER_DRAW.store(true, Ordering::Relaxed);
     }
     if !covered {
         return;
@@ -758,10 +832,74 @@ fn monitor_ptr(monitor: &gtk::gdk::Monitor) -> *mut c_void {
     monitor.as_ptr().cast()
 }
 
+fn bounds_rect(bounds: Bounds<Pixels>) -> (i32, i32, i32, i32) {
+    (
+        round_px(bounds.origin.x),
+        round_px(bounds.origin.y),
+        round_px(bounds.size.width).max(0),
+        round_px(bounds.size.height).max(0),
+    )
+}
+
+/// The part of `menu` that sits on `note`, in page pixels.
+///
+/// `menu` and `note` are both in window coordinates. `None` when they do not meet.
+fn page_hole(
+    menu: Option<(i32, i32, i32, i32)>,
+    note: (i32, i32, i32, i32),
+) -> Option<(i32, i32, i32, i32)> {
+    let (mx, my, mw, mh) = menu?;
+    if mw < 1 || mh < 1 {
+        return None;
+    }
+    let menu = (
+        mx.saturating_sub(MENU_PAD),
+        my.saturating_sub(MENU_PAD),
+        mw.saturating_add(MENU_PAD.saturating_mul(2)),
+        mh.saturating_add(MENU_PAD.saturating_mul(2)),
+    );
+    let (nx, ny, nw, nh) = note;
+    let left = menu.0.max(nx);
+    let top = menu.1.max(ny);
+    let right = menu.0.saturating_add(menu.2).min(nx.saturating_add(nw));
+    let bottom = menu.1.saturating_add(menu.3).min(ny.saturating_add(nh));
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some((
+        left.saturating_sub(nx),
+        top.saturating_sub(ny),
+        right - left,
+        bottom - top,
+    ))
+}
+
 fn round_px(value: Pixels) -> i32 {
     let rounded = f32::from(value).round();
     if !rounded.is_finite() || rounded < i32::MIN as f32 || rounded > i32::MAX as f32 {
         return 0;
     }
     rounded as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::page_hole;
+
+    #[test]
+    fn a_menu_beside_the_note_cuts_no_hole() {
+        let note = (200, 40, 400, 300);
+        assert!(page_hole(None, note).is_none());
+        assert!(page_hole(Some((0, 40, 40, 20)), note).is_none());
+    }
+
+    #[test]
+    fn a_menu_over_the_note_is_page_local() {
+        let hole = page_hole(Some((180, 30, 80, 40)), (200, 40, 400, 300)).expect("hole");
+        assert_eq!(hole.0, 0);
+        assert!(hole.2 > 0);
+        assert!(hole.1 < 40);
+        assert!(hole.0 + hole.2 <= 400);
+        assert!(hole.1 + hole.3 <= 300);
+    }
 }

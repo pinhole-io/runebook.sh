@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use gpui_kit::component::{ActiveTheme, ThemeMode};
-use gpui_kit::{AnyElement, App, AppContext, Context, Entity, Hsla, IntoElement, Window};
+use gpui_kit::{
+    AnyElement, App, AppContext, Bounds, Context, Entity, Hsla, IntoElement, Pixels, Window,
+};
 use gpui_webview::WebView;
 use runebook::NoteId;
 use runebook::Vault;
@@ -48,20 +50,33 @@ pub(super) static ACK_GEN: AtomicU64 = AtomicU64::new(0);
 /// One message from the preview page.
 #[derive(Debug)]
 pub(super) enum PageEvent {
-    Press { index: usize, shift: bool },
-    Drag { index: usize },
+    Press {
+        index: usize,
+        shift: bool,
+    },
+    Drag {
+        index: usize,
+    },
     Release,
     Copy,
     Add,
     Rewrite,
-    Apply { text: String },
+    Apply {
+        text: String,
+    },
     Cancel,
-    Toggle { index: usize },
-    Open { url: String },
+    Toggle {
+        index: usize,
+    },
+    Open {
+        url: String,
+    },
     /// The page script is ready for the note.
     Live,
     /// The page applied this stamp.
-    Ack { stamp: u64 },
+    Ack {
+        stamp: u64,
+    },
 }
 
 /// Read one page message. An unknown kind or an oversized body is `None`.
@@ -275,6 +290,24 @@ impl PreviewSurface {
             Self::Overlay(view) => {
                 view.update(cx, |overlay, _| overlay.set_showing(showing, rewrite));
             }
+        }
+    }
+
+    /// The new-note menu rectangle, in window coordinates. `None` closes the hole.
+    ///
+    /// `true` when the rectangle changed and the window should draw again.
+    pub(super) fn set_menu_bounds(
+        &self,
+        bounds: Option<Bounds<Pixels>>,
+        cx: &mut Context<crate::Root>,
+    ) -> bool {
+        match self {
+            Self::Child(_) => {
+                let _ = (bounds, cx);
+                false
+            }
+            #[cfg(target_os = "linux")]
+            Self::Overlay(view) => view.update(cx, |overlay, _| overlay.set_menu_bounds(bounds)),
         }
     }
 
@@ -1300,6 +1333,27 @@ video{background:var(--panel,transparent)}
       };
       if (document.fonts && document.fonts.ready) document.fonts.ready.then(confirm);
       else confirm();
+    },
+    reveal: function (x, y, w, h) {
+      const root = document.documentElement;
+      if (w == null || w < 1 || h < 1) {
+        root.style.webkitMaskImage = "";
+        root.style.maskImage = "";
+        return;
+      }
+      const image = "linear-gradient(#000,#000), linear-gradient(#000,#000)";
+      const size = "100% 100%, " + w + "px " + h + "px";
+      const position = "0 0, " + x + "px " + y + "px";
+      root.style.webkitMaskImage = image;
+      root.style.webkitMaskSize = size;
+      root.style.webkitMaskPosition = position;
+      root.style.webkitMaskRepeat = "no-repeat, no-repeat";
+      root.style.webkitMaskComposite = "destination-out";
+      root.style.maskImage = image;
+      root.style.maskSize = size;
+      root.style.maskPosition = position;
+      root.style.maskRepeat = "no-repeat, no-repeat";
+      root.style.maskComposite = "exclude";
     }
   };
   post({kind:"live"});
@@ -1394,7 +1448,10 @@ mod tests {
 
     #[test]
     fn a_live_message_asks_for_the_note() {
-        assert!(matches!(parse_event(r#"{"kind":"live"}"#), Some(PageEvent::Live)));
+        assert!(matches!(
+            parse_event(r#"{"kind":"live"}"#),
+            Some(PageEvent::Live)
+        ));
     }
 
     #[test]
