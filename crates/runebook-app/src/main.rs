@@ -166,7 +166,7 @@ impl Root {
         root
     }
 
-    fn flush(&mut self, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn flush(&mut self, cx: &mut Context<Self>) -> bool {
         self.autosave_gen = self.autosave_gen.wrapping_add(1);
         match self.pane.as_mut() {
             Some(pane) => pane.flush_edits(cx),
@@ -609,7 +609,7 @@ impl Render for Root {
         let view = cx.weak_entity();
         let background = cx.theme().background;
         let foreground = cx.theme().foreground;
-        let mut title = TitleBar::new().h(px(40.)).bg(background).on_close_window({
+        let title = TitleBar::new().h(px(40.)).bg(background).on_close_window({
             let view = view.clone();
             move |_, window, cx| {
                 view.update(cx, |this, cx| {
@@ -619,9 +619,6 @@ impl Render for Root {
                 window.remove_window();
             }
         });
-        if let Some(pane) = self.pane.as_ref() {
-            title = title.child(pane::toolbar(pane, cx));
-        }
         let body = if self.pane.is_some() {
             div()
                 .flex_1()
@@ -668,7 +665,10 @@ impl Render for Root {
                 }
                 cx.notify();
             }))
-            .child(title)
+            .when(
+                cfg!(not(target_os = "linux")) || self.pane.is_none(),
+                |column| column.child(title),
+            )
             .child(body)
             .children(status)
     }

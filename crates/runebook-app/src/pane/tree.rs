@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::base::Selectable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Enter, Escape, Input, InputState};
 #[cfg(target_os = "macos")]
@@ -15,8 +14,8 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Animation, AnimationExt, App, AppContext, ClickEvent, Context, Hsla, Render, SharedString,
-    Transformation, WeakEntity, Window, black, div, px, size, svg,
+    Animation, AnimationExt, App, AppContext, ClickEvent, Context, Hsla, MouseButton, Render,
+    SharedString, Transformation, WeakEntity, Window, black, div, img, px, size, svg,
 };
 
 use super::{EditorPane, NameAction, Prompt, TreeSelection};
@@ -200,10 +199,11 @@ pub(crate) fn files(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl
         .flex_col()
         .bg(sidebar)
         .text_color(foreground)
-        .child(create_actions(pane, view.clone(), cx))
+        .child(vault_heading(pane, cx))
         .when_some(pane.search.clone(), |column, input| {
             column.child(search_field(&input, view.clone()))
         })
+        .child(create_actions(view.clone(), cx))
         .child(file_list(
             pane,
             &entries,
@@ -361,14 +361,20 @@ fn search_field(input: &gpui_kit::Entity<InputState>, view: WeakEntity<Root>) ->
         .px_2()
         .py_1()
         .flex_shrink_0()
-        .on_action(on_root(&view, |this, _: &Escape, _, cx| {
+        .on_action(on_root(&view, |this, _: &Escape, window, cx| {
             cx.stop_propagation();
             if let Some(pane) = this.pane.as_mut() {
-                pane.close_search();
+                pane.clear_search(window, cx);
             }
             cx.notify();
         }))
-        .child(Input::new(input).small().cleanable(true).w_full())
+        .child(
+            Input::new(input)
+                .small()
+                .cleanable(true)
+                .prefix(IconName::Search)
+                .w_full(),
+        )
 }
 
 fn search_hit(hit: &runebook::SearchHit, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
@@ -420,83 +426,90 @@ fn search_status(text: &'static str, cx: &App) -> impl IntoElement {
         .child(text)
 }
 
-fn create_actions(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
+fn vault_heading(pane: &EditorPane, cx: &App) -> impl IntoElement {
     let border = cx.theme().sidebar_border;
-    let searching = pane.search.is_some();
-    panel_header(
-        div()
-            .id("tree-header")
-            .px_2()
-            .gap_2()
-            .justify_center()
-            .whitespace_nowrap(),
-        border,
-    )
-    .child(
-        Button::new("new-note")
-            .ghost()
-            .small()
-            .flex_shrink_0()
-            .cursor_pointer()
-            .icon(IconName::FilePlus)
-            .accessibility_label(locale::text("toolbar.new_note"))
-            .tooltip_with_action(locale::text("toolbar.new_note"), &NewNote, None)
-            .on_click(|_: &ClickEvent, window, cx| {
-                window.dispatch_action(Box::new(NewNote), cx);
-            }),
-    )
-    .child(header_rule(border))
-    .child(
-        Button::new("new-folder")
-            .ghost()
-            .small()
-            .flex_shrink_0()
-            .cursor_pointer()
-            .icon(IconName::FolderPlus)
-            .accessibility_label(locale::text("toolbar.new_folder"))
-            .tooltip(locale::text("toolbar.new_folder"))
-            .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
-                if let Some(pane) = this.pane.as_mut() {
-                    pane.begin_create_folder(window, cx);
-                }
-                cx.notify();
-            })),
-    )
-    .child(header_rule(border))
-    .child(
-        Button::new("search-vault")
-            .ghost()
-            .small()
-            .flex_shrink_0()
-            .cursor_pointer()
-            .icon(IconName::Search)
-            .selected(searching)
-            .accessibility_label(locale::text("toolbar.search"))
-            .tooltip(locale::text("toolbar.search"))
-            .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
-                if let Some(pane) = this.pane.as_mut() {
-                    pane.toggle_search(window, cx);
-                }
-                cx.notify();
-            })),
-    )
-    .child(header_rule(border))
-    .child(
-        Button::new("refresh-files")
-            .ghost()
-            .small()
-            .flex_shrink_0()
-            .cursor_pointer()
-            .icon(IconName::RefreshCw)
-            .accessibility_label(locale::text("toolbar.refresh"))
-            .tooltip(locale::text("toolbar.refresh"))
-            .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
-                if let Some(pane) = this.pane.as_mut() {
-                    pane.refresh_from_disk(window, cx);
-                }
-                cx.notify();
-            })),
-    )
+    panel_header(div().id("vault-heading").px_2().gap_2(), border)
+        .on_mouse_down(MouseButton::Left, |_, window, _| {
+            window.start_window_move();
+        })
+        .child(
+            img(super::view::vault_mark())
+                .h(px(18.))
+                .w(px(16.))
+                .flex_shrink_0(),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis_middle()
+                .child(pane.vault.name().to_string()),
+        )
+}
+
+fn create_actions(view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
+    let border = cx.theme().sidebar_border;
+    div()
+        .id("tree-header")
+        .w_full()
+        .min_h(crate::chrome::FOOTER_ROW_HEIGHT)
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap_2()
+        .pl(px(8.))
+        .pr_2()
+        .overflow_hidden()
+        .border_b_1()
+        .border_color(border)
+        .child(
+            Button::new("new-note")
+                .ghost()
+                .small()
+                .flex_shrink_0()
+                .cursor_pointer()
+                .icon(IconName::FilePlus)
+                .accessibility_label(locale::text("toolbar.new_note"))
+                .tooltip_with_action(locale::text("toolbar.new_note"), &NewNote, None)
+                .on_click(|_: &ClickEvent, window, cx| {
+                    window.dispatch_action(Box::new(NewNote), cx);
+                }),
+        )
+        .child(header_rule(border))
+        .child(
+            Button::new("new-folder")
+                .ghost()
+                .small()
+                .flex_shrink_0()
+                .cursor_pointer()
+                .icon(IconName::FolderPlus)
+                .accessibility_label(locale::text("toolbar.new_folder"))
+                .tooltip(locale::text("toolbar.new_folder"))
+                .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
+                    if let Some(pane) = this.pane.as_mut() {
+                        pane.begin_create_folder(window, cx);
+                    }
+                    cx.notify();
+                })),
+        )
+        .child(header_rule(border))
+        .child(
+            Button::new("refresh-files")
+                .ghost()
+                .small()
+                .flex_shrink_0()
+                .cursor_pointer()
+                .icon(IconName::RefreshCw)
+                .accessibility_label(locale::text("toolbar.refresh"))
+                .tooltip(locale::text("toolbar.refresh"))
+                .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
+                    if let Some(pane) = this.pane.as_mut() {
+                        pane.refresh_from_disk(window, cx);
+                    }
+                    cx.notify();
+                })),
+        )
 }
 
 fn header_rule(border: gpui_kit::Hsla) -> impl IntoElement {

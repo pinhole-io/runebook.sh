@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::component::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Escape, Input, InputState};
 use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, ClickEvent, Context, Entity, SharedString, Window, div, px};
@@ -445,6 +445,13 @@ pub(super) fn wizard(
     let foreground = cx.theme().foreground;
     div()
         .id("research-wizard")
+        .on_action(on_root(&view, |this, _: &Escape, _, cx| {
+            cx.stop_propagation();
+            if let Some(pane) = this.pane.as_mut() {
+                pane.cancel_research_wizard();
+            }
+            cx.notify();
+        }))
         .flex_1()
         .h_full()
         .min_w(px(0.0))

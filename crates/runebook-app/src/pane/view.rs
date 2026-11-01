@@ -1,4 +1,4 @@
-//! Layout for the open vault: toolbar, tree, editor, and preview.
+//! Layout for the open vault: note header, editor, and preview.
 
 use std::sync::{Arc, OnceLock};
 
@@ -7,12 +7,11 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Editor, EditorState};
 #[cfg(target_os = "macos")]
 use gpui_kit::component::menu::ContextMenuExt;
-use gpui_kit::component::toolbar::Toolbar;
 use gpui_kit::component::{ActiveTheme, ThemeStyled};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, ClickEvent, Image, ImageFormat, KeyUpEvent, MouseDownEvent, MouseUpEvent, Pixels, Point,
-    WeakEntity, anchored, canvas, deferred, div, img, point, px, relative,
+    App, ClickEvent, Image, ImageFormat, KeyUpEvent, MouseButton, MouseDownEvent, MouseUpEvent,
+    Pixels, Point, WeakEntity, anchored, canvas, deferred, div, point, px, relative,
 };
 
 use super::{EditorPane, NoteView};
@@ -20,22 +19,6 @@ use crate::chrome::panel_header;
 
 use crate::locale;
 use crate::{Root, ToggleNoteView, on_root};
-
-pub(crate) fn toolbar(pane: &EditorPane, cx: &App) -> impl IntoElement {
-    let muted = cx.theme().muted_foreground;
-    Toolbar::new("vault-toolbar")
-        .w_full()
-        .pl_0()
-        .content(brand(pane))
-        .content(div().flex_1())
-        .content(
-            div()
-                .pr_2()
-                .text_xs()
-                .text_color(muted)
-                .child(locale::text("brand.alpha")),
-        )
-}
 
 fn toggle_note_view(pane: &EditorPane, view: WeakEntity<Root>) -> impl IntoElement {
     let (icon, label) = match pane.note_view {
@@ -100,7 +83,12 @@ fn note_header(
     _cx: &App,
 ) -> impl IntoElement {
     panel_header(div().id("note-header").px_2(), border)
-        .child(div().flex_1())
+        .child(div().id("note-drag").flex_1().h_full().on_mouse_down(
+            MouseButton::Left,
+            |_, window, _| {
+                window.start_window_move();
+            },
+        ))
         .when(!pane.research_note_open(), |header| {
             header.child(toggle_note_view(pane, view))
         })
@@ -212,17 +200,8 @@ fn source_release_watch(view: WeakEntity<Root>) -> impl IntoElement {
     )
 }
 
-fn brand(pane: &EditorPane) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .pr_2()
-        .child(img(mark()).h(px(20.)).w(px(14.)).flex_shrink_0())
-        .child(pane.vault.name().to_string())
-}
-
-fn mark() -> Arc<Image> {
+/// The book mark drawn beside the vault name.
+pub(crate) fn vault_mark() -> Arc<Image> {
     static MARK: OnceLock<Arc<Image>> = OnceLock::new();
     MARK.get_or_init(|| {
         Arc::new(Image::from_bytes(

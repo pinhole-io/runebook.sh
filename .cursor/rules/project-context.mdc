@@ -70,9 +70,10 @@ Resolve `[[target]]` in this order:
 ## App
 
 - Call `gpui_kit::init` before any GPUI Kit control.
-- The window uses a Kit `TitleBar`. The toolbar sits in that bar.
+- On Linux, an open vault has no title bar. The sidebar header shows the vault icon and the vault name. The search field sits under that header, then the note and folder buttons. The Archivist header holds the window buttons. Other platforms keep a Kit `TitleBar` for the window buttons.
 - Settings in the note area are Appearance, Notes, Capture, Models, and Keys, in that order.
-- Control+N, and the file-plus button, open a dialog to pick Book, Speech, Sight, Deed, or Research. Speech and Sight stay hidden while a capture runs. The name dialog or the research wizard follows.
+- Control+N, and the file-plus button, open a dialog to pick Book, Speech, Sight, Deed, or Research. Arrow keys move the highlight. Enter confirms it. Speech and Sight stay hidden while a capture runs. The name dialog or the research wizard follows.
+- Escape closes the open dialog. In the research wizard, Escape cancels it.
 - Each settings row has a sentence. The label tooltip adds the default or the environment name.
 - Research and the Archivist pick a model from the host list at `/v1/models`. The menu search filters that list. Default leaves that field empty.
 - On Linux, the window id is `runebook`. Startup writes `$XDG_DATA_HOME/runebook/icon.png` and `$XDG_DATA_HOME/applications/runebook.desktop`. When `XDG_DATA_HOME` is unset, that directory is `~/.local/share`. The shell uses the desktop file for the book icon.

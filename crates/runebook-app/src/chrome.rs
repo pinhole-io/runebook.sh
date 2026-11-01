@@ -9,8 +9,8 @@ pub(crate) const PANEL_HEADER_HEIGHT: Pixels = px(40.);
 
 /// Smallest width for the files sidebar and the Archivist pane.
 ///
-/// Four 24px icon buttons, three 1px dividers, six 8px gaps, and 16px of
-/// header padding need 163px. The extra pixels keep those icons fully visible.
+/// The vault name and the note buttons share this floor.
+/// The extra pixels keep the vault name visible.
 pub(crate) const SIDEBAR_MIN_WIDTH: Pixels = px(228.);
 
 /// Smallest width for the note column.

@@ -1,5 +1,7 @@
 //! Search, create, rename, and delete for notes and folders.
 
+use gpui_kit::component::input::Escape;
+
 use super::*;
 
 impl EditorPane {
@@ -38,43 +40,12 @@ impl EditorPane {
         );
     }
 
-    pub(super) fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Root>) {
-        if self.search.is_some() {
-            self.close_search();
-            return;
+    pub(super) fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Root>) {
+        if let Some(input) = &self.search {
+            input.update(cx, |state, cx| state.set_value("", window, cx));
         }
-        let input = cx
-            .new(|cx| InputState::new(window, cx).placeholder(locale::text("search.placeholder")));
-        self.search_watch = Some(cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change)
-                && let Some(pane) = this.pane.as_mut()
-            {
-                pane.refresh_search(cx);
-                cx.notify();
-            }
-        }));
-        self.search = Some(input);
         self.search_hits.clear();
         self.search_truncated = false;
-        cx.defer_in(window, |root, window, cx| {
-            if let Some(pane) = root.pane.as_mut() {
-                pane.focus_search(window, cx);
-            }
-        });
-    }
-
-    pub(super) fn close_search(&mut self) {
-        self.search = None;
-        self.search_hits.clear();
-        self.search_truncated = false;
-        self.search_watch = None;
-    }
-
-    pub(super) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Root>) {
-        let Some(input) = &self.search else {
-            return;
-        };
-        input.focus_handle(cx).focus(window, cx);
     }
 
     pub(super) fn refresh_search(&mut self, cx: &mut Context<Root>) {
@@ -472,10 +443,15 @@ pub(super) fn open_create_dialog(
             ))
             .child(
                 div()
+                    .id("name-dialog")
                     .w_full()
                     .flex()
                     .flex_col()
                     .gap_2()
+                    .on_action(|_: &Escape, window, cx| {
+                        cx.stop_propagation();
+                        window.close_dialog(cx);
+                    })
                     .child(Input::new(&input).w_full())
                     .when_some(message, |column, message| {
                         column.child(div().text_base().text_color(danger).child(message))

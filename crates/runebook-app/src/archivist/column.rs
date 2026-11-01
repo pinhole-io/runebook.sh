@@ -8,7 +8,7 @@ use gpui_kit::component::input::{
 use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, ClickEvent, Hsla, SharedString, WeakEntity, div, px};
+use gpui_kit::{AnyElement, App, ClickEvent, Hsla, MouseButton, SharedString, WeakEntity, div, px};
 
 use super::Panel;
 use crate::Root;
@@ -40,12 +40,7 @@ pub(crate) fn column(
         .overflow_hidden()
         .bg(sidebar)
         .text_color(foreground)
-        .child(
-            panel_header(div().id("archivist-header").px_2().text_base(), border)
-                .child(locale::text("archivist.title"))
-                .child(div().flex_1())
-                .child(clear_button(view.clone())),
-        )
+        .child(archivist_header(border, view.clone()))
         .child(transcript(panel, muted, danger, busy, cx))
         .when(!panel.held.is_empty(), |column| {
             column.child(held_rows(panel, view.clone(), cx))
@@ -54,6 +49,72 @@ pub(crate) fn column(
             column.child(file_rows(panel, view.clone(), cx))
         })
         .child(composer(panel, ready, blocked, busy, danger, view, cx))
+}
+
+fn archivist_header(border: Hsla, view: WeakEntity<Root>) -> impl IntoElement {
+    let header = panel_header(div().id("archivist-header").px_2().text_base(), border)
+        .child(
+            div()
+                .id("archivist-drag")
+                .flex_1()
+                .h_full()
+                .flex()
+                .items_center()
+                .min_w(px(0.))
+                .on_mouse_down(MouseButton::Left, |_, window, _| {
+                    window.start_window_move();
+                })
+                .child(locale::text("archivist.title")),
+        )
+        .child(clear_button(view.clone()));
+    #[cfg(target_os = "linux")]
+    let header = header.child(window_controls(view));
+    header
+}
+
+#[cfg(target_os = "linux")]
+fn window_controls(view: WeakEntity<Root>) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .ml_2()
+        .child(window_button(
+            "window-minimize",
+            IconName::WindowMinimize,
+            |window| window.minimize_window(),
+        ))
+        .child(window_button(
+            "window-maximize",
+            IconName::WindowMaximize,
+            |window| window.zoom_window(),
+        ))
+        .child(
+            Button::new("window-close")
+                .ghost()
+                .small()
+                .flex_shrink_0()
+                .cursor_pointer()
+                .icon(IconName::WindowClose)
+                .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
+                    this.flush(cx);
+                    window.remove_window();
+                })),
+        )
+}
+
+#[cfg(target_os = "linux")]
+fn window_button(
+    id: &'static str,
+    icon: IconName,
+    action: impl Fn(&mut gpui_kit::Window) + 'static,
+) -> impl IntoElement {
+    Button::new(id)
+        .ghost()
+        .small()
+        .flex_shrink_0()
+        .cursor_pointer()
+        .icon(icon)
+        .on_click(move |_: &ClickEvent, window, _| action(window))
 }
 
 fn clear_button(view: WeakEntity<Root>) -> impl IntoElement {

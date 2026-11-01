@@ -8,7 +8,7 @@ use std::cell::Cell;
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Focusable, Window, px};
+use gpui_kit::{Context, Window, px};
 
 use super::tree::note_icon;
 use super::{EditorPane, kind_title};
@@ -36,8 +36,14 @@ pub(super) fn open(pane: &EditorPane, window: &mut Window, cx: &mut Context<Root
     let view = cx.weak_entity();
     let initial_focus = Cell::new(true);
     window.open_dialog(cx, move |dialog, window, cx| {
+        // The palette keeps a search field until this render installs the list.
+        // Focus on the next frame, after search is off, so arrows and Escape
+        // reach the rows.
         if initial_focus.replace(false) {
-            command.focus_handle(cx).focus(window, cx);
+            let command = command.clone();
+            window.defer(cx, move |window, cx| {
+                command.update(cx, |state, cx| state.focus(window, cx));
+            });
         }
         let kinds_for_confirm = kinds.clone();
         let view_for_confirm = view.clone();

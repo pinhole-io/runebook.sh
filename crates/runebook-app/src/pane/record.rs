@@ -1,5 +1,7 @@
 //! Microphone and screen capture for the open note.
 
+use gpui_kit::component::input::Escape;
+
 use super::*;
 
 impl EditorPane {
@@ -350,7 +352,11 @@ pub(super) fn prompt_record_source(root: &mut Root, window: &mut Window, cx: &mu
             .overflow_y_scroll()
             .flex()
             .flex_col()
-            .gap_1();
+            .gap_1()
+            .on_action(|_: &Escape, window, cx| {
+                cx.stop_propagation();
+                window.close_dialog(cx);
+            });
         if list_failed {
             column = column.child(
                 div()

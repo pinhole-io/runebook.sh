@@ -25,7 +25,7 @@ pub(crate) use disk::{present_scan, scan_vault};
 
 pub(crate) use preview::queue_clips;
 pub(crate) use tree::files;
-pub(crate) use view::{note, status_bar, toolbar};
+pub(crate) use view::{note, status_bar};
 
 use rows::{
     context_message, line_span, rewrite_message, selected_span, selection_label, split_rows,
@@ -174,7 +174,7 @@ pub(super) struct EditorPane {
     search: Option<Entity<InputState>>,
     search_hits: Vec<SearchHit>,
     search_truncated: bool,
-    search_watch: Option<Subscription>,
+    _search_watch: Option<Subscription>,
     _subscription: Subscription,
     archivist: crate::archivist::Panel,
     epoch: u64,
@@ -355,6 +355,17 @@ impl EditorPane {
                 this.on_edit(cx);
             }
         });
+        let search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(locale::text("search.placeholder"))
+        });
+        let search_watch = cx.subscribe(&search, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change)
+                && let Some(pane) = this.pane.as_mut()
+            {
+                pane.refresh_search(cx);
+                cx.notify();
+            }
+        });
         let pane = Self {
             tree_selection: open_note
                 .clone()
@@ -424,10 +435,10 @@ impl EditorPane {
             recording_note: None,
             prompt: None,
             rename_blur: None,
-            search: None,
+            search: Some(search),
             search_hits: Vec::new(),
             search_truncated: false,
-            search_watch: None,
+            _search_watch: Some(search_watch),
             _subscription: subscription,
             archivist: crate::archivist::Panel::new(window, cx),
             epoch: next_epoch(),
