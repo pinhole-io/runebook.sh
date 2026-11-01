@@ -5,6 +5,8 @@
 //! definition. A blank line separates rows. A block that owns a blank line
 //! keeps that line.
 
+use crate::fence::{closing_fence, leading_indent, opening_fence};
+
 /// Byte range of one row in the note source. `end` includes the row's last newline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceRow {
@@ -222,42 +224,6 @@ fn starts_block(body: &str) -> bool {
         || is_footnote_def(body)
         || is_link_def(body)
         || is_math_open(body)
-}
-
-fn leading_indent(line: &str) -> usize {
-    line.chars()
-        .take_while(|ch| *ch == ' ' || *ch == '\t')
-        .count()
-}
-
-fn opening_fence(line: &str) -> Option<(char, usize)> {
-    let indent = leading_indent(line);
-    if indent > 3 {
-        return None;
-    }
-    let rest = &line[indent..];
-    let marker = rest.chars().next()?;
-    if marker != '`' && marker != '~' {
-        return None;
-    }
-    let count = rest.chars().take_while(|ch| *ch == marker).count();
-    if count < 3 {
-        return None;
-    }
-    let after = &rest[count..];
-    if marker == '`' && after.contains('`') {
-        return None;
-    }
-    Some((marker, count))
-}
-
-fn closing_fence(line: &str, marker: char, count: usize) -> bool {
-    let indent = leading_indent(line);
-    if indent > 3 {
-        return false;
-    }
-    let rest = line[indent..].trim_end();
-    !rest.is_empty() && rest.chars().all(|ch| ch == marker) && rest.chars().count() >= count
 }
 
 fn is_heading(line: &str) -> bool {

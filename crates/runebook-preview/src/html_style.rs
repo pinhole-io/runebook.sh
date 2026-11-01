@@ -4,6 +4,8 @@
 //! markdown the kit already draws, or into a private link the preview paints.
 //! Fenced code, indented code, inline code, and comments stay literal.
 
+use crate::fence::{closing_fence, leading_indent, opening_fence};
+
 pub const HTML_WIDGET: &str = "#rb-html-";
 
 /// Rewrite HTML in `source` into markdown, outside code and comments.
@@ -869,10 +871,7 @@ fn indented_code(source: &str) -> bool {
         if line.trim().is_empty() {
             continue;
         }
-        let indent = line
-            .bytes()
-            .take_while(|byte| *byte == b' ' || *byte == b'\t')
-            .count();
+        let indent = leading_indent(line);
         if indent < 4 {
             return false;
         }
@@ -947,42 +946,6 @@ fn starts_tag(text: &str, name: &str) -> bool {
     }
     let boundary = text.as_bytes().get(tag.len()).copied().unwrap_or(b' ');
     !boundary.is_ascii_alphanumeric()
-}
-
-fn leading_indent(line: &str) -> usize {
-    line.bytes()
-        .take_while(|byte| *byte == b' ' || *byte == b'\t')
-        .count()
-}
-
-fn opening_fence(line: &str) -> Option<(char, usize)> {
-    let indent = leading_indent(line);
-    if indent > 3 {
-        return None;
-    }
-    let rest = &line[indent..];
-    let marker = rest.chars().next()?;
-    if marker != '`' && marker != '~' {
-        return None;
-    }
-    let count = rest.chars().take_while(|ch| *ch == marker).count();
-    if count < 3 {
-        return None;
-    }
-    let after = &rest[count..];
-    if marker == '`' && after.contains('`') {
-        return None;
-    }
-    Some((marker, count))
-}
-
-fn closing_fence(line: &str, marker: char, count: usize) -> bool {
-    let indent = leading_indent(line);
-    if indent > 3 {
-        return false;
-    }
-    let rest = line[indent..].trim_end();
-    !rest.is_empty() && rest.chars().all(|ch| ch == marker) && rest.chars().count() >= count
 }
 
 fn longest_run(text: &str, needle: char) -> usize {

@@ -12,6 +12,9 @@ impl EditorPane {
             self.show_themes(window, cx);
             self.begin_microphone_load(cx);
             self.schedule_model_list_load(Duration::ZERO, cx);
+            self.prepare_keys(window, cx);
+        } else {
+            self.close_keys();
         }
     }
 

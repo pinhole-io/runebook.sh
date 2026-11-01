@@ -44,7 +44,8 @@ kind: speech
 - The alt text shows when that image does not load. The path must stay inside the vault.
 - Skip hidden paths and symlinks. Do not follow a symlink out of the vault.
 - There is no sidecar database. The index is rebuilt from the files.
-- User config is `$XDG_CONFIG_HOME/runebook/config.toml`. It stores `last_vault`, `last_note`, `reopen_last_note`, `microphone`, `speech_model`, `speech_language`, `theme`, `locale`, `text_size`, `note_view`, `line_numbers`, `soft_wrap`, `autosave`, `media_muted`, `dock_layout`, `tool_rounds`, and the model fields. An empty model field uses the matching environment variable.
+- User config is `$XDG_CONFIG_HOME/runebook/config.toml`. It stores `last_vault`, `last_note`, `reopen_last_note`, `microphone`, `speech_model`, `speech_language`, `theme`, `locale`, `text_size`, `note_view`, `line_numbers`, `soft_wrap`, `autosave`, `media_muted`, `dock_layout`, `tool_rounds`, `keys`, and the model fields. An empty model field uses the matching environment variable.
+- `keys` maps a command id to a list of chords. A missing id uses the built-in chord. An empty list unbinds that command. `new_note` defaults to `ctrl-n` (Control+N). `save_note` defaults to `cmd-s`. `open_vault` defaults to `cmd-o`. `toggle_note_view` defaults to `cmd-e`. On Linux, `cmd` is the Super key and `ctrl` is Control.
 - `reopen_last_note` opens `last_note` when that note is still in the vault. Otherwise the window opens `welcome`, then the first note.
 - `autosave` is `fast` (200 ms), `normal` (400 ms), `slow` (1 s), or `manual`. Manual writes the note when you leave it or close the window.
 - `speech_model` is `fast` (`whisper-large-v3-turbo`) or `accurate` (`whisper-large-v3`). An empty `speech_language` lets Groq detect the language. A saved language is a two-letter code.
@@ -70,7 +71,8 @@ Resolve `[[target]]` in this order:
 
 - Call `gpui_kit::init` before any GPUI Kit control.
 - The window uses a Kit `TitleBar`. The toolbar sits in that bar.
-- Settings in the note area are Appearance, Notes, Capture, and Models, in that order.
+- Settings in the note area are Appearance, Notes, Capture, Models, and Keys, in that order.
+- Control+N, and the file-plus button, open a dialog to pick Book, Speech, Sight, Deed, or Research. Speech and Sight stay hidden while a capture runs. The name dialog or the research wizard follows.
 - Each settings row has a sentence. The label tooltip adds the default or the environment name.
 - Research and the Archivist pick a model from the host list at `/v1/models`. The menu search filters that list. Default leaves that field empty.
 - On Linux, the window id is `runebook`. Startup writes `$XDG_DATA_HOME/runebook/icon.png` and `$XDG_DATA_HOME/applications/runebook.desktop`. When `XDG_DATA_HOME` is unset, that directory is `~/.local/share`. The shell uses the desktop file for the book icon.

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -36,7 +37,7 @@ pub const DEFAULT_OPENAI_MODEL: &str = "gpt-5.6-luna";
 /// Archivist model used when Settings and `RUNEBOOK_MODEL` are empty.
 pub const DEFAULT_ARCHIVIST_MODEL: &str = "openai:gpt-6-luna";
 
-/// Last-vault path, window preferences, model settings, and the saved dock layout.
+/// Last-vault path, window preferences, key chords, model settings, and the saved dock layout.
 ///
 /// The file is `$XDG_CONFIG_HOME/runebook/config.toml`.
 /// When `XDG_CONFIG_HOME` is unset, the directory is `~/.config`.
@@ -106,6 +107,12 @@ pub struct AppConfig {
     /// Archivist model. Empty uses `RUNEBOOK_MODEL`, then [`DEFAULT_ARCHIVIST_MODEL`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub archivist_model: String,
+    /// Chord overrides. The key is a command id. The value is a list of chords.
+    ///
+    /// A missing id uses the built-in chords. An empty list unbinds that command.
+    /// The app crate checks the chord text. This crate stores the strings.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub keys: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for AppConfig {
@@ -132,6 +139,7 @@ impl Default for AppConfig {
             openai_base_url: String::new(),
             openai_model: String::new(),
             archivist_model: String::new(),
+            keys: BTreeMap::new(),
         }
     }
 }
@@ -410,6 +418,39 @@ mod tests {
         assert_eq!(loaded, saved);
         assert_eq!(loaded.autosave.delay_ms(), None);
         assert_eq!(loaded.locale, "is");
+    }
+
+    #[test]
+    fn missing_keys_load_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"light\"\n").unwrap();
+        let config = AppConfig::load_from(&path).unwrap();
+        assert!(config.keys.is_empty());
+    }
+
+    #[test]
+    fn keys_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut keys = std::collections::BTreeMap::new();
+        keys.insert("new_note".to_string(), vec!["ctrl-m".to_string()]);
+        keys.insert("save_note".to_string(), Vec::new());
+        let saved = AppConfig {
+            keys,
+            ..AppConfig::default()
+        };
+        saved.save_to(&path).unwrap();
+        let loaded = AppConfig::load_from(&path).unwrap();
+        assert_eq!(loaded.keys, saved.keys);
+        assert_eq!(
+            loaded.keys.get("new_note").map(Vec::as_slice),
+            Some(["ctrl-m".to_string()].as_slice())
+        );
+        assert_eq!(
+            loaded.keys.get("save_note").map(Vec::as_slice),
+            Some([].as_slice())
+        );
     }
 
     #[test]

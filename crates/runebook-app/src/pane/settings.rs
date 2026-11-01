@@ -56,8 +56,9 @@ pub(super) fn panel(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl
                             .gap_6()
                             .child(appearance(pane, view.clone(), cx, muted, border))
                             .child(notes(pane, view.clone(), muted, border))
-                            .child(capture(pane, view, cx, muted, border))
-                            .child(models(pane, cx, muted, border)),
+                            .child(capture(pane, view.clone(), cx, muted, border))
+                            .child(models(pane, cx, muted, border))
+                            .child(super::keys_page::section(pane, view, cx, muted, border)),
                     ),
                 ),
         )
@@ -408,7 +409,7 @@ fn models(
     )
 }
 
-fn section(
+pub(super) fn section(
     title: &'static str,
     sentence: &'static str,
     muted: impl Into<gpui_kit::Hsla>,
@@ -475,7 +476,7 @@ fn short_setting(
         .child(div().flex_shrink_0().child(control))
 }
 
-fn stacked_setting(
+pub(super) fn stacked_setting(
     id: &'static str,
     label: &'static str,
     sentence: &'static str,

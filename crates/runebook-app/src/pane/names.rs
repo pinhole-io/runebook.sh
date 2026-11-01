@@ -4,7 +4,7 @@ use super::*;
 
 impl EditorPane {
     pub(crate) fn begin_create_note(&mut self, window: &mut Window, cx: &mut Context<Root>) {
-        self.prompt_new_note(NoteKind::Book, window, cx);
+        super::kind_dialog::open(self, window, cx);
     }
 
     /// Ask for a name, then create a note of `kind`.

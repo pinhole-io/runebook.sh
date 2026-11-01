@@ -22,6 +22,7 @@ use gpui_kit::{
     ObjectFit, SharedString, Window, div, img, px, rems,
 };
 use runebook::{NoteId, Vault};
+use runebook_preview::{closing_fence, leading_indent, opening_fence};
 
 const MAX_IMAGE: u64 = 8 * 1024 * 1024;
 
@@ -786,42 +787,6 @@ fn void_tag(after_name: &str) -> bool {
     after_name
         .find('>')
         .is_some_and(|end| after_name[..end].trim_end().ends_with('/'))
-}
-
-fn leading_indent(line: &str) -> usize {
-    line.bytes()
-        .take_while(|byte| *byte == b' ' || *byte == b'\t')
-        .count()
-}
-
-fn opening_fence(line: &str) -> Option<(char, usize)> {
-    let indent = leading_indent(line);
-    if indent > 3 {
-        return None;
-    }
-    let rest = &line[indent..];
-    let marker = rest.chars().next()?;
-    if marker != '`' && marker != '~' {
-        return None;
-    }
-    let count = rest.chars().take_while(|ch| *ch == marker).count();
-    if count < 3 {
-        return None;
-    }
-    let after = &rest[count..];
-    if marker == '`' && after.contains('`') {
-        return None;
-    }
-    Some((marker, count))
-}
-
-fn closing_fence(line: &str, marker: char, count: usize) -> bool {
-    let indent = leading_indent(line);
-    if indent > 3 {
-        return false;
-    }
-    let rest = line[indent..].trim_end();
-    !rest.is_empty() && rest.chars().all(|ch| ch == marker) && rest.chars().count() >= count
 }
 
 fn details_parts(html: &str) -> Option<Details> {

@@ -8,7 +8,8 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Enter, Escape, Input, InputState};
 #[cfg(target_os = "macos")]
 use gpui_kit::component::menu::ContextMenuExt;
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+#[cfg(target_os = "macos")]
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Sizable};
@@ -431,9 +432,7 @@ fn create_actions(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl I
             .whitespace_nowrap(),
         border,
     )
-    .child({
-        let recording = pane.capture_status().is_some();
-        let view = view.clone();
+    .child(
         Button::new("new-note")
             .ghost()
             .small()
@@ -442,17 +441,10 @@ fn create_actions(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl I
             .icon(IconName::FilePlus)
             .accessibility_label(locale::text("toolbar.new_note"))
             .tooltip_with_action(locale::text("toolbar.new_note"), &NewNote, None)
-            .dropdown_menu(move |menu, _, _| {
-                let mut menu = menu.item(new_kind_item(view.clone(), NoteKind::Book));
-                if !recording {
-                    menu = menu
-                        .item(new_kind_item(view.clone(), NoteKind::Speech))
-                        .item(new_kind_item(view.clone(), NoteKind::Sight));
-                }
-                menu.item(new_kind_item(view.clone(), NoteKind::Deed))
-                    .item(new_kind_item(view.clone(), NoteKind::Research))
-            })
-    })
+            .on_click(|_: &ClickEvent, window, cx| {
+                window.dispatch_action(Box::new(NewNote), cx);
+            }),
+    )
     .child(header_rule(border))
     .child(
         Button::new("new-folder")
@@ -511,19 +503,7 @@ fn header_rule(border: gpui_kit::Hsla) -> impl IntoElement {
     div().h(px(16.)).w(px(1.)).flex_shrink_0().bg(border)
 }
 
-fn new_kind_item(view: gpui_kit::WeakEntity<Root>, kind: NoteKind) -> PopupMenuItem {
-    PopupMenuItem::new(super::kind_title(kind)).on_click(move |_, window, app| {
-        view.update(app, |root, cx| {
-            if let Some(pane) = root.pane.as_mut() {
-                pane.prompt_new_note(kind, window, cx);
-            }
-            cx.notify();
-        })
-        .ok();
-    })
-}
-
-fn note_icon(kind: NoteKind) -> IconName {
+pub(super) fn note_icon(kind: NoteKind) -> IconName {
     match kind {
         NoteKind::Book => IconName::FileText,
         NoteKind::Speech => IconName::Mic,

@@ -3,6 +3,8 @@
 mod chat;
 mod disk;
 mod edit;
+mod keys_page;
+mod kind_dialog;
 mod names;
 mod prefs;
 mod preview;
@@ -111,6 +113,7 @@ pub(super) struct EditorPane {
     note_view: NoteView,
     default_note_view: NoteView,
     settings_open: bool,
+    key_fields: Option<keys_page::KeyFields>,
     microphone: Option<String>,
     microphone_select: Option<Entity<SelectState<SearchableVec<String>>>>,
     microphone_watch: Option<Subscription>,
@@ -374,6 +377,7 @@ impl EditorPane {
             note_view: default_note_view,
             default_note_view,
             settings_open: false,
+            key_fields: None,
             microphone: saved_microphone(prefs.microphone),
             microphone_select: None,
             microphone_watch: None,

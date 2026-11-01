@@ -9,6 +9,7 @@ mod dock;
 mod finder;
 mod http;
 mod icon;
+mod keys;
 mod launch;
 mod locale;
 mod markdown_view;
@@ -28,9 +29,9 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{ActiveTheme, TitleBar};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Bounds, ClickEvent, Context, Entity, FocusHandle, KeyBinding, PathPromptOptions, Pixels,
-    Render, SharedString, WeakEntity, Window, WindowBounds, WindowDecorations, WindowOptions, div,
-    px, size,
+    App, Bounds, ClickEvent, Context, Entity, FocusHandle, PathPromptOptions, Pixels, Render,
+    SharedString, WeakEntity, Window, WindowBounds, WindowDecorations, WindowOptions, div, px,
+    size,
 };
 use runebook::{AppConfig, Error, NoteId, Vault};
 
@@ -71,7 +72,8 @@ fn main() {
         .with_http_client(http::client())
         .run(|cx| {
             gpui_kit::init(cx);
-            bind_keys(cx);
+            let config = AppConfig::load().unwrap_or_default();
+            keys::apply(cx, &config.keys);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
@@ -80,7 +82,6 @@ fn main() {
             .detach();
 
             let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
-            let config = AppConfig::load().unwrap_or_default();
             locale::activate(&config.locale);
             let last = requested.or(config.last_vault.clone());
             let saved_theme = config.theme.clone();
@@ -118,15 +119,6 @@ pub(crate) fn on_root<E: 'static>(
     move |event, window, cx| {
         view.update(cx, |root, cx| f(root, event, window, cx)).ok();
     }
-}
-
-fn bind_keys(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("cmd-s", SaveNote, None),
-        KeyBinding::new("cmd-n", NewNote, None),
-        KeyBinding::new("cmd-o", OpenVault, None),
-        KeyBinding::new("cmd-e", ToggleNoteView, None),
-    ]);
 }
 
 fn welcome_id() -> NoteId {
@@ -654,6 +646,7 @@ impl Render for Root {
             .bg(background)
             .text_color(foreground)
             .track_focus(&self.focus)
+            .key_context("Runebook")
             .on_action(cx.listener(|this, _: &SaveNote, _, cx| {
                 this.flush(cx);
                 cx.notify();
