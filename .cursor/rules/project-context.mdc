@@ -88,6 +88,8 @@ Resolve `[[target]]` in this order:
 - The preview uses the theme font, radius, and heading scale.
 - A heading uses the theme heading color. Code uses the theme code color.
 - The Kit text view uses the theme syntax colors when a code fence has a grammar.
+- A gemoji shortcode in prose becomes the emoji character. A shortcode in code stays literal.
+- Inline `$...$` and display `$$...$$` draw as math. A price such as `$5 and $10` stays text. A formula the renderer cannot parse stays source text.
 - The window shows the preview until the user flips to the source. Source, settings, and the research report hide the preview.
 - A click selects preview rows. A drag or a shift-click extends the range.
 - The preview menu copies that markdown, adds it to the Archivist, or asks the Archivist to rewrite it.

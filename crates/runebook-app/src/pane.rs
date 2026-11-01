@@ -18,8 +18,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
@@ -30,8 +30,7 @@ use gpui_kit::component::{ActiveTheme, IndexPath, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, AppContext, ClickEvent, Context, Entity, FocusHandle, Focusable, Image, ImageFormat,
-    PathPromptOptions,
-    RenderImage, SharedString, Subscription, Window, div, px,
+    PathPromptOptions, RenderImage, SharedString, Subscription, Window, div, px,
 };
 use runebook::{
     AppConfig, AutosavePace, Error, FolderId, NoteId, NoteKind, NoteViewChoice, SearchHit,

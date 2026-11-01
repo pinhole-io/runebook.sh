@@ -49,7 +49,8 @@ pub(crate) fn view(
     cx: &App,
 ) -> TextView {
     let shielded = shield_details(&source.into());
-    let source = SharedString::from(crate::html_style::style_html(&shielded));
+    let expanded = crate::emoji::expand(&shielded);
+    let source = SharedString::from(crate::html_style::style_html(&expanded));
     let links = Arc::new(crate::anchors::link_urls(source.as_ref()));
     let images = Arc::new(images);
     let parser_links = Arc::clone(&links);
@@ -80,6 +81,8 @@ pub(crate) fn view(
         })
         .plugin(FootnoteMark)
         .plugin(HtmlInline)
+        .plugin(crate::math::MathBlock)
+        .plugin(crate::math::MathLine)
         .plugin(ImageRef {
             links,
             images: Arc::clone(&images),
@@ -1250,6 +1253,14 @@ After.
         let close = format!("\n{}", "`".repeat(ticks));
         let end = rest.rfind(&close).expect("close");
         rest[..end].to_string()
+    }
+
+    #[test]
+    fn a_javascript_fence_has_a_grammar() {
+        let config = gpui_kit::component::highlighter::LanguageRegistry::singleton()
+            .language("javascript")
+            .expect("javascript");
+        assert!(config.language.is_some());
     }
 
     #[test]

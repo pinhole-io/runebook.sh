@@ -16,7 +16,9 @@ async-trait = "0.1"
 futures = "0.3"
 charlotte = { path = "../../../charlotte", default-features = false, features = ["notepad"] }
 cpal = "0.15"
-gpui-kit = { version = "0.8.1", features = ["tree-sitter-markdown", "gpui-fast"] }
+emojis = "0.9"
+gpui-kit = { version = "0.8.1", features = ["tree-sitter-languages", "gpui-fast"] }
+latex-rust = "2.1.1"
 hound = "3.5"
 image = { version = "0.25", default-features = false, features = ["png"] }
 reqwest = { version = "0.12", features = ["blocking", "json", "multipart"] }

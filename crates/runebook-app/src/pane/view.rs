@@ -158,9 +158,7 @@ fn note_surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_kit
         super::research::report(pane, view.clone(), cx).into_any_element()
     } else {
         match pane.note_view {
-            NoteView::Preview => {
-                super::preview::surface(pane, view.clone(), cx).into_any_element()
-            }
+            NoteView::Preview => super::preview::surface(pane, view.clone(), cx).into_any_element(),
             NoteView::Source => source_surface(pane, view.clone(), cx).into_any_element(),
         }
     };
