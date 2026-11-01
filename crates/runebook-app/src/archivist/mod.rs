@@ -1,8 +1,6 @@
 //! Archivist chat. Superglue runs the tool loop. The vault crate writes the files.
 
-mod attach;
 mod column;
-mod tools;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -10,16 +8,42 @@ use std::time::Duration;
 
 use gpui_kit::component::input::TextareaState;
 use gpui_kit::{AppContext, Context, Entity, ScrollHandle, SharedString, Window};
-use runebook::{FolderId, NoteId, Vault};
-use superglue::agents::AgentSpec;
+use runebook::Vault;
 use superglue::openai::ChatMessage;
 use superglue::providers::{ProviderId, parse_model_ref};
 use superglue::{CallOptions, Client, ClientConversation};
 
 pub(crate) use column::column;
+pub(crate) use runebook_agent::{VaultChange, has_model_key};
 
 use crate::Root;
 use crate::locale;
+
+/// Parked files for one Archivist send.
+pub(crate) struct FileLaunch {
+    /// Instruction built from the parked rows.
+    pub(crate) instruction: String,
+    /// Draft text from the column.
+    pub(crate) draft: String,
+    /// Parked note rows. Each pair is a note id and its source.
+    pub(crate) held: Vec<(String, String)>,
+    /// Parked file paths.
+    pub(crate) paths: Vec<PathBuf>,
+}
+
+/// A file read that the pane should send.
+pub(crate) struct AcceptedRead<'a> {
+    /// Text shown in the transcript.
+    pub(crate) display: String,
+    /// Message sent to the model.
+    pub(crate) message: ChatMessage,
+    /// Parked note rows that were sent.
+    pub(crate) held: &'a [(String, String)],
+    /// Parked file paths that were sent.
+    pub(crate) paths: &'a [PathBuf],
+    /// Draft that was sent.
+    pub(crate) draft: &'a str,
+}
 
 /// Notice when the Archivist model has no key.
 pub(crate) fn missing_model_key(model: &str) -> &'static str {
@@ -40,18 +64,6 @@ pub(crate) struct ModelAccess {
     pub(crate) openai_base_url: String,
     pub(crate) model: String,
     pub(crate) tool_rounds: u32,
-}
-
-/// A vault change made by a tool during one turn.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum VaultChange {
-    Wrote(NoteId),
-    RenamedNote { from: NoteId, to: NoteId },
-    DeletedNote(NoteId),
-    Opened(NoteId),
-    Folder(FolderId),
-    RenamedFolder { from: FolderId, to: FolderId },
-    DeletedFolder(FolderId),
 }
 
 enum Line {
@@ -118,7 +130,7 @@ pub(crate) struct Panel {
     /// Rows parked by Add to chat. The next send includes them.
     held: Vec<HeldRows>,
     /// Files parked by Add file. The next send includes them.
-    files: Vec<attach::ParkedFile>,
+    files: Vec<runebook_agent::ParkedFile>,
     /// `true` while parked files are read, before the model turn starts.
     reading: bool,
 }
@@ -234,10 +246,10 @@ impl Panel {
             if self.files.iter().any(|file| file.path == path) {
                 continue;
             }
-            let name = attach::file_name(&path);
-            added.push(attach::ParkedFile { path, name });
+            let name = runebook_agent::file_name(&path);
+            added.push(runebook_agent::ParkedFile { path, name });
         }
-        if self.files.len() + added.len() > attach::MAX_FILES {
+        if self.files.len() + added.len() > runebook_agent::MAX_FILES {
             return Err(locale::text("archivist.max_files").to_string());
         }
         if added.is_empty() {
@@ -392,10 +404,7 @@ impl Panel {
     /// A bad file leaves the parked files in place and shows the error.
     pub(crate) fn launch_files(
         &mut self,
-        instruction: String,
-        draft: String,
-        held: Vec<(String, String)>,
-        paths: Vec<PathBuf>,
+        launch: FileLaunch,
         vault: Vault,
         epoch: u64,
         access: ModelAccess,
@@ -404,13 +413,20 @@ impl Panel {
         if !self.reading {
             return;
         }
+        let FileLaunch {
+            instruction,
+            draft,
+            held,
+            paths,
+        } = launch;
         let sent_paths = paths.clone();
         cx.spawn(async move |this, cx| {
             let built = runtime()
-                .spawn_blocking(move || attach::prepare(&instruction, &paths))
+                .spawn_blocking(move || runebook_agent::prepare(&instruction, &paths))
                 .await;
             let built = match built {
-                Ok(result) => result,
+                Ok(Ok(pair)) => Ok(pair),
+                Ok(Err(err)) => Err(attach_notice(&err)),
                 Err(_) => Err(locale::text("archivist.read_failed").to_string()),
             };
             this.update_in(cx, |root, window, cx| {
@@ -425,11 +441,13 @@ impl Panel {
                 match built {
                     Err(err) => pane.fail_archivist_read(err),
                     Ok((display, message)) => pane.accept_archivist_files(
-                        display,
-                        message,
-                        &held,
-                        &sent_paths,
-                        &draft,
+                        AcceptedRead {
+                            display,
+                            message,
+                            held: &held,
+                            paths: &sent_paths,
+                            draft: &draft,
+                        },
                         vault,
                         epoch,
                         access,
@@ -571,78 +589,6 @@ fn log_follows(offset_y: f32, max_y: f32) -> bool {
     offset_y + max_y < 48.
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{archivist_prompt, key_plan, log_follows, missing_model_key};
-    use superglue::providers::ProviderId;
-
-    #[test]
-    fn the_log_follows_while_it_is_near_the_bottom() {
-        assert!(log_follows(0., 0.));
-        assert!(log_follows(-200., 200.));
-        assert!(log_follows(-170., 200.));
-        assert!(!log_follows(-100., 200.));
-    }
-
-    #[test]
-    fn an_openai_model_does_not_use_the_groq_key() {
-        let plan = key_plan(
-            "openai:gpt-6-luna",
-            "gsk-groq-key-value",
-            "sk-openai-key-value",
-            "https://gateway.example/v1",
-        )
-        .expect("both keys are set");
-        assert_eq!(plan.primary, "sk-openai-key-value");
-        assert_eq!(plan.groq.as_deref(), Some("gsk-groq-key-value"));
-        assert_eq!(plan.openai.as_deref(), Some("sk-openai-key-value"));
-        assert_eq!(plan.openai_provider, ProviderId::OpenAi);
-        assert_eq!(plan.base, "https://gateway.example/v1");
-    }
-
-    #[test]
-    fn an_openai_model_rejects_a_groq_key_used_alone() {
-        let err = key_plan(
-            "openai:gpt-6-luna",
-            "gsk-groq-key-value",
-            "",
-            "https://api.openai.com",
-        )
-        .expect_err("the OpenAI key is required");
-        assert_eq!(err, missing_model_key("openai:gpt-6-luna"));
-        assert_eq!(err, "Set the OpenAI key in Settings.");
-    }
-
-    #[test]
-    fn a_groq_model_keeps_its_own_key() {
-        let plan = key_plan(
-            "groq:llama-3.3-70b-versatile",
-            "gsk-groq-key-value",
-            "sk-openai-key-value",
-            "https://api.openai.com",
-        )
-        .expect("the Groq key is set");
-        assert_eq!(plan.groq.as_deref(), Some("gsk-groq-key-value"));
-        assert_eq!(plan.primary, "sk-openai-key-value");
-        assert_eq!(plan.openai_provider, ProviderId::OpenAi);
-    }
-
-    #[test]
-    fn archivist_prompt_describes_the_vault() {
-        let prompt = archivist_prompt(8);
-        assert!(
-            prompt.starts_with("You are the Archivist of this vault."),
-            "{prompt}"
-        );
-        for kind in ["Book", "Speech", "Sight", "Deed", "Research"] {
-            assert!(prompt.contains(kind), "missing {kind} in {prompt}");
-        }
-        assert!(prompt.contains("kind: speech"), "{prompt}");
-        assert!(prompt.contains("[[target|alias]]"), "{prompt}");
-        assert!(prompt.contains("32 KiB"), "{prompt}");
-    }
-}
-
 fn live_snapshot(draft: &Mutex<LiveText>) -> LiveText {
     draft.lock().unwrap_or_else(|err| err.into_inner()).clone()
 }
@@ -738,71 +684,20 @@ async fn run_turn(
     }
 }
 
-/// Which key `ClientBuilder` receives.
-///
-/// `ClientBuilder::api_key_for` copies `api_key` onto OpenAI when that
-/// provider has no key. `primary` is the OpenAI key when one is set, so the
-/// Groq key cannot land on OpenAI.
-#[derive(Debug)]
-struct KeyPlan {
-    primary: String,
-    base: String,
-    groq: Option<String>,
-    openai: Option<String>,
-    openai_provider: ProviderId,
-}
-
-/// `true` when `model` has the key it sends with.
-pub(crate) fn has_model_key(model: &str, groq: &str, openai: &str) -> bool {
-    key_plan(model, groq, openai, ProviderId::OpenAi.default_base_url()).is_ok()
-}
-
-fn key_plan(model: &str, groq: &str, openai: &str, base: &str) -> Result<KeyPlan, String> {
-    let groq = groq.trim();
-    let openai = openai.trim();
-    let provider = parse_model_ref(model).provider;
-    let needed = if provider == ProviderId::Groq {
-        groq
-    } else {
-        openai
-    };
-    if needed.is_empty() {
-        return Err(missing_model_key(model).to_string());
-    }
-    let base = base.trim();
-    let base = if base.is_empty() {
-        provider.default_base_url().to_string()
-    } else {
-        base.to_string()
-    };
-    let primary = if openai.is_empty() { groq } else { openai };
-    let openai_provider = if provider == ProviderId::Groq {
-        ProviderId::OpenAi
-    } else {
-        provider
-    };
-    Ok(KeyPlan {
-        primary: primary.to_string(),
-        base,
-        groq: (!groq.is_empty()).then(|| groq.to_string()),
-        openai: (!openai.is_empty()).then(|| openai.to_string()),
-        openai_provider,
-    })
-}
-
 async fn open_session(vault: Vault, access: &ModelAccess) -> Result<Session, String> {
-    let plan = key_plan(
+    let plan = runebook_agent::key_plan(
         &access.model,
         &access.groq_key,
         &access.openai_key,
         &access.openai_base_url,
-    )?;
+    )
+    .map_err(|_| missing_model_key(&access.model).to_string())?;
     let rounds = if access.tool_rounds < 1 {
         runebook::DEFAULT_TOOL_ROUNDS
     } else {
         access.tool_rounds
     };
-    let prompt = archivist_prompt(rounds);
+    let prompt = runebook_agent::archivist_prompt(rounds);
     let mut builder = Client::builder()
         .api_key(plan.primary.clone())
         .base_url(plan.base.clone())
@@ -829,7 +724,7 @@ async fn open_session(vault: Vault, access: &ModelAccess) -> Result<Session, Str
         .build()
         .map_err(|err| redact(err.to_string(), &secrets))?;
     let changes = Arc::new(Mutex::new(Vec::new()));
-    tools::register(&client, vault, Arc::clone(&changes))
+    runebook_agent::register(&client, vault, Arc::clone(&changes))
         .await
         .map_err(|err| redact(err, &secrets))?;
     Ok(Session {
@@ -838,69 +733,22 @@ async fn open_session(vault: Vault, access: &ModelAccess) -> Result<Session, Str
     })
 }
 
-fn archivist_prompt(rounds: u32) -> String {
-    let spec = AgentSpec::new("Archivist", "the Archivist of this vault")
-        .with_max_tool_rounds(rounds)
-        .with_goal("Keep each note accurate.")
-        .with_goal("Find the real id before you change a file.")
-        .with_goal("Use a tool for every vault change.")
-        .with_goal("Change only the text the user asked to change.")
-        .with_goal("Report each note id and folder id you changed.")
-        .with_instructions(
-            "A note id is a vault path with no .md suffix. Example: journal/2026-10-23. \
-             A folder id uses the same shape. Example: journal. \
-             An id is relative. It is not absolute, not hidden, and it has no . or .. segment. \
-             Call list_notes or search_notes before you use an id.",
-        )
-        .with_instructions(
-            "A note is Book, Speech, Sight, Deed, or Research. \
-             Book has no header. Speech, Sight, Deed, and Research start with this header:\n\
-             ---\n\
-             kind: speech\n\
-             ---\n\
-             The kind key is speech, sight, deed, or research. \
-             write_note keeps the old kind when the new text has no header. \
-             Put a header in contents only when the user asked for that kind.",
-        )
-        .with_instructions(
-            "Speech is a transcript. You do not record audio. \
-             Sight is a markdown link to a video beside the note. You do not record the screen. \
-             Deed is a task list. A task line uses `- [ ]` or `- [x]`. \
-             Research belongs to Charlotte. You do not start a Research run. \
-             You may still edit those notes when the user asks.",
-        )
-        .with_instructions(
-            "`[[target]]` links to a note. `[[target|alias]]` shows the alias and still links to \
-             target. Prefer an exact note id. A stem with no / matches one note only when that \
-             stem is unique. After a rename, search for the old id and update wiki links that \
-             use it.",
-        )
-        .with_instructions(
-            "Read the note before write_note. That call replaces the whole file. \
-             Keep every line the user did not ask to change. \
-             create_note fails when the note already exists. It creates missing parent folders. \
-             A read can set truncated at 32 KiB. Do not write that text back. \
-             list_notes can stop at 400 entries. \
-             Selected rows in the user message are a slice. Read the note, then write the full \
-             note. An attached file is source material. A vault write still uses a tool. \
-             Call open_note when the user asks to open or look at a note.",
-        )
-        .with_instructions(
-            "Write every reply in Markdown. Use paragraphs, lists, and inline code for note ids \
-             and folder ids. Do not wrap the whole reply in a code fence. \
-             Do not include a thinking section in the reply. \
-             Name each id you created, changed, renamed, or deleted. \
-             When a tool returns an error, say that error.",
-        )
-        .with_constraint("Do not invent a note id or a folder id.")
-        .with_constraint(
-            "Do not delete a note or a folder unless the user asked to delete that note or folder.",
-        )
-        .with_constraint("Do not claim a write that the tool rejected.")
-        .with_constraint("Do not change a note kind unless the user asked.")
-        .with_constraint("Do not record audio or video, and do not start a Research run.")
-        .with_constraint("Do not write a truncated read back over a note.");
-    spec.compile_system_prompt()
+/// Window sentence for one parked-file failure.
+fn attach_notice(err: &runebook_agent::AttachError) -> String {
+    use runebook_agent::AttachError;
+    match err {
+        AttachError::MaxFiles => locale::text("archivist.max_files").to_string(),
+        AttachError::Unsupported { name } => {
+            locale::format("archivist.unsupported", &[("name", name)])
+        }
+        AttachError::Read { name } => locale::format("archivist.read_name", &[("name", name)]),
+        AttachError::TooLarge { name } => locale::format("archivist.too_large", &[("name", name)]),
+        AttachError::Empty { name } => locale::format("archivist.empty_file", &[("name", name)]),
+        AttachError::NotUtf8 { name } => locale::format("archivist.not_utf8", &[("name", name)]),
+        AttachError::Failed { name } => {
+            locale::format("archivist.attach_failed", &[("name", name)])
+        }
+    }
 }
 
 fn redact(text: String, keys: &[&str]) -> String {
@@ -922,4 +770,54 @@ fn redact(text: String, keys: &[&str]) -> String {
         .map(|(index, _)| index)
         .unwrap_or(text.len());
     format!("{}…", &text[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{attach_notice, log_follows, missing_model_key};
+    use runebook_agent::AttachError;
+
+    #[test]
+    fn the_log_follows_while_it_is_near_the_bottom() {
+        assert!(log_follows(0., 0.));
+        assert!(log_follows(-200., 200.));
+        assert!(log_follows(-170., 200.));
+        assert!(!log_follows(-100., 200.));
+    }
+
+    #[test]
+    fn a_missing_openai_key_uses_the_settings_sentence() {
+        assert_eq!(
+            missing_model_key("openai:gpt-6-luna"),
+            "Set the OpenAI key in Settings."
+        );
+    }
+
+    #[test]
+    fn attach_errors_keep_their_sentences() {
+        assert_eq!(
+            attach_notice(&AttachError::TooLarge {
+                name: "big.png".to_string(),
+            }),
+            "big.png is larger than 8 MiB."
+        );
+        assert_eq!(
+            attach_notice(&AttachError::Unsupported {
+                name: "data.bin".to_string(),
+            }),
+            "data.bin is not a supported file."
+        );
+        assert_eq!(
+            attach_notice(&AttachError::NotUtf8 {
+                name: "note.txt".to_string(),
+            }),
+            "note.txt is not UTF-8 text."
+        );
+        assert_eq!(
+            attach_notice(&AttachError::Read {
+                name: "note.txt".to_string(),
+            }),
+            "Cannot read note.txt."
+        );
+    }
 }

@@ -6877,25 +6877,64 @@ dependencies = [
 ]
 
 [[package]]
-name = "runebook-app"
+name = "runebook-agent"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "charlotte",
+ "runebook",
+ "serde_json",
+ "superglue",
+]
+
+[[package]]
+name = "runebook-app"
+version = "0.1.0"
+dependencies = [
  "cpal",
- "emojis",
  "futures",
  "gpui-kit",
- "hound",
  "image",
  "latex-rust",
  "reqwest 0.12.28",
  "runebook",
+ "runebook-agent",
+ "runebook-capture",
+ "runebook-preview",
+ "runebook-research",
  "serde_json",
  "superglue",
  "tokio",
+]
+
+[[package]]
+name = "runebook-capture"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+ "hound",
+ "reqwest 0.12.28",
+ "serde_json",
  "wayland-client",
  "wayland-protocols-wlr",
+]
+
+[[package]]
+name = "runebook-preview"
+version = "0.1.0"
+dependencies = [
+ "emojis",
+ "runebook",
+]
+
+[[package]]
+name = "runebook-research"
+version = "0.1.0"
+dependencies = [
+ "charlotte",
+ "runebook",
+ "superglue",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

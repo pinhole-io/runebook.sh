@@ -4,7 +4,7 @@
 //! A failed copy returns an error and does not include pixel data.
 //! Window titles are never passed to `ffmpeg`.
 
-use crate::locale;
+use crate::CaptureError;
 
 use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
@@ -34,7 +34,10 @@ pub(super) struct Grab {
 }
 
 impl Grab {
-    pub(super) fn start(output: std::path::PathBuf, target: ScreenTarget) -> Result<Self, String> {
+    pub(super) fn start(
+        output: std::path::PathBuf,
+        target: ScreenTarget,
+    ) -> Result<Self, CaptureError> {
         let (region, output_name) = match target {
             ScreenTarget::Display => (None, focused_output_name()),
             ScreenTarget::Region {
@@ -45,7 +48,7 @@ impl Grab {
                 height,
             } => (Some((x, y, width, height)), Some(output)),
             ScreenTarget::Window(_) => {
-                return Err(locale::text("screen.window_display").to_string());
+                return Err(CaptureError::WindowOnDisplay);
             }
         };
         let stop = Arc::new(AtomicBool::new(false));
@@ -81,7 +84,7 @@ impl Grab {
                 stop.store(true, Ordering::Relaxed);
                 let _ = thread.join();
                 reap(&child);
-                Err(locale::text("screen.wayland_start").to_string())
+                Err(CaptureError::WaylandStart)
             }
         }
     }
@@ -110,28 +113,21 @@ fn record(
     region: Option<(i32, i32, i32, i32)>,
     stop: Arc<AtomicBool>,
     child_slot: Arc<Mutex<Option<Child>>>,
-    ready: std::sync::mpsc::Sender<Result<(), String>>,
-) -> Result<(), String> {
-    let conn = Connection::connect_to_env()
-        .map_err(|_| locale::text("screen.wayland_missing").to_string())?;
+    ready: std::sync::mpsc::Sender<Result<(), CaptureError>>,
+) -> Result<(), CaptureError> {
+    let conn = Connection::connect_to_env().map_err(|_| CaptureError::WaylandMissing)?;
     let mut queue = conn.new_event_queue();
     let qh = queue.handle();
     let mut state = State::default();
     let _registry = conn.display().get_registry(&qh, ());
     queue
         .roundtrip(&mut state)
-        .map_err(|_| locale::text("screen.wayland_answer").to_string())?;
+        .map_err(|_| CaptureError::WaylandAnswer)?;
     queue
         .roundtrip(&mut state)
-        .map_err(|_| locale::text("screen.wayland_answer").to_string())?;
-    let manager = state
-        .manager
-        .clone()
-        .ok_or_else(|| locale::text("screen.wayland_share").to_string())?;
-    let shm = state
-        .shm
-        .clone()
-        .ok_or_else(|| locale::text("screen.wayland_share").to_string())?;
+        .map_err(|_| CaptureError::WaylandAnswer)?;
+    let manager = state.manager.clone().ok_or(CaptureError::WaylandShare)?;
+    let shm = state.shm.clone().ok_or(CaptureError::WaylandShare)?;
     let output = pick_output(&state.outputs, output_name.as_deref())?
         .proxy
         .clone();
@@ -160,7 +156,7 @@ fn record(
         if state.frame.failed || !state.frame.have_shm {
             frame.destroy();
             if stdin.is_none() {
-                return Err(locale::text("screen.pixel").to_string());
+                return Err(CaptureError::PixelFormat);
             }
             break;
         }
@@ -178,7 +174,7 @@ fn record(
             mapping = Some(created);
         }
         let Some(current_pool) = pool.as_ref() else {
-            return Err(locale::text("screen.frame").to_string());
+            return Err(CaptureError::Frame);
         };
         let buffer = current_pool.create_buffer(
             0,
@@ -200,26 +196,23 @@ fn record(
         }
         if state.frame.failed {
             if stdin.is_none() {
-                return Err(locale::text("screen.copy").to_string());
+                return Err(CaptureError::Copy);
             }
             break;
         }
         if stdin.is_none() {
             let mut child = spawn_ffmpeg(&path, info.width, info.height)?;
-            let pipe = child
-                .stdin
-                .take()
-                .ok_or_else(|| locale::text("screen.ffmpeg_frames").to_string())?;
+            let pipe = child.stdin.take().ok_or(CaptureError::FfmpegFrames)?;
             if let Ok(mut slot) = child_slot.lock() {
                 *slot = Some(child);
             }
             stdin = Some(pipe);
         }
         let Some(bytes) = mapping.as_ref().map(Mapping::bytes) else {
-            return Err(locale::text("screen.frame").to_string());
+            return Err(CaptureError::Frame);
         };
         let Some(pipe) = stdin.as_mut() else {
-            return Err(locale::text("screen.ffmpeg_frames").to_string());
+            return Err(CaptureError::FfmpegFrames);
         };
         let invert = state.frame.y_invert;
         write_frame(pipe, bytes, info, invert)?;
@@ -264,21 +257,19 @@ struct FrameState {
 }
 
 impl FrameState {
-    fn info(&self) -> Result<FrameInfo, String> {
-        let format = self
-            .format
-            .ok_or_else(|| locale::text("screen.pixel").to_string())?;
+    fn info(&self) -> Result<FrameInfo, CaptureError> {
+        let format = self.format.ok_or(CaptureError::PixelFormat)?;
         let width = i32::try_from(self.width).unwrap_or(0);
         let height = i32::try_from(self.height).unwrap_or(0);
         let stride = i32::try_from(self.stride).unwrap_or(0);
         if width <= 0 || height <= 0 || width > MAX_EDGE || height > MAX_EDGE || stride < width * 4
         {
-            return Err(locale::text("screen.pixel").to_string());
+            return Err(CaptureError::PixelFormat);
         }
         let row_bytes = (width as usize).saturating_mul(4);
         let len = (stride as usize).saturating_mul(height as usize);
         if len == 0 || len > (MAX_EDGE as usize) * (MAX_EDGE as usize) * 4 {
-            return Err(locale::text("screen.pixel").to_string());
+            return Err(CaptureError::PixelFormat);
         }
         Ok(FrameInfo {
             format,
@@ -305,24 +296,22 @@ fn wait_frame(
     state: &mut State,
     stop: &AtomicBool,
     until: impl Fn(&FrameState) -> bool,
-) -> Result<(), String> {
+) -> Result<(), CaptureError> {
     let deadline = Instant::now() + Duration::from_secs(2);
     while !until(&state.frame) && !stop.load(Ordering::Relaxed) {
         if Instant::now() >= deadline {
-            return Err(locale::text("screen.wayland_answer").to_string());
+            return Err(CaptureError::WaylandAnswer);
         }
         queue
             .dispatch_pending(state)
-            .map_err(|_| locale::text("screen.wayland_answer").to_string())?;
+            .map_err(|_| CaptureError::WaylandAnswer)?;
         if until(&state.frame) || stop.load(Ordering::Relaxed) {
             return Ok(());
         }
         let Some(guard) = queue.prepare_read() else {
             continue;
         };
-        queue
-            .flush()
-            .map_err(|_| locale::text("screen.wayland_answer").to_string())?;
+        queue.flush().map_err(|_| CaptureError::WaylandAnswer)?;
         if !wait_readable(guard.connection_fd(), Duration::from_millis(100))? {
             drop(guard);
             continue;
@@ -330,7 +319,7 @@ fn wait_frame(
         match guard.read() {
             Ok(_) => {}
             Err(err) if wayland_blocked(&err) => {}
-            Err(_) => return Err(locale::text("screen.wayland_answer").to_string()),
+            Err(_) => return Err(CaptureError::WaylandAnswer),
         }
     }
     Ok(())
@@ -340,7 +329,7 @@ fn wayland_blocked(err: &wayland_client::backend::WaylandError) -> bool {
     matches!(err, wayland_client::backend::WaylandError::Io(err) if err.kind() == std::io::ErrorKind::WouldBlock)
 }
 
-fn wait_readable(fd: BorrowedFd<'_>, timeout: Duration) -> Result<bool, String> {
+fn wait_readable(fd: BorrowedFd<'_>, timeout: Duration) -> Result<bool, CaptureError> {
     let mut fds = [PollFd {
         fd: fd.as_raw_fd(),
         events: 1,
@@ -355,25 +344,23 @@ fn wait_readable(fd: BorrowedFd<'_>, timeout: Duration) -> Result<bool, String> 
         if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
             continue;
         }
-        return Err(locale::text("screen.wayland_answer").to_string());
+        return Err(CaptureError::WaylandAnswer);
     }
 }
 
 fn pick_output<'a>(
     outputs: &'a [OutputInfo],
     name: Option<&str>,
-) -> Result<&'a OutputInfo, String> {
+) -> Result<&'a OutputInfo, CaptureError> {
     if let Some(name) = name.filter(|name| !name.is_empty())
         && let Some(output) = outputs.iter().find(|output| output.name == name)
     {
         return Ok(output);
     }
-    outputs
-        .first()
-        .ok_or_else(|| locale::text("screen.wayland_share").to_string())
+    outputs.first().ok_or(CaptureError::WaylandShare)
 }
 
-fn spawn_ffmpeg(path: &std::path::Path, width: i32, height: i32) -> Result<Child, String> {
+fn spawn_ffmpeg(path: &std::path::Path, width: i32, height: i32) -> Result<Child, CaptureError> {
     let args = [
         "-y",
         "-f",
@@ -408,13 +395,8 @@ fn spawn_ffmpeg(path: &std::path::Path, width: i32, height: i32) -> Result<Child
         .spawn()
     {
         Ok(child) => Ok(child),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            Err(locale::text("screen.ffmpeg_missing").to_string())
-        }
-        Err(err) => Err(locale::format(
-            "screen.ffmpeg_start",
-            &[("err", &err.to_string())],
-        )),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(CaptureError::FfmpegMissing),
+        Err(err) => Err(CaptureError::FfmpegStart(err.to_string())),
     }
 }
 
@@ -423,7 +405,7 @@ fn write_frame(
     bytes: &[u8],
     info: FrameInfo,
     y_invert: bool,
-) -> Result<(), String> {
+) -> Result<(), CaptureError> {
     let stride = info.stride as usize;
     let height = info.height as usize;
     if y_invert {
@@ -431,14 +413,14 @@ fn write_frame(
             let start = row * stride;
             stdin
                 .write_all(&bytes[start..start + info.row_bytes])
-                .map_err(|_| locale::text("screen.ffmpeg_stopped").to_string())?;
+                .map_err(|_| CaptureError::FfmpegStopped)?;
         }
     } else {
         for row in 0..height {
             let start = row * stride;
             stdin
                 .write_all(&bytes[start..start + info.row_bytes])
-                .map_err(|_| locale::text("screen.ffmpeg_stopped").to_string())?;
+                .map_err(|_| CaptureError::FfmpegStopped)?;
         }
     }
     Ok(())
@@ -451,7 +433,7 @@ struct Mapping {
 }
 
 impl Mapping {
-    fn new(len: usize) -> Result<Self, String> {
+    fn new(len: usize) -> Result<Self, CaptureError> {
         let fd = create_memfd(len)?;
         let ptr = unsafe { mmap_fd(fd.as_fd(), len)? };
         Ok(Self { ptr, len, fd })
@@ -470,17 +452,17 @@ impl Drop for Mapping {
     }
 }
 
-fn create_memfd(len: usize) -> Result<OwnedFd, String> {
+fn create_memfd(len: usize) -> Result<OwnedFd, CaptureError> {
     let name = c"runebook-frame".as_ptr();
     let fd = unsafe { memfd_create(name, 1) };
     if fd < 0 {
-        return Err(locale::text("screen.frame").to_string());
+        return Err(CaptureError::Frame);
     }
-    let len = i64::try_from(len).map_err(|_| locale::text("screen.frame").to_string())?;
+    let len = i64::try_from(len).map_err(|_| CaptureError::Frame)?;
     let truncated = unsafe { ftruncate(fd, len) };
     if truncated != 0 {
         unsafe { close(fd) };
-        return Err(locale::text("screen.frame").to_string());
+        return Err(CaptureError::Frame);
     }
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
@@ -491,7 +473,7 @@ fn create_memfd(len: usize) -> Result<OwnedFd, String> {
 ///
 /// `fd` must be a live memfd of at least `len` bytes. The returned pointer
 /// is owned by the caller and freed with `munmap`.
-unsafe fn mmap_fd(fd: impl AsFd, len: usize) -> Result<*mut u8, String> {
+unsafe fn mmap_fd(fd: impl AsFd, len: usize) -> Result<*mut u8, CaptureError> {
     let ptr = unsafe {
         mmap(
             std::ptr::null_mut(),
@@ -503,7 +485,7 @@ unsafe fn mmap_fd(fd: impl AsFd, len: usize) -> Result<*mut u8, String> {
         )
     };
     if ptr == MAP_FAILED || ptr.is_null() {
-        return Err(locale::text("screen.frame").to_string());
+        return Err(CaptureError::Frame);
     }
     Ok(ptr.cast())
 }

@@ -3,6 +3,8 @@
 //! The API key is read from `GROQ_API_KEY` at request time. It is not written
 //! to a note, a config file, or an error string.
 
+use crate::CaptureError;
+
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,14 +15,12 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, Stream};
 use reqwest::blocking::multipart;
 
-use crate::locale;
-
 const GROQ_URL: &str = "https://api.groq.com/openai/v1/audio/transcriptions";
 const GROQ_MODEL: &str = "whisper-large-v3-turbo";
 /// Mono 16-bit samples that stay under Groq's upload limit.
 const MAX_SAMPLES: usize = 12_000_000;
 
-pub(crate) struct VoiceOutcome {
+pub struct VoiceOutcome {
     pub text: String,
     pub truncated: bool,
 }
@@ -31,11 +31,11 @@ struct CapturedAudio {
     truncated: bool,
 }
 
-pub(crate) struct VoiceCapture {
+pub struct VoiceCapture {
     stop: Arc<AtomicBool>,
     samples: Arc<Mutex<SampleBuf>>,
     sample_rate: u32,
-    thread: Option<JoinHandle<Result<(), String>>>,
+    thread: Option<JoinHandle<Result<(), CaptureError>>>,
 }
 
 #[derive(Default)]
@@ -48,7 +48,7 @@ impl VoiceCapture {
     /// Start capture on `device_name`.
     ///
     /// `None` and a blank name use the system default input.
-    pub(crate) fn start(device_name: Option<String>) -> Result<Self, String> {
+    pub fn start(device_name: Option<String>) -> Result<Self, CaptureError> {
         let device_name = device_name.filter(|name| !name.trim().is_empty());
         let stop = Arc::new(AtomicBool::new(false));
         let samples = Arc::new(Mutex::new(SampleBuf {
@@ -74,17 +74,15 @@ impl VoiceCapture {
             Err(_) => {
                 stop.store(true, Ordering::Relaxed);
                 let _ = thread.join();
-                Err(locale::text("mic.start").to_string())
+                Err(CaptureError::MicStart)
             }
         }
     }
 
-    fn stop(mut self) -> Result<CapturedAudio, String> {
+    fn stop(mut self) -> Result<CapturedAudio, CaptureError> {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
-            thread
-                .join()
-                .map_err(|_| locale::text("mic.thread").to_string())??;
+            thread.join().map_err(|_| CaptureError::MicThread)??;
         }
         let buf = match self.samples.lock() {
             Ok(mut buf) => std::mem::take(&mut *buf),
@@ -111,23 +109,23 @@ impl Drop for VoiceCapture {
 ///
 /// An empty clip returns an error and does not call Groq.
 /// Model name and optional language sent with one transcript request.
-pub(crate) struct SpeechRequest {
+pub struct SpeechRequest {
     pub model: String,
     pub language: Option<String>,
 }
 
-pub(crate) fn voice_to_text(
+pub fn voice_to_text(
     capture: VoiceCapture,
     key: String,
     speech: SpeechRequest,
-) -> Result<VoiceOutcome, String> {
+) -> Result<VoiceOutcome, CaptureError> {
     let audio = capture.stop()?;
     if audio.samples.is_empty() {
-        return Err(locale::text("mic.empty").to_string());
+        return Err(CaptureError::MicEmpty);
     }
     let key = key.trim().to_string();
     if key.is_empty() {
-        return Err(locale::text("capture.groq_key").to_string());
+        return Err(CaptureError::GroqKey);
     }
     let wav = encode_wav(&audio.samples, audio.sample_rate)?;
     let text = transcribe_wav(&wav, &key, &speech)?;
@@ -140,7 +138,7 @@ pub(crate) fn voice_to_text(
 /// Names of the input devices the host can open.
 ///
 /// Duplicate and blank names are dropped. A host error returns an empty list.
-pub(crate) fn list_input_devices() -> Vec<String> {
+pub fn list_input_devices() -> Vec<String> {
     let host = cpal::default_host();
     let Ok(devices) = host.input_devices() else {
         return Vec::new();
@@ -159,25 +157,23 @@ pub(crate) fn list_input_devices() -> Vec<String> {
     names
 }
 
-fn open_input(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device, String> {
+fn open_input(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device, CaptureError> {
     match name {
-        None => host
-            .default_input_device()
-            .ok_or_else(|| locale::text("mic.none").to_string()),
+        None => host.default_input_device().ok_or(CaptureError::MicNone),
         Some(name) => host
             .input_devices()
-            .map_err(|err| locale::format("mic.list", &[("err", &err.to_string())]))?
+            .map_err(|err| CaptureError::MicList(err.to_string()))?
             .find(|device| device.name().ok().as_deref() == Some(name))
-            .ok_or_else(|| locale::format("mic.missing", &[("name", name)])),
+            .ok_or_else(|| CaptureError::MicMissing(name.to_string())),
     }
 }
 
 fn capture_loop(
     stop: Arc<AtomicBool>,
     buffer: Arc<Mutex<SampleBuf>>,
-    ready: std::sync::mpsc::Sender<Result<u32, String>>,
+    ready: std::sync::mpsc::Sender<Result<u32, CaptureError>>,
     device_name: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), CaptureError> {
     let host = cpal::default_host();
     let device = match open_input(&host, device_name.as_deref()) {
         Ok(device) => device,
@@ -189,7 +185,7 @@ fn capture_loop(
     let config = match device.default_input_config() {
         Ok(config) => config,
         Err(err) => {
-            let err = locale::format("mic.open", &[("err", &err.to_string())]);
+            let err = CaptureError::MicOpen(err.to_string());
             let _ = ready.send(Err(err.clone()));
             return Err(err);
         }
@@ -206,7 +202,7 @@ fn capture_loop(
         SampleFormat::U16 => {
             build_stream::<u16>(&device, &config.into(), Arc::clone(&buffer), channels)
         }
-        _ => Err(locale::text("mic.format").to_string()),
+        _ => Err(CaptureError::MicFormat),
     };
     let stream = match stream {
         Ok(stream) => stream,
@@ -216,7 +212,7 @@ fn capture_loop(
         }
     };
     if let Err(err) = stream.play() {
-        let err = locale::format("mic.start_detail", &[("err", &err.to_string())]);
+        let err = CaptureError::MicStartDetail(err.to_string());
         let _ = ready.send(Err(err.clone()));
         return Err(err);
     }
@@ -233,7 +229,7 @@ fn build_stream<T>(
     config: &cpal::StreamConfig,
     buffer: Arc<Mutex<SampleBuf>>,
     channels: u16,
-) -> Result<Stream, String>
+) -> Result<Stream, CaptureError>
 where
     T: Sample + cpal::SizedSample,
     f32: FromSample<T>,
@@ -250,7 +246,7 @@ where
             },
             None,
         )
-        .map_err(|err| locale::format("mic.open", &[("err", &err.to_string())]))
+        .map_err(|err| CaptureError::MicOpen(err.to_string()))
 }
 
 fn push_mono<T>(buffer: &Mutex<SampleBuf>, data: &[T], channels: usize)
@@ -286,9 +282,9 @@ where
     }
 }
 
-pub(crate) fn encode_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, String> {
+pub fn encode_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, CaptureError> {
     if sample_rate == 0 {
-        return Err(locale::text("mic.rate").to_string());
+        return Err(CaptureError::MicRate);
     }
     let spec = hound::WavSpec {
         channels: 1,
@@ -297,30 +293,32 @@ pub(crate) fn encode_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, S
         sample_format: hound::SampleFormat::Int,
     };
     let mut cursor = Cursor::new(Vec::new());
-    let mut writer = hound::WavWriter::new(&mut cursor, spec)
-        .map_err(|_| locale::text("mic.encode").to_string())?;
+    let mut writer =
+        hound::WavWriter::new(&mut cursor, spec).map_err(|_| CaptureError::MicEncode)?;
     for sample in samples {
         let clipped = sample.clamp(-1.0, 1.0);
         let value = (clipped * f32::from(i16::MAX)) as i16;
         writer
             .write_sample(value)
-            .map_err(|_| locale::text("mic.encode").to_string())?;
+            .map_err(|_| CaptureError::MicEncode)?;
     }
-    writer
-        .finalize()
-        .map_err(|_| locale::text("mic.encode").to_string())?;
+    writer.finalize().map_err(|_| CaptureError::MicEncode)?;
     Ok(cursor.into_inner())
 }
 
-fn transcribe_wav(wav: &[u8], api_key: &str, speech: &SpeechRequest) -> Result<String, String> {
+fn transcribe_wav(
+    wav: &[u8],
+    api_key: &str,
+    speech: &SpeechRequest,
+) -> Result<String, CaptureError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
-        .map_err(|_| locale::text("mic.groq_client").to_string())?;
+        .map_err(|_| CaptureError::GroqClient)?;
     let part = multipart::Part::bytes(wav.to_vec())
         .file_name("audio.wav")
         .mime_str("audio/wav")
-        .map_err(|_| locale::text("mic.encode").to_string())?;
+        .map_err(|_| CaptureError::MicEncode)?;
     let model = if speech.model.trim().is_empty() {
         GROQ_MODEL
     } else {
@@ -343,21 +341,16 @@ fn transcribe_wav(wav: &[u8], api_key: &str, speech: &SpeechRequest) -> Result<S
         .bearer_auth(api_key)
         .multipart(form)
         .send()
-        .map_err(|_| locale::text("mic.groq_reach").to_string())?;
+        .map_err(|_| CaptureError::GroqReach)?;
     let status = response.status();
     if !status.is_success() {
-        return Err(locale::format(
-            "mic.groq_failed",
-            &[("status", &status.to_string())],
-        ));
+        return Err(CaptureError::GroqFailed(status.to_string()));
     }
-    let body = response
-        .text()
-        .map_err(|_| locale::text("mic.groq_unreadable").to_string())?;
-    transcript_from_json(&body).map_err(|_| locale::text("mic.groq_unexpected").to_string())
+    let body = response.text().map_err(|_| CaptureError::GroqUnreadable)?;
+    transcript_from_json(&body).map_err(|_| CaptureError::GroqUnexpected)
 }
 
-pub(crate) fn transcript_from_json(body: &str) -> Result<String, ()> {
+pub fn transcript_from_json(body: &str) -> Result<String, ()> {
     let value: serde_json::Value = serde_json::from_str(body).map_err(|_| ())?;
     let text = value
         .get("text")

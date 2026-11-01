@@ -8,19 +8,38 @@ use std::path::{Path, PathBuf};
 
 use superglue::openai::{ChatMessage, ContentPart, MessageContent};
 
+/// Why one parked file cannot be sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttachError {
+    /// The send already has the maximum number of files.
+    MaxFiles,
+    /// The name is not an image, a PDF, or UTF-8 text.
+    Unsupported { name: String },
+    /// The file could not be read.
+    Read { name: String },
+    /// The file is larger than 8 MiB.
+    TooLarge { name: String },
+    /// The file has no bytes.
+    Empty { name: String },
+    /// A text file is not UTF-8.
+    NotUtf8 { name: String },
+    /// The file could not become a model part.
+    Failed { name: String },
+}
+
 /// Most files one send accepts.
-pub(crate) const MAX_FILES: usize = 8;
+pub const MAX_FILES: usize = 8;
 /// Largest file one send accepts.
-pub(crate) const MAX_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 /// A path waiting for the next send.
-pub(crate) struct ParkedFile {
+pub struct ParkedFile {
     pub path: PathBuf,
     pub name: String,
 }
 
 /// Bytes read from one parked file.
-pub(crate) struct LoadedFile {
+pub struct LoadedFile {
     pub name: String,
     bytes: Vec<u8>,
 }
@@ -32,10 +51,7 @@ enum Kind {
 }
 
 /// The model message and the transcript line for one send.
-pub(crate) fn prepare(
-    instruction: &str,
-    paths: &[PathBuf],
-) -> Result<(String, ChatMessage), String> {
+pub fn prepare(instruction: &str, paths: &[PathBuf]) -> Result<(String, ChatMessage), AttachError> {
     let loaded = load_paths(paths)?;
     let names: Vec<String> = loaded.iter().map(|file| file.name.clone()).collect();
     let message = user_message(instruction, &loaded)?;
@@ -43,7 +59,7 @@ pub(crate) fn prepare(
 }
 
 /// Transcript text. File bytes stay out of this line.
-pub(crate) fn display_line(instruction: &str, names: &[String]) -> String {
+pub fn display_line(instruction: &str, names: &[String]) -> String {
     let instruction = instruction.trim();
     if names.is_empty() {
         return instruction.to_string();
@@ -57,9 +73,9 @@ pub(crate) fn display_line(instruction: &str, names: &[String]) -> String {
 }
 
 /// One user message. Images, then PDFs, then text files.
-pub(crate) fn user_message(instruction: &str, files: &[LoadedFile]) -> Result<ChatMessage, String> {
+pub fn user_message(instruction: &str, files: &[LoadedFile]) -> Result<ChatMessage, AttachError> {
     if files.len() > MAX_FILES {
-        return Err(crate::locale::text("archivist.max_files").to_string());
+        return Err(AttachError::MaxFiles);
     }
     let mut images = Vec::new();
     let mut pdfs = Vec::new();
@@ -89,21 +105,22 @@ pub(crate) fn user_message(instruction: &str, files: &[LoadedFile]) -> Result<Ch
         parts.push(pdf_part(file)?);
     }
     for file in texts {
-        let text = std::str::from_utf8(&file.bytes).map_err(|_| {
-            crate::locale::format("archivist.not_utf8", &[("name", file.name.as_str())])
+        let text = std::str::from_utf8(&file.bytes).map_err(|_| AttachError::NotUtf8 {
+            name: file.name.clone(),
         })?;
         parts.push(ContentPart::Text {
             text: format!("File `{}`.\n\n{text}", file.name),
         });
     }
-    let mut message = ChatMessage::default();
-    message.role = "user".to_string();
-    message.content = Some(MessageContent::Parts(parts));
-    Ok(message)
+    Ok(ChatMessage {
+        role: "user".to_string(),
+        content: Some(MessageContent::Parts(parts)),
+        ..ChatMessage::default()
+    })
 }
 
 /// File name shown on the card and in errors.
-pub(crate) fn file_name(path: &Path) -> String {
+pub fn file_name(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
@@ -111,9 +128,9 @@ pub(crate) fn file_name(path: &Path) -> String {
         .to_string()
 }
 
-fn load_paths(paths: &[PathBuf]) -> Result<Vec<LoadedFile>, String> {
+fn load_paths(paths: &[PathBuf]) -> Result<Vec<LoadedFile>, AttachError> {
     if paths.len() > MAX_FILES {
-        return Err(crate::locale::text("archivist.max_files").to_string());
+        return Err(AttachError::MaxFiles);
     }
     let mut loaded = Vec::with_capacity(paths.len());
     for path in paths {
@@ -122,54 +139,38 @@ fn load_paths(paths: &[PathBuf]) -> Result<Vec<LoadedFile>, String> {
     Ok(loaded)
 }
 
-fn load_one(path: &Path) -> Result<LoadedFile, String> {
+fn load_one(path: &Path) -> Result<LoadedFile, AttachError> {
     let name = file_name(path);
     if kind(&name).is_none() {
-        return Err(crate::locale::format(
-            "archivist.unsupported",
-            &[("name", name.as_str())],
-        ));
+        return Err(AttachError::Unsupported { name });
     }
-    let meta = std::fs::metadata(path)
-        .map_err(|_| crate::locale::format("archivist.read_name", &[("name", name.as_str())]))?;
+    let meta = std::fs::metadata(path).map_err(|_| AttachError::Read { name: name.clone() })?;
     if !meta.is_file() {
-        return Err(crate::locale::format(
-            "archivist.unsupported",
-            &[("name", name.as_str())],
-        ));
+        return Err(AttachError::Unsupported { name });
     }
     if meta.len() > MAX_BYTES {
-        return Err(crate::locale::format(
-            "archivist.too_large",
-            &[("name", name.as_str())],
-        ));
+        return Err(AttachError::TooLarge { name });
     }
-    let bytes = std::fs::read(path)
-        .map_err(|_| crate::locale::format("archivist.read_name", &[("name", name.as_str())]))?;
+    let bytes = std::fs::read(path).map_err(|_| AttachError::Read { name: name.clone() })?;
     if bytes.len() as u64 > MAX_BYTES {
-        return Err(crate::locale::format(
-            "archivist.too_large",
-            &[("name", name.as_str())],
-        ));
+        return Err(AttachError::TooLarge { name });
     }
     Ok(LoadedFile { name, bytes })
 }
 
-fn classify(file: &LoadedFile) -> Result<Kind, String> {
-    let kind = kind(&file.name).ok_or_else(|| {
-        crate::locale::format("archivist.unsupported", &[("name", file.name.as_str())])
+fn classify(file: &LoadedFile) -> Result<Kind, AttachError> {
+    let kind = kind(&file.name).ok_or_else(|| AttachError::Unsupported {
+        name: file.name.clone(),
     })?;
     if file.bytes.is_empty() {
-        return Err(crate::locale::format(
-            "archivist.empty_file",
-            &[("name", file.name.as_str())],
-        ));
+        return Err(AttachError::Empty {
+            name: file.name.clone(),
+        });
     }
     if file.bytes.len() as u64 > MAX_BYTES {
-        return Err(crate::locale::format(
-            "archivist.too_large",
-            &[("name", file.name.as_str())],
-        ));
+        return Err(AttachError::TooLarge {
+            name: file.name.clone(),
+        });
     }
     Ok(kind)
 }
@@ -192,25 +193,26 @@ fn kind(name: &str) -> Option<Kind> {
     }
 }
 
-fn image_part(file: &LoadedFile) -> Result<ContentPart, String> {
+fn image_part(file: &LoadedFile) -> Result<ContentPart, AttachError> {
     let message = superglue::images::message_with_image_bytes(None, &file.name, &file.bytes);
     sole_part(message, &file.name)
 }
 
-fn pdf_part(file: &LoadedFile) -> Result<ContentPart, String> {
+fn pdf_part(file: &LoadedFile) -> Result<ContentPart, AttachError> {
     let message = superglue::files::message_with_file_bytes(None, &file.name, &file.bytes);
     sole_part(message, &file.name)
 }
 
-fn sole_part(message: ChatMessage, name: &str) -> Result<ContentPart, String> {
+fn sole_part(message: ChatMessage, name: &str) -> Result<ContentPart, AttachError> {
     match message.content {
-        Some(MessageContent::Parts(mut parts)) if parts.len() == 1 => parts
-            .pop()
-            .ok_or_else(|| crate::locale::format("archivist.attach_failed", &[("name", name)])),
-        _ => Err(crate::locale::format(
-            "archivist.attach_failed",
-            &[("name", name)],
-        )),
+        Some(MessageContent::Parts(mut parts)) if parts.len() == 1 => {
+            parts.pop().ok_or_else(|| AttachError::Failed {
+                name: name.to_string(),
+            })
+        }
+        _ => Err(AttachError::Failed {
+            name: name.to_string(),
+        }),
     }
 }
 
@@ -290,20 +292,35 @@ mod tests {
     fn a_large_file_fails() {
         let bytes = vec![0_u8; MAX_BYTES as usize + 1];
         let error = user_message("Look.", &[loaded("big.png", &bytes)]).expect_err("large");
-        assert_eq!(error, "big.png is larger than 8 MiB.");
+        assert_eq!(
+            error,
+            AttachError::TooLarge {
+                name: "big.png".to_string()
+            }
+        );
     }
 
     #[test]
     fn a_binary_file_fails() {
         let error = user_message("Look.", &[loaded("data.bin", b"secret-bytes")]).expect_err("bin");
-        assert_eq!(error, "data.bin is not a supported file.");
-        assert!(!error.contains("secret-bytes"));
+        assert_eq!(
+            error,
+            AttachError::Unsupported {
+                name: "data.bin".to_string()
+            }
+        );
+        assert!(!format!("{error:?}").contains("secret-bytes"));
     }
 
     #[test]
     fn text_that_is_not_utf8_fails() {
         let error = user_message("Look.", &[loaded("note.txt", b"\xff")]).expect_err("utf8");
-        assert_eq!(error, "note.txt is not UTF-8 text.");
+        assert_eq!(
+            error,
+            AttachError::NotUtf8 {
+                name: "note.txt".to_string()
+            }
+        );
     }
 
     #[test]
@@ -330,7 +347,12 @@ mod tests {
             Ok(_) => panic!("a missing file must fail"),
             Err(error) => error,
         };
-        assert_eq!(error, "Cannot read note.txt.");
+        assert_eq!(
+            error,
+            AttachError::Read {
+                name: "note.txt".to_string()
+            }
+        );
     }
 
     #[cfg(unix)]

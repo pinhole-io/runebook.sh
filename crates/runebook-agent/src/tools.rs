@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use superglue::Client;
 use superglue::tools::{Tool, ToolContextPolicy, ToolInvokeError, ToolSpec};
 
-use super::VaultChange;
+use crate::VaultChange;
 
 const READ_CAP: usize = 32 * 1024;
 const LIST_CAP: usize = 400;
@@ -113,7 +113,7 @@ fn operations() -> &'static [Operation] {
 ///
 /// The client register path fails the turn when a tool returns an error.
 /// A rejected id is a JSON result so the model can continue.
-pub(super) async fn register(
+pub async fn register(
     client: &Client,
     vault: Vault,
     changes: Arc<Mutex<Vec<VaultChange>>>,

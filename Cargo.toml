@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/runebook", "crates/runebook-app"]
+members = [
+    "crates/runebook",
+    "crates/runebook-agent",
+    "crates/runebook-app",
+    "crates/runebook-capture",
+    "crates/runebook-preview",
+    "crates/runebook-research",
+]
 
 [workspace.package]
 version = "0.1.0"

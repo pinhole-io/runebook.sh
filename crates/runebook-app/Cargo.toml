@@ -12,21 +12,17 @@ name = "runebook"
 path = "src/main.rs"
 
 [dependencies]
-async-trait = "0.1"
 futures = "0.3"
-charlotte = { path = "../../../charlotte", default-features = false, features = ["notepad"] }
 cpal = "0.15"
-emojis = "0.9"
 gpui-kit = { version = "0.8.1", features = ["tree-sitter-languages", "gpui-fast"] }
 latex-rust = "2.1.1"
-hound = "3.5"
 image = { version = "0.25", default-features = false, features = ["png"] }
-reqwest = { version = "0.12", features = ["blocking", "json", "multipart"] }
+reqwest = { version = "0.12", features = ["blocking", "json"] }
 runebook = { path = "../runebook" }
+runebook-agent = { path = "../runebook-agent" }
+runebook-capture = { path = "../runebook-capture" }
+runebook-preview = { path = "../runebook-preview" }
+runebook-research = { path = "../runebook-research" }
 serde_json = "1"
 superglue = { path = "../../../superglue", default-features = false }
 tokio = { version = "1", features = ["net", "rt-multi-thread", "sync", "time"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-wayland-client = "0.31.15"
-wayland-protocols-wlr = { version = "0.3.12", default-features = false, features = ["client"] }

@@ -101,9 +101,9 @@ pub(super) fn surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> im
             slice,
         );
         let selected = bounds.is_some_and(|(lo, hi)| index >= lo && index <= hi);
-        let (checked, source) = row_source(&slice);
-        let pad = super::rows::list_pad(&slice);
-        let clip = crate::playback::media_link(&slice).map(|link| {
+        let (checked, source) = row_source(slice);
+        let pad = super::rows::list_pad(slice);
+        let clip = crate::playback::media_link(slice).map(|link| {
             let playing = pane.playing_href() == Some(link.href.as_str());
             let poster = pane.picture(&link.href);
             let rendered = pane.live_picture(&link.href);
@@ -132,7 +132,7 @@ pub(super) fn surface(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> im
                 muted,
             }
         });
-        let prepared = crate::anchors::prepare(&pane.latest, &source);
+        let prepared = runebook_preview::prepare(&pane.latest, &source);
         let row = note_row(
             index,
             room_before,

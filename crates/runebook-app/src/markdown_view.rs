@@ -49,9 +49,9 @@ pub(crate) fn view(
     cx: &App,
 ) -> TextView {
     let shielded = shield_details(&source.into());
-    let expanded = crate::emoji::expand(&shielded);
-    let source = SharedString::from(crate::html_style::style_html(&expanded));
-    let links = Arc::new(crate::anchors::link_urls(source.as_ref()));
+    let expanded = runebook_preview::expand(&shielded);
+    let source = SharedString::from(runebook_preview::style_html(&expanded));
+    let links = Arc::new(runebook_preview::link_urls(source.as_ref()));
     let images = Arc::new(images);
     let parser_links = Arc::clone(&links);
     TextView::markdown(id, source)
@@ -98,15 +98,17 @@ fn note_style(cx: &App) -> TextViewStyle {
     let spacing = crate::theme::note_spacing();
     let heading_1 = spacing.heading_1;
     let heading_2 = spacing.heading_2;
-    let mut style = TextViewStyle::default();
-    style.paragraph_gap = rems(spacing.paragraph_gap);
-    style.heading_base_font_size = body;
-    style.heading_font_size = Some(Arc::new(move |level, base| match level {
-        1 => base * heading_1,
-        2 => base * heading_2,
-        _ => base,
-    }));
-    style.highlight_theme = cx.theme().highlight_theme.clone();
+    let mut style = TextViewStyle {
+        paragraph_gap: rems(spacing.paragraph_gap),
+        heading_base_font_size: body,
+        heading_font_size: Some(Arc::new(move |level, base| match level {
+            1 => base * heading_1,
+            2 => base * heading_2,
+            _ => base,
+        })),
+        highlight_theme: cx.theme().highlight_theme.clone(),
+        ..TextViewStyle::default()
+    };
     if let Some(color) = code_color(cx) {
         style.inline_code.color = Some(color);
         style.code_block.text.color = Some(color);
@@ -250,7 +252,7 @@ fn details_code(code: &markdown_ast::Code) -> Option<MarkdownNode> {
 }
 
 fn html_block(html: &str) -> Option<MarkdownNode> {
-    if let Some(items) = crate::html_style::def_list(html) {
+    if let Some(items) = runebook_preview::def_list(html) {
         let text = items
             .iter()
             .map(|(term, _)| term.as_str())
@@ -258,7 +260,7 @@ fn html_block(html: &str) -> Option<MarkdownNode> {
             .join(", ");
         return Some(MarkdownNode::new("md-deflist", DefList { items }).text(text));
     }
-    if let Some((url, alt)) = crate::html_style::figure_html(html) {
+    if let Some((url, alt)) = runebook_preview::figure_html(html) {
         return Some(
             MarkdownNode::new(
                 "md-figure",
@@ -832,7 +834,7 @@ fn details_parts(html: &str) -> Option<Details> {
     let (summary, body_at) = if let Some(start) = lower.find("<summary") {
         let content = start + lower[start..].find('>')? + 1;
         let close = content + lower[content..].find("</summary>")?;
-        let summary = crate::html_style::visible_text(&html[content..close]);
+        let summary = runebook_preview::visible_text(&html[content..close]);
         let summary = if summary.is_empty() {
             "Details".to_string()
         } else {
@@ -898,7 +900,7 @@ impl MarkdownPlugin for HtmlInline {
         let markdown_ast::Node::Link(link) = node else {
             return None;
         };
-        let kind = link.url.strip_prefix(crate::html_style::HTML_WIDGET)?;
+        let kind = link.url.strip_prefix(runebook_preview::HTML_WIDGET)?;
         if !matches!(kind, "kbd" | "sup" | "sub" | "small") {
             return None;
         }

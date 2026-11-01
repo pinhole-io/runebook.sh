@@ -2,14 +2,11 @@
 //!
 //! The core crate owns files and wiki links. This binary only draws them.
 
-mod anchors;
 mod archivist;
 mod capture;
 mod chrome;
 mod dock;
-mod emoji;
 mod finder;
-mod html_style;
 mod http;
 mod icon;
 mod launch;

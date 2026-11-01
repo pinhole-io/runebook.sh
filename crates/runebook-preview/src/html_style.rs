@@ -4,10 +4,10 @@
 //! markdown the kit already draws, or into a private link the preview paints.
 //! Fenced code, indented code, inline code, and comments stay literal.
 
-pub(crate) const HTML_WIDGET: &str = "#rb-html-";
+pub const HTML_WIDGET: &str = "#rb-html-";
 
 /// Rewrite HTML in `source` into markdown, outside code and comments.
-pub(crate) fn style_html(source: &str) -> String {
+pub fn style_html(source: &str) -> String {
     if source.is_empty() || indented_code(source) {
         return source.to_string();
     }
@@ -15,7 +15,7 @@ pub(crate) fn style_html(source: &str) -> String {
 }
 
 /// Text with tags removed and entities decoded.
-pub(crate) fn visible_text(html: &str) -> String {
+pub fn visible_text(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut chars = html.chars();
     while let Some(ch) = chars.next() {
@@ -34,7 +34,7 @@ pub(crate) fn visible_text(html: &str) -> String {
 }
 
 /// `Some` when `html` is one `<dl>` of terms and definitions.
-pub(crate) fn def_list(html: &str) -> Option<Vec<(String, String)>> {
+pub fn def_list(html: &str) -> Option<Vec<(String, String)>> {
     if !outer_tag(html, "dl") {
         return None;
     }
@@ -77,7 +77,7 @@ pub(crate) fn def_list(html: &str) -> Option<Vec<(String, String)>> {
 }
 
 /// `Some(url, caption)` when `html` is one `<figure>` with an image.
-pub(crate) fn figure_html(html: &str) -> Option<(String, String)> {
+pub fn figure_html(html: &str) -> Option<(String, String)> {
     if !outer_tag(html, "figure") || html.to_ascii_lowercase().contains("<details") {
         return None;
     }
@@ -814,7 +814,7 @@ fn decode_entities(text: &str) -> String {
 fn entity(text: &str, start: usize) -> Option<(char, usize)> {
     let rest = text.get(start..)?;
     let end = rest.find(';')?;
-    if end < 3 || end > 12 {
+    if !(3..=12).contains(&end) {
         return None;
     }
     let body = &rest[1..end];

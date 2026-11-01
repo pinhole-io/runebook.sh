@@ -8,14 +8,14 @@ use std::collections::HashMap;
 use runebook::preview_markdown;
 
 /// Markdown for one preview row, plus whether appended definitions stay hidden.
-pub(crate) struct Prepared {
+pub struct Prepared {
     pub source: String,
     /// `true` when this row carries definitions only so references resolve.
     pub hide_anchors: bool,
 }
 
 /// Build the markdown a preview row should parse.
-pub(crate) fn prepare(note: &str, row: &str) -> Prepared {
+pub fn prepare(note: &str, row: &str) -> Prepared {
     let anchors = collect(note);
     if is_literal(row) || is_anchor_row(row) {
         return Prepared {
@@ -41,7 +41,7 @@ pub(crate) fn prepare(note: &str, row: &str) -> Prepared {
 }
 
 /// Destination URL for each link id in `source`.
-pub(crate) fn link_urls(source: &str) -> HashMap<String, String> {
+pub fn link_urls(source: &str) -> HashMap<String, String> {
     collect(source)
         .links
         .into_iter()

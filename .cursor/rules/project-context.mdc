@@ -10,6 +10,10 @@ Local markdown notes at `projects/runebook.sh/`.
 ## Crates
 
 - `crates/runebook` owns the vault, note ids, wiki links, and the in-memory index.
+- `crates/runebook-preview` rewrites preview text. It does not open a vault.
+- `crates/runebook-capture` records the microphone and the screen.
+- `crates/runebook-agent` runs Archivist tools and builds the system prompt.
+- `crates/runebook-research` parses a research note and runs Charlotte.
 - `crates/runebook-app` owns the GPUI window. Do not put file rules in the app crate.
 
 ## Vault

@@ -3,7 +3,7 @@
 //! A shortcode inside a fence or inline code stays literal.
 
 /// Replace `:name:` in prose. Fenced code and inline code stay literal.
-pub(crate) fn expand(source: &str) -> String {
+pub fn expand(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut fence: Option<(char, usize)> = None;
     for line in source.split_inclusive('\n') {

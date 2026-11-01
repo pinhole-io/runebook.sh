@@ -1,17 +1,20 @@
-//! Microphone transcription and screen recording for the open note.
+//! Microphone transcription and screen recording.
+//!
+//! The caller passes the output path, the Groq key, and the speech model.
+//! A failure is a [`CaptureError`]. This crate does not choose window text.
 
+mod error;
 mod screen;
 mod voice;
 
-pub(crate) use screen::{ScreenCapture, ScreenTarget, list_record_sources, window_list_error};
-pub(crate) use voice::{
-    SpeechRequest, VoiceCapture, VoiceOutcome, list_input_devices, voice_to_text,
-};
+pub use error::CaptureError;
+pub use screen::{RecordSource, ScreenCapture, ScreenTarget, list_record_sources};
+pub use voice::{SpeechRequest, VoiceCapture, VoiceOutcome, list_input_devices, voice_to_text};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Append `block` after `body`, with a blank line between them.
-pub(crate) fn append_block(body: &str, block: &str) -> String {
+pub fn append_block(body: &str, block: &str) -> String {
     if body.is_empty() {
         return format!("{block}\n");
     }
@@ -25,7 +28,7 @@ pub(crate) fn append_block(body: &str, block: &str) -> String {
 }
 
 /// Markdown link. Angle brackets keep spaces and parentheses in the path.
-pub(crate) fn markdown_link(label: &str, file_name: &str) -> String {
+pub fn markdown_link(label: &str, file_name: &str) -> String {
     if file_name.contains([' ', '(', ')']) {
         format!("[{label}](<{file_name}>)")
     } else {
@@ -34,7 +37,7 @@ pub(crate) fn markdown_link(label: &str, file_name: &str) -> String {
 }
 
 /// UTC time as `YYYYMMDDTHHMMSSZ`.
-pub(crate) fn utc_stamp(unix_secs: u64) -> String {
+pub fn utc_stamp(unix_secs: u64) -> String {
     let days = (unix_secs / 86_400) as i64;
     let tod = unix_secs % 86_400;
     let hour = tod / 3_600;
@@ -44,7 +47,7 @@ pub(crate) fn utc_stamp(unix_secs: u64) -> String {
     format!("{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}Z")
 }
 
-pub(crate) fn utc_stamp_now() -> String {
+pub fn utc_stamp_now() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())

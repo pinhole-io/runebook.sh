@@ -8,7 +8,7 @@
 #[cfg(target_os = "linux")]
 mod wayland;
 
-use crate::locale;
+use crate::CaptureError;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 /// What the next recording should grab.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ScreenTarget {
+pub enum ScreenTarget {
     /// The whole display. On Wayland this is the focused output.
     Display,
     /// One X11 window. The value is the window id.
@@ -32,37 +32,33 @@ pub(crate) enum ScreenTarget {
 }
 
 /// One menu row that starts a recording.
-pub(crate) struct RecordSource {
+pub struct RecordSource {
     pub title: String,
     pub target: ScreenTarget,
 }
 
 /// A window the user can record.
-pub(crate) struct RecordWindow {
+pub struct RecordWindow {
     pub id: u64,
     pub title: String,
 }
 
-pub(crate) fn window_list_error() -> &'static str {
-    crate::locale::text("capture.window_list")
-}
-
 const MAX_WINDOWS: usize = 50;
 
-pub(crate) struct ScreenCapture {
+pub struct ScreenCapture {
     child: Option<Child>,
     output: PathBuf,
-    pub(crate) file_name: String,
+    pub file_name: String,
     #[cfg(target_os = "linux")]
     grab: Option<wayland::Grab>,
 }
 
 impl ScreenCapture {
-    pub(crate) fn start(
+    pub fn start(
         output: PathBuf,
         file_name: String,
         target: ScreenTarget,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, CaptureError> {
         #[cfg(target_os = "linux")]
         if wayland_session() {
             let grab = wayland::Grab::start(output.clone(), target)?;
@@ -76,7 +72,7 @@ impl ScreenCapture {
         #[cfg(target_os = "macos")]
         {
             if !matches!(target, ScreenTarget::Display) {
-                return Err(locale::text("screen.macos").to_string());
+                return Err(CaptureError::MacosDisplayOnly);
             }
             let args = ffmpeg_args_macos(&output);
             return spawn_ffmpeg(output, file_name, &args);
@@ -84,7 +80,7 @@ impl ScreenCapture {
         #[cfg(not(target_os = "macos"))]
         {
             if matches!(target, ScreenTarget::Region { .. }) {
-                return Err(locale::text("screen.window_display").to_string());
+                return Err(CaptureError::WindowOnDisplay);
             }
             let display_var = std::env::var("DISPLAY").ok();
             let display = require_display(display_var.as_deref())?;
@@ -93,12 +89,11 @@ impl ScreenCapture {
         }
     }
 
-    pub(crate) fn stop(mut self) -> Result<(), String> {
+    pub fn stop(mut self) -> Result<(), CaptureError> {
         self.stop_process();
-        let meta = std::fs::metadata(&self.output)
-            .map_err(|_| locale::text("screen.no_video").to_string())?;
+        let meta = std::fs::metadata(&self.output).map_err(|_| CaptureError::NoVideo)?;
         if meta.len() == 0 {
-            return Err(locale::text("screen.no_video").to_string());
+            return Err(CaptureError::NoVideo);
         }
         Ok(())
     }
@@ -122,20 +117,20 @@ impl Drop for ScreenCapture {
     }
 }
 
-pub(crate) fn require_display(display: Option<&str>) -> Result<&str, String> {
+pub fn require_display(display: Option<&str>) -> Result<&str, CaptureError> {
     match display.map(str::trim).filter(|value| !value.is_empty()) {
         Some(display) => Ok(display),
-        None => Err(locale::text("screen.x11").to_string()),
+        None => Err(CaptureError::X11Display),
     }
 }
 
-pub(crate) fn wayland_session() -> bool {
+pub fn wayland_session() -> bool {
     std::env::var("WAYLAND_DISPLAY")
         .ok()
         .is_some_and(|value| !value.trim().is_empty())
 }
 
-pub(crate) fn ffmpeg_args(display: &str, output: &Path, target: &ScreenTarget) -> Vec<String> {
+pub fn ffmpeg_args(display: &str, output: &Path, target: &ScreenTarget) -> Vec<String> {
     let mut args = vec![
         "-y".to_string(),
         "-f".to_string(),
@@ -191,7 +186,7 @@ fn spawn_ffmpeg(
     output: PathBuf,
     file_name: String,
     args: &[String],
-) -> Result<ScreenCapture, String> {
+) -> Result<ScreenCapture, CaptureError> {
     let mut cmd = Command::new("ffmpeg");
     cmd.args(args)
         .stdin(Stdio::null())
@@ -200,13 +195,10 @@ fn spawn_ffmpeg(
     let child = match cmd.spawn() {
         Ok(child) => child,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(locale::text("screen.ffmpeg_missing").to_string());
+            return Err(CaptureError::FfmpegMissing);
         }
         Err(err) => {
-            return Err(locale::format(
-                "screen.ffmpeg_start",
-                &[("err", &err.to_string())],
-            ));
+            return Err(CaptureError::FfmpegStart(err.to_string()));
         }
     };
     Ok(ScreenCapture {
@@ -223,7 +215,7 @@ fn spawn_ffmpeg(
 /// # Errors
 ///
 /// Returns [`window_list_error`] when either command fails.
-pub(crate) fn list_windows() -> Result<Vec<RecordWindow>, String> {
+pub fn list_windows() -> Result<Vec<RecordWindow>, CaptureError> {
     let clients = command_stdout("xprop", &["-root", "_NET_CLIENT_LIST"])?;
     let tree = command_stdout("xwininfo", &["-root", "-tree"])?;
     Ok(windows_from_text(&clients, &tree))
@@ -238,7 +230,7 @@ pub(crate) fn list_windows() -> Result<Vec<RecordWindow>, String> {
 /// # Errors
 ///
 /// Returns [`window_list_error`] when the list cannot be read.
-pub(crate) fn list_record_sources() -> Result<Vec<RecordSource>, String> {
+pub fn list_record_sources() -> Result<Vec<RecordSource>, CaptureError> {
     #[cfg(target_os = "macos")]
     {
         return Ok(Vec::new());
@@ -265,21 +257,21 @@ pub(super) fn focused_output_name() -> Option<String> {
     focused_output(&text)
 }
 
-fn command_stdout(program: &str, args: &[&str]) -> Result<String, String> {
+fn command_stdout(program: &str, args: &[&str]) -> Result<String, CaptureError> {
     let output = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
-        .map_err(|_| window_list_error().to_string())?;
+        .map_err(|_| CaptureError::WindowList)?;
     if !output.status.success() {
-        return Err(window_list_error().to_string());
+        return Err(CaptureError::WindowList);
     }
-    String::from_utf8(output.stdout).map_err(|_| window_list_error().to_string())
+    String::from_utf8(output.stdout).map_err(|_| CaptureError::WindowList)
 }
 
-pub(crate) fn windows_from_text(clients: &str, tree: &str) -> Vec<RecordWindow> {
+pub fn windows_from_text(clients: &str, tree: &str) -> Vec<RecordWindow> {
     let mut windows = Vec::new();
     for id in client_ids(clients) {
         if windows.len() == MAX_WINDOWS {
@@ -360,9 +352,9 @@ fn hex_ids_with_end(text: &str) -> impl Iterator<Item = (u64, usize)> + '_ {
     })
 }
 
-pub(crate) fn sources_from_sway(tree: &str) -> Result<Vec<RecordSource>, String> {
+pub fn sources_from_sway(tree: &str) -> Result<Vec<RecordSource>, CaptureError> {
     let root: serde_json::Value =
-        serde_json::from_str(tree).map_err(|_| window_list_error().to_string())?;
+        serde_json::from_str(tree).map_err(|_| CaptureError::WindowList)?;
     let mut sources = Vec::new();
     walk_sway(&root, None, &mut sources);
     Ok(sources)

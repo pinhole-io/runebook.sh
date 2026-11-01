@@ -1,0 +1,15 @@
+[package]
+name = "runebook-research"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Research note text and the Charlotte investigation run"
+
+[dependencies]
+charlotte = { path = "../../../charlotte", default-features = false, features = ["notepad"] }
+thiserror.workspace = true
+runebook = { path = "../runebook" }
+superglue = { path = "../../../superglue", default-features = false }
+tokio = { version = "1", features = ["net", "rt-multi-thread", "sync", "time"] }

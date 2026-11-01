@@ -242,7 +242,7 @@ pub(crate) fn parse_model_ids(body: &str) -> Vec<String> {
         }
         ids.push(id.to_string());
     }
-    ids.sort_by(|left, right| left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase()));
+    ids.sort_by_key(|id| id.to_ascii_lowercase());
     ids.truncate(MODEL_LIST_LIMIT);
     ids
 }

@@ -5,6 +5,10 @@ Runebook is a local markdown note app. The window uses [GPUI Kit](https://gpui-k
 ## Crates
 
 - `runebook` reads and writes the vault.
+- `runebook-preview` prepares preview text.
+- `runebook-capture` records voice and the screen.
+- `runebook-agent` runs the Archivist tools.
+- `runebook-research` runs a research note.
 - `runebook-app` is the desktop window.
 
 ## Run the app

@@ -1,0 +1,18 @@
+[package]
+name = "runebook-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Microphone transcription and screen recording"
+
+[dependencies]
+cpal = "0.15"
+hound = "3.5"
+reqwest = { version = "0.12", features = ["blocking", "multipart"] }
+serde_json = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "0.31.15"
+wayland-protocols-wlr = { version = "0.3.12", default-features = false, features = ["client"] }

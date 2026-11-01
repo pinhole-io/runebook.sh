@@ -151,11 +151,13 @@ fn notes(
                 note_view_group(pane, view.clone(), locale::text("settings.note_view.tip")),
             ))
             .child(toggle_row(
-                "line-numbers",
-                "line-numbers-label",
-                locale::text("settings.line_numbers"),
-                locale::text("settings.line_numbers.desc"),
-                locale::text("settings.line_numbers.tip"),
+                SwitchCopy {
+                    id: "line-numbers",
+                    label_id: "line-numbers-label",
+                    label: locale::text("settings.line_numbers"),
+                    sentence: locale::text("settings.line_numbers.desc"),
+                    tip: locale::text("settings.line_numbers.tip"),
+                },
                 pane.line_numbers,
                 muted,
                 {
@@ -173,11 +175,13 @@ fn notes(
                 },
             ))
             .child(toggle_row(
-                "soft-wrap",
-                "soft-wrap-label",
-                locale::text("settings.wrap"),
-                locale::text("settings.wrap.desc"),
-                locale::text("settings.wrap.tip"),
+                SwitchCopy {
+                    id: "soft-wrap",
+                    label_id: "soft-wrap-label",
+                    label: locale::text("settings.wrap"),
+                    sentence: locale::text("settings.wrap.desc"),
+                    tip: locale::text("settings.wrap.tip"),
+                },
                 pane.soft_wrap,
                 muted,
                 {
@@ -203,11 +207,13 @@ fn notes(
                 autosave_group(pane, view.clone(), locale::text("settings.autosave.tip")),
             ))
             .child(toggle_row(
-                "reopen-note",
-                "reopen-label",
-                locale::text("settings.reopen"),
-                locale::text("settings.reopen.desc"),
-                locale::text("settings.reopen.tip"),
+                SwitchCopy {
+                    id: "reopen-note",
+                    label_id: "reopen-label",
+                    label: locale::text("settings.reopen"),
+                    sentence: locale::text("settings.reopen.desc"),
+                    tip: locale::text("settings.reopen.tip"),
+                },
                 pane.reopen_last_note,
                 muted,
                 move |checked, _, app| {
@@ -270,11 +276,13 @@ fn capture(
                 text_setting(&pane.model_inputs.speech_language),
             ))
             .child(toggle_row(
-                "start-muted",
-                "start-muted-label",
-                locale::text("settings.start_muted"),
-                locale::text("settings.start_muted.desc"),
-                locale::text("settings.start_muted.tip"),
+                SwitchCopy {
+                    id: "start-muted",
+                    label_id: "start-muted-label",
+                    label: locale::text("settings.start_muted"),
+                    sentence: locale::text("settings.start_muted.desc"),
+                    tip: locale::text("settings.start_muted.tip"),
+                },
                 pane.start_muted,
                 muted,
                 move |checked, _, app| {
@@ -484,27 +492,31 @@ fn stacked_setting(
         .child(control)
 }
 
-fn toggle_row(
+struct SwitchCopy {
     id: &'static str,
     label_id: &'static str,
     label: &'static str,
     sentence: &'static str,
     tip: &'static str,
+}
+
+fn toggle_row(
+    copy: SwitchCopy,
     on: bool,
     muted: impl Into<gpui_kit::Hsla>,
     on_change: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     short_setting(
-        label_id,
-        label,
-        sentence,
-        tip,
+        copy.label_id,
+        copy.label,
+        copy.sentence,
+        copy.tip,
         muted,
-        Switch::new(id)
+        Switch::new(copy.id)
             .checked(on)
             .cursor_pointer()
-            .accessibility_label(label)
-            .tooltip(tip)
+            .accessibility_label(copy.label)
+            .tooltip(copy.tip)
             .on_change(on_change),
     )
 }
