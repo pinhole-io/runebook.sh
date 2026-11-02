@@ -32,6 +32,18 @@ pub(crate) fn sidebar_footer_height() -> Pixels {
     px(1.) + FOOTER_PAD_Y + FOOTER_ROW_HEIGHT + FOOTER_ROW_HEIGHT + FOOTER_PAD_Y
 }
 
+/// Border-box height of the Archivist field on one line.
+///
+/// `rem` is the window font size. The field is a large text area.
+/// One line is 1.25rem, plus 10px of padding on each side.
+/// The icon row is 2.75rem. The border is 1px on each side.
+/// The taller of the line and the icon row sets the height.
+pub(crate) fn composer_field_height(rem: Pixels) -> Pixels {
+    let line = rem * 1.25 + px(20.);
+    let icons = rem * 2.75;
+    line.max(icons) + px(2.)
+}
+
 /// Apply the shared panel header size to `header`.
 pub(crate) fn panel_header<E: Styled>(header: E, border: gpui_kit::Hsla) -> E {
     header

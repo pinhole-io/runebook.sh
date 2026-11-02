@@ -12,6 +12,7 @@ mod record;
 mod research;
 mod rows;
 mod settings;
+mod tasks;
 mod tree;
 mod view;
 
@@ -52,8 +53,8 @@ use gpui_kit::{
 };
 use runebook::{
     AppConfig, AutosavePace, Error, FolderId, NoteId, NoteKind, NoteViewChoice, SearchHit,
-    SpeechModel, TextSize, Vault, VaultIndex, VaultStamp, VaultTree, decode_note, encode_note,
-    toggle_task_line,
+    SpeechModel, TaskDate, TextSize, Vault, VaultIndex, VaultStamp, VaultTree, decode_note,
+    encode_note, toggle_task_line,
 };
 
 use crate::Root;
@@ -113,6 +114,8 @@ pub(super) struct EditorPane {
     note_view: NoteView,
     default_note_view: NoteView,
     settings_open: bool,
+    tasks_open: bool,
+    tasks_show_done: bool,
     key_fields: Option<keys_page::KeyFields>,
     microphone: Option<String>,
     microphone_select: Option<Entity<SelectState<SearchableVec<String>>>>,
@@ -355,9 +358,8 @@ impl EditorPane {
                 this.on_edit(cx);
             }
         });
-        let search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(locale::text("search.placeholder"))
-        });
+        let search = cx
+            .new(|cx| InputState::new(window, cx).placeholder(locale::text("search.placeholder")));
         let search_watch = cx.subscribe(&search, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change)
                 && let Some(pane) = this.pane.as_mut()
@@ -388,6 +390,8 @@ impl EditorPane {
             note_view: default_note_view,
             default_note_view,
             settings_open: false,
+            tasks_open: false,
+            tasks_show_done: false,
             key_fields: None,
             microphone: saved_microphone(prefs.microphone),
             microphone_select: None,

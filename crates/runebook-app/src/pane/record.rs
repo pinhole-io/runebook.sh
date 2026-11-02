@@ -437,7 +437,6 @@ mod capture_note_tests {
         assert!(new_rune_blocked(NoteKind::Speech, true));
         assert!(new_rune_blocked(NoteKind::Sight, true));
         assert!(!new_rune_blocked(NoteKind::Book, true));
-        assert!(!new_rune_blocked(NoteKind::Deed, true));
         assert!(!new_rune_blocked(NoteKind::Research, true));
         assert!(!new_rune_blocked(NoteKind::Speech, false));
     }

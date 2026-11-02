@@ -76,6 +76,7 @@ impl EditorPane {
         self.apply_file(&text, window, cx);
         self.notice = None;
         self.settings_open = false;
+        self.tasks_open = false;
         self.show_note_view(self.default_note_view, window, cx);
         Ok(())
     }
@@ -229,9 +230,19 @@ impl EditorPane {
         window: &mut Window,
         cx: &mut Context<Root>,
     ) -> bool {
-        let Some(next) = toggled_task_body(&self.latest, index) else {
+        let Some(next) = toggled_task_body(&self.latest, index, super::tasks::local_today()) else {
             return false;
         };
+        self.replace_body(next, window, cx)
+    }
+
+    /// Replace the open note body and mark it dirty when it differs from the file.
+    pub(super) fn replace_body(
+        &mut self,
+        next: String,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) -> bool {
         self.clear_note_rows(cx);
         self.latest = next.clone();
         self.dirty = self.open_note.is_some() && next != self.saved_text;
@@ -289,13 +300,8 @@ pub(super) fn note_body(text: &str) -> (NoteKind, String) {
     (kind, body.to_string())
 }
 
-pub(super) fn seed_body(kind: NoteKind, name: &str) -> String {
-    match kind {
-        NoteKind::Book | NoteKind::Speech | NoteKind::Sight | NoteKind::Research => {
-            format!("# {name}\n")
-        }
-        NoteKind::Deed => "- [ ] \n".to_string(),
-    }
+pub(super) fn seed_body(_kind: NoteKind, name: &str) -> String {
+    format!("# {name}\n")
 }
 
 pub(super) fn kind_title(kind: NoteKind) -> &'static str {
@@ -303,19 +309,18 @@ pub(super) fn kind_title(kind: NoteKind) -> &'static str {
         NoteKind::Book => locale::text("kind.book"),
         NoteKind::Speech => locale::text("kind.speech"),
         NoteKind::Sight => locale::text("kind.sight"),
-        NoteKind::Deed => locale::text("kind.deed"),
         NoteKind::Research => locale::text("kind.research"),
     }
 }
 
-pub(super) fn toggled_task_body(source: &str, index: usize) -> Option<String> {
+pub(super) fn toggled_task_body(source: &str, index: usize, today: TaskDate) -> Option<String> {
     let rows = split_rows(source);
     let row = rows.get(index)?;
     let slice = source.get(row.start..row.end)?;
     let line_end = slice.find('\n').unwrap_or(slice.len());
     let raw = &slice[..line_end];
     let logical = raw.strip_suffix('\r').unwrap_or(raw);
-    let toggled = toggle_task_line(logical)?;
+    let toggled = toggle_task_line(logical, today)?;
     let mut next = String::with_capacity(source.len());
     next.push_str(&source[..row.start]);
     next.push_str(&toggled);
@@ -326,20 +331,25 @@ pub(super) fn toggled_task_body(source: &str, index: usize) -> Option<String> {
 #[cfg(test)]
 mod task_tests {
     use super::toggled_task_body;
+    use runebook::TaskDate;
+
+    fn today() -> TaskDate {
+        TaskDate::parse("2026-11-01").expect("test date")
+    }
 
     #[test]
     fn toggle_flips_one_task_line_and_leaves_the_heading() {
         let source = "# Task list\n\n- [x] Completed task\n- [ ] Incomplete task\n";
-        assert!(toggled_task_body(source, 0).is_none());
-        let next = toggled_task_body(source, 1).expect("completed task");
+        assert!(toggled_task_body(source, 0, today()).is_none());
+        let next = toggled_task_body(source, 1, today()).expect("completed task");
         assert_eq!(
             next,
             "# Task list\n\n- [ ] Completed task\n- [ ] Incomplete task\n"
         );
-        let next = toggled_task_body(&next, 2).expect("incomplete task");
+        let next = toggled_task_body(&next, 2, today()).expect("incomplete task");
         assert_eq!(
             next,
-            "# Task list\n\n- [ ] Completed task\n- [x] Incomplete task\n"
+            "# Task list\n\n- [ ] Completed task\n- [x] Incomplete task ✅ 2026-11-01\n"
         );
     }
 }

@@ -3,8 +3,9 @@
 //! A vault is a folder of `*.md` notes plus `runebook.toml`.
 //! Wiki links and the file tree come from those files.
 //! There is no sidecar database.
-//! A note is Book, Speech, Sight, Deed, or Research. Book is a markdown file.
+//! A note is Book, Speech, Sight, or Research. Book is a markdown file.
 //! The other kinds start with a `kind` header.
+//! A checklist line in any note is a task. An old `kind: deed` header is a Book note.
 //! Media files beside a note use a known video, audio, or image extension.
 //! Folder delete removes those files.
 
@@ -16,6 +17,7 @@ mod kind;
 mod links;
 mod media;
 mod note;
+mod task;
 mod vault;
 
 pub use config::{
@@ -24,12 +26,14 @@ pub use config::{
 };
 pub use error::{Error, Result};
 pub use index::VaultIndex;
-pub use kind::{
-    NoteKind, TaskLine, decode_note, encode_note, parse_task_line, preserve_kind, toggle_task_line,
-};
+pub use kind::{NoteKind, decode_note, encode_note, preserve_kind};
 pub use links::{
     ResolveResult, WikiLink, WikiTarget, note_target_from_url, parse_wiki_links, preview_markdown,
 };
 pub use media::is_external_url;
 pub use note::{FolderId, NoteId};
+pub use task::{
+    TaskDate, TaskLine, TaskRef, body_line, collect_tasks, insert_task_at, new_task_line,
+    parse_task_line, replace_line, rewrite_task, toggle_body_line, toggle_task_line,
+};
 pub use vault::{NoteSearch, SearchHit, TreeEntry, Vault, VaultStamp, VaultTree};

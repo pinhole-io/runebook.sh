@@ -20,9 +20,9 @@ Local markdown notes at `projects/runebook.sh/`.
 
 - A vault root contains `runebook.toml` (`schema_version = 1`).
 - A note is a `*.md` file. `NoteId` is the relative path without `.md`, with `/` separators.
-- A note has one kind: Book, Speech, Sight, Deed, or Research.
+- A note has one kind: Book, Speech, Sight, or Research.
 - Book is a markdown file with no header. A file with no header is a Book note.
-- Speech, Sight, Deed, and Research start with this header. `kind` is `speech`, `sight`, `deed`, or `research`.
+- Speech, Sight, and Research start with this header. `kind` is `speech`, `sight`, or `research`.
 
 ```markdown
 ---
@@ -30,13 +30,13 @@ kind: speech
 ---
 ```
 
-- The header must be the first lines, inside the first 256 bytes. Any other header stays in the body, and the note is Book.
+- The header must be the first lines, inside the first 256 bytes. Any other header stays in the body, and the note is Book. An old `kind: deed` header is dropped. That file is a Book note. The next save writes the body without the header.
 - The editor shows the body. Save writes the header back from the open note's kind.
 - Speech stores a transcript. The app does not save the audio file.
 - Sight stores a markdown link. The mp4 sits beside that note.
-- Deed is a markdown checklist.
+- A task is a checklist line in any note. `- [ ]` is open. `- [x]` is done. `📅 YYYY-MM-DD` is the due date. `✅ YYYY-MM-DD` is the done date. A line inside a fenced code block is not a task.
 - Research stores a question. Charlotte writes a plan, gathers any missing context, then investigates. The note keeps the plan and the findings. The report stays on screen. The source switch stays hidden.
-- A preview checkbox toggles that task line in the note.
+- A preview checkbox toggles that task line and writes the done date. The Tasks row in the sidebar lists tasks from the vault. `insert_task` defaults to `ctrl-shift-t`. It inserts a task into the open note, or edits the task on the current line. The due date uses a calendar. A cleared date leaves the task undated.
 - A media file beside a note uses a video, audio, or image extension: `mp4`, `webm`, `mkv`, `mov`, `mp3`, `wav`, `ogg`, `m4a`, `flac`, `png`, `jpg`, `jpeg`, `gif`, `webp`.
 - Folder delete removes those files. Any other non-note file still blocks folder delete.
 - A preview row that is only a video or audio link plays in the preview. `media_muted` starts that clip silent.
@@ -45,7 +45,7 @@ kind: speech
 - Skip hidden paths and symlinks. Do not follow a symlink out of the vault.
 - There is no sidecar database. The index is rebuilt from the files.
 - User config is `$XDG_CONFIG_HOME/runebook/config.toml`. It stores `last_vault`, `last_note`, `reopen_last_note`, `microphone`, `speech_model`, `speech_language`, `theme`, `locale`, `text_size`, `note_view`, `line_numbers`, `soft_wrap`, `autosave`, `media_muted`, `dock_layout`, `tool_rounds`, `keys`, and the model fields. An empty model field uses the matching environment variable.
-- `keys` maps a command id to a list of chords. A missing id uses the built-in chord. An empty list unbinds that command. `new_note` defaults to `ctrl-n` (Control+N). `save_note` defaults to `cmd-s`. `open_vault` defaults to `cmd-o`. `toggle_note_view` defaults to `cmd-e`. On Linux, `cmd` is the Super key and `ctrl` is Control.
+- `keys` maps a command id to a list of chords. A missing id uses the built-in chord. An empty list unbinds that command. `new_note` defaults to `ctrl-n` (Control+N). `save_note` defaults to `cmd-s`. `open_vault` defaults to `cmd-o`. `toggle_note_view` defaults to `cmd-e`. `insert_task` defaults to `ctrl-shift-t`. On Linux, `cmd` is the Super key and `ctrl` is Control.
 - `reopen_last_note` opens `last_note` when that note is still in the vault. Otherwise the window opens `welcome`, then the first note.
 - `autosave` is `fast` (200 ms), `normal` (400 ms), `slow` (1 s), or `manual`. Manual writes the note when you leave it or close the window.
 - `speech_model` is `fast` (`whisper-large-v3-turbo`) or `accurate` (`whisper-large-v3`). An empty `speech_language` lets Groq detect the language. A saved language is a two-letter code.
@@ -72,7 +72,8 @@ Resolve `[[target]]` in this order:
 - Call `gpui_kit::init` before any GPUI Kit control.
 - On Linux, an open vault has no title bar. The sidebar header shows the vault icon and the vault name. The search field sits under that header, then the note and folder buttons. The Archivist header holds the window buttons. Other platforms keep a Kit `TitleBar` for the window buttons.
 - Settings in the note area are Appearance, Notes, Capture, Models, and Keys, in that order.
-- Control+N, and the file-plus button, open a dialog to pick Book, Speech, Sight, Deed, or Research. Arrow keys move the highlight. Enter confirms it. Speech and Sight stay hidden while a capture runs. The name dialog or the research wizard follows.
+- Control+N, and the file-plus button, open a dialog to pick Book, Speech, Sight, or Research. Arrow keys move the highlight. Enter confirms it. Speech and Sight stay hidden while a capture runs. The name dialog or the research wizard follows.
+- The Tasks row sits above Settings. It opens a list in the note area. Settings and the task list are not open together. The research wizard stays in front while it is open. The list shows open tasks. A switch shows done tasks. A checkbox toggles the line. A click opens that note. At most 200 rows show.
 - Escape closes the open dialog. In the research wizard, Escape cancels it.
 - Each settings row has a sentence. The label tooltip adds the default or the environment name.
 - Research and the Archivist pick a model from the host list at `/v1/models`. The menu search filters that list. Default leaves that field empty.

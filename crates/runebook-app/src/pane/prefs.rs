@@ -9,6 +9,7 @@ impl EditorPane {
     pub(super) fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Root>) {
         self.settings_open = !self.settings_open;
         if self.settings_open {
+            self.tasks_open = false;
             self.show_themes(window, cx);
             self.begin_microphone_load(cx);
             self.schedule_model_list_load(Duration::ZERO, cx);

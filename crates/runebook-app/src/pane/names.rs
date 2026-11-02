@@ -24,7 +24,6 @@ impl EditorPane {
             NoteKind::Book => "untitled",
             NoteKind::Speech => "speech",
             NoteKind::Sight => "sight",
-            NoteKind::Deed => "deed",
             NoteKind::Research => {
                 self.open_research_wizard(window, cx);
                 return;

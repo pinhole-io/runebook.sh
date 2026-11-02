@@ -213,16 +213,9 @@ fn row_source(slice: &str) -> (Option<bool>, String) {
     let Some(task) = parse_task_line(logical) else {
         return (None, slice.to_string());
     };
-    let mut shown = task_label(logical);
+    let mut shown = task.preview_text();
     shown.push_str(&slice[line_end..]);
     (Some(task.checked), shown)
-}
-
-fn task_label(line: &str) -> String {
-    let Some(end) = line.find(']') else {
-        return line.to_string();
-    };
-    line[end + 1..].trim_start().to_string()
 }
 
 struct RowPaint {
@@ -999,6 +992,9 @@ mod tests {
         let (checked, shown) = row_source("- [ ] Incomplete task\n");
         assert_eq!(checked, Some(false));
         assert_eq!(shown, "Incomplete task\n");
+        let (checked, shown) = row_source("- [ ] Buy milk 📅 2026-11-02\n");
+        assert_eq!(checked, Some(false));
+        assert_eq!(shown, "Buy milk · 2026-11-02\n");
         let (checked, shown) = row_source("  * [X] Nested\n");
         assert_eq!(checked, Some(true));
         assert_eq!(shown, "Nested\n");

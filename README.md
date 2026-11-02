@@ -85,10 +85,9 @@ Each note has one kind.
 | Book | Book Runes (Bókrunar) | Markdown. The file has no kind header. |
 | Speech | Speech Runes (Málrunar) | A transcript. The header says `kind: speech`. |
 | Sight | Sight Runes (Sjónrunar) | A screen recording. The header says `kind: sight`. |
-| Deed | Deed Runes (Verkrunar) | A task list. The header says `kind: deed`. |
 | Research | Research Runes (Rannsóknarrúnar) | An investigation. The header says `kind: research`. |
 
-A file with no header is a Book note. Speech, Sight, Deed, and Research use this header:
+A file with no header is a Book note. Speech, Sight, and Research use this header:
 
 ```markdown
 ---
@@ -96,7 +95,9 @@ kind: speech
 ---
 ```
 
-Use `speech`, `sight`, `deed`, or `research`. The editor shows the body. Save writes the header back. A click on a preview checkbox toggles that task line in the note.
+Use `speech`, `sight`, or `research`. The editor shows the body. Save writes the header back. An old `kind: deed` header opens as a Book note. The next save drops that header.
+
+A task is a checklist line in any note. `- [ ]` is open. `- [x]` is done. `📅 YYYY-MM-DD` is the due date. `✅ YYYY-MM-DD` is the done date. A click on a preview checkbox toggles that line and writes the done date. Control+Shift+T inserts a task into the open note. The due date uses a calendar. A cleared date leaves the task undated. The Tasks list in the sidebar shows tasks from the vault.
 
 ## Research
 

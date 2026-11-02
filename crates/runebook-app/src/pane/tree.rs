@@ -19,7 +19,7 @@ use gpui_kit::{
 };
 
 use super::{EditorPane, NameAction, Prompt, TreeSelection};
-use crate::chrome::{FOOTER_PAD_Y, FOOTER_ROW_HEIGHT, panel_header};
+use crate::chrome::{FOOTER_PAD_Y, FOOTER_ROW_HEIGHT, composer_field_height, panel_header};
 use runebook::NoteKind;
 
 use crate::locale;
@@ -201,7 +201,7 @@ pub(crate) fn files(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl
         .text_color(foreground)
         .child(vault_heading(pane, cx))
         .when_some(pane.search.clone(), |column, input| {
-            column.child(search_field(&input, view.clone()))
+            column.child(search_field(&input, view.clone(), cx))
         })
         .child(create_actions(view.clone(), cx))
         .child(file_list(
@@ -213,10 +213,10 @@ pub(crate) fn files(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl
             cx,
         ))
         .child(super::research::cards(pane, view.clone(), cx))
-        .child(sidebar_footer(pane.settings_open, view, cx))
+        .child(sidebar_footer(pane, view, cx))
 }
 
-fn sidebar_footer(settings_open: bool, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
+fn sidebar_footer(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {
     let border = cx.theme().sidebar_border;
     div()
         .w_full()
@@ -226,6 +226,21 @@ fn sidebar_footer(settings_open: bool, view: WeakEntity<Root>, cx: &App) -> impl
         .border_t_1()
         .border_color(border)
         .py(FOOTER_PAD_Y)
+        .child(
+            footer_row(
+                "tasks",
+                IconName::ListTodo,
+                locale::text("toolbar.tasks"),
+                pane.tasks_open,
+                cx,
+            )
+            .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
+                if let Some(pane) = this.pane.as_mut() {
+                    pane.toggle_tasks(window, cx);
+                }
+                cx.notify();
+            })),
+        )
         .child(
             footer_row(
                 "open-another",
@@ -248,7 +263,7 @@ fn sidebar_footer(settings_open: bool, view: WeakEntity<Root>, cx: &App) -> impl
                 "settings",
                 IconName::Settings,
                 locale::text("toolbar.settings"),
-                settings_open,
+                pane.settings_open,
                 cx,
             )
             .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
@@ -521,7 +536,6 @@ pub(super) fn note_icon(kind: NoteKind) -> IconName {
         NoteKind::Book => IconName::FileText,
         NoteKind::Speech => IconName::Mic,
         NoteKind::Sight => IconName::Video,
-        NoteKind::Deed => IconName::ListTodo,
         NoteKind::Research => IconName::Search,
     }
 }

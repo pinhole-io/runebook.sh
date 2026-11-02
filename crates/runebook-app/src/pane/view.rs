@@ -46,6 +46,9 @@ pub(crate) fn note(pane: &EditorPane, view: WeakEntity<Root>, cx: &App) -> gpui_
     if pane.research.wizard_open() {
         return super::research::wizard(pane, view, cx).into_any_element();
     }
+    if pane.tasks_open {
+        return super::tasks::panel(pane, view, cx).into_any_element();
+    }
     note_surface(pane, view, cx)
 }
 

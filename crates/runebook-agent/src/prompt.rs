@@ -81,19 +81,21 @@ pub fn archivist_prompt(rounds: u32) -> String {
              Call list_notes or search_notes before you use an id.",
         )
         .with_instructions(
-            "A note is Book, Speech, Sight, Deed, or Research. \
-             Book has no header. Speech, Sight, Deed, and Research start with this header:\n\
+            "A note is Book, Speech, Sight, or Research. \
+             Book has no header. Speech, Sight, and Research start with this header:\n\
              ---\n\
              kind: speech\n\
              ---\n\
-             The kind key is speech, sight, deed, or research. \
+             The kind key is speech, sight, or research. \
+             A kind: deed header is obsolete. That file is a Book note. \
              write_note keeps the old kind when the new text has no header. \
              Put a header in contents only when the user asked for that kind.",
         )
         .with_instructions(
             "Speech is a transcript. You do not record audio. \
              Sight is a markdown link to a video beside the note. You do not record the screen. \
-             Deed is a task list. A task line uses `- [ ]` or `- [x]`. \
+             A task line can sit in any note. It uses `- [ ]` or `- [x]`. \
+             A due date uses 📅 YYYY-MM-DD. A done date uses ✅ YYYY-MM-DD. \
              Research belongs to Charlotte. You do not start a Research run. \
              You may still edit those notes when the user asks.",
         )
@@ -184,9 +186,12 @@ mod tests {
             prompt.starts_with("You are the Archivist of this vault."),
             "{prompt}"
         );
-        for kind in ["Book", "Speech", "Sight", "Deed", "Research"] {
+        for kind in ["Book", "Speech", "Sight", "Research"] {
             assert!(prompt.contains(kind), "missing {kind} in {prompt}");
         }
+        assert!(!prompt.contains("Deed"), "{prompt}");
+        assert!(prompt.contains("- [ ]"), "{prompt}");
+        assert!(prompt.contains("📅"), "{prompt}");
         assert!(prompt.contains("kind: speech"), "{prompt}");
         assert!(prompt.contains("[[target|alias]]"), "{prompt}");
         assert!(prompt.contains("32 KiB"), "{prompt}");

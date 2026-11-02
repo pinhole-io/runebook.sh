@@ -79,6 +79,7 @@ impl EditorPane {
 
     pub(super) fn open_research_wizard(&mut self, window: &mut Window, cx: &mut Context<Root>) {
         self.settings_open = false;
+        self.tasks_open = false;
         self.research.asking = false;
         self.research.epoch = self.research.epoch.wrapping_add(1);
         let query = cx.new(|cx| InputState::new(window, cx));

@@ -7,11 +7,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::fsutil::atomic_write;
-use crate::index::VaultIndex;
+use crate::index::{NoteRecord, VaultIndex};
 use crate::kind::{self, NoteKind};
 use crate::links::{WikiTarget, parse_wiki_links};
 use crate::media::{self, is_media_path};
 use crate::note::{FolderId, NoteId, validate_relative, vault_join};
+use crate::task::collect_tasks;
 
 const SCHEMA_VERSION: u32 = 1;
 const VAULT_FILE: &str = "runebook.toml";
@@ -216,11 +217,12 @@ impl Vault {
         for id in ids {
             let text = self.read(&id)?;
             let (_, body) = kind::decode_note(&text);
-            let targets = parse_wiki_links(body)
+            let links = parse_wiki_links(body)
                 .into_iter()
                 .map(|link| link.target)
                 .collect::<Vec<WikiTarget>>();
-            notes.insert(id, targets);
+            let tasks = collect_tasks(body);
+            notes.insert(id, NoteRecord { links, tasks });
         }
         Ok(VaultIndex::from_notes(notes))
     }

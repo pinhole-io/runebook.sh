@@ -25,7 +25,6 @@ pub(super) fn creatable_kinds(recording: bool) -> Vec<NoteKind> {
         kinds.push(NoteKind::Speech);
         kinds.push(NoteKind::Sight);
     }
-    kinds.push(NoteKind::Deed);
     kinds.push(NoteKind::Research);
     kinds
 }
@@ -89,7 +88,7 @@ mod tests {
     fn a_capture_hides_speech_and_sight() {
         assert_eq!(
             creatable_kinds(true),
-            vec![NoteKind::Book, NoteKind::Deed, NoteKind::Research]
+            vec![NoteKind::Book, NoteKind::Research]
         );
         assert_eq!(
             creatable_kinds(false),
@@ -97,7 +96,6 @@ mod tests {
                 NoteKind::Book,
                 NoteKind::Speech,
                 NoteKind::Sight,
-                NoteKind::Deed,
                 NoteKind::Research,
             ]
         );

@@ -37,7 +37,10 @@ use runebook::{AppConfig, Error, NoteId, Vault};
 
 use crate::pane::EditorPane;
 
-gpui_kit::actions!(runebook, [SaveNote, NewNote, OpenVault, ToggleNoteView]);
+gpui_kit::actions!(
+    runebook,
+    [SaveNote, NewNote, OpenVault, ToggleNoteView, InsertTask]
+);
 
 const WELCOME: &str = "\
 # Welcome
@@ -662,6 +665,14 @@ impl Render for Root {
             .on_action(cx.listener(|this, _: &ToggleNoteView, window, cx| {
                 if let Some(pane) = this.pane.as_mut() {
                     pane.toggle_note_view(window, cx);
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &InsertTask, window, cx| {
+                if let Some(pane) = this.pane.as_mut() {
+                    pane.begin_task(window, cx);
+                } else {
+                    this.banner = Some(locale::text("vault.open_first").to_string());
                 }
                 cx.notify();
             }))

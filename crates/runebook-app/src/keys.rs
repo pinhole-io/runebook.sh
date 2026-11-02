@@ -15,7 +15,7 @@ use gpui_kit::{
 };
 
 use crate::locale;
-use crate::{NewNote, OpenVault, SaveNote, ToggleNoteView};
+use crate::{InsertTask, NewNote, OpenVault, SaveNote, ToggleNoteView};
 
 const CONTEXT: &str = "Runebook";
 const DIALOG: &str = "Dialog";
@@ -63,6 +63,14 @@ const COMMANDS: &[Command] = &[
         field_id: "toggle-view-key",
         defaults: &["cmd-e"],
         spawn: || Box::new(ToggleNoteView),
+    },
+    Command {
+        id: "insert_task",
+        label_key: "command.insert_task",
+        detail_key: "command.insert_task.desc",
+        field_id: "insert-task-key",
+        defaults: &["ctrl-shift-t"],
+        spawn: || Box::new(InsertTask),
     },
 ];
 
@@ -435,7 +443,7 @@ mod tests {
     use super::{
         COMMANDS, CONTEXT, Change, ChordFault, DIALOG, changes, commit, resolve, validate_chord,
     };
-    use crate::{NewNote, OpenVault, SaveNote, ToggleNoteView};
+    use crate::{InsertTask, NewNote, OpenVault, SaveNote, ToggleNoteView};
 
     #[test]
     fn ctrl_n_in_runebook_runs_new_note() {
@@ -545,8 +553,12 @@ mod tests {
                         KeyBinding::new(chord, OpenVault, Some(CONTEXT)),
                         KeyBinding::new(chord, NoAction, Some(DIALOG)),
                     ]),
-                    _ => keymap.add_bindings([
+                    3 => keymap.add_bindings([
                         KeyBinding::new(chord, ToggleNoteView, Some(CONTEXT)),
+                        KeyBinding::new(chord, NoAction, Some(DIALOG)),
+                    ]),
+                    _ => keymap.add_bindings([
+                        KeyBinding::new(chord, InsertTask, Some(CONTEXT)),
                         KeyBinding::new(chord, NoAction, Some(DIALOG)),
                     ]),
                 }
@@ -557,7 +569,8 @@ mod tests {
                     0 => NewNote.name(),
                     1 => SaveNote.name(),
                     2 => OpenVault.name(),
-                    _ => ToggleNoteView.name(),
+                    3 => ToggleNoteView.name(),
+                    _ => InsertTask.name(),
                 };
                 keymap.add_bindings([KeyBinding::new(chord, Unbind(name.into()), Some(CONTEXT))]);
             }

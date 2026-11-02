@@ -1,10 +1,10 @@
 //! Note kind stored in the file.
 //!
-//! Book notes are the file body. Speech, Sight, Deed, and Research notes start
+//! Book notes are the file body. Speech, Sight, and Research notes start
 //! with a short header. A file with no header, or a header this crate does not
-//! know, is a Book note.
+//! know, is a Book note. An old `kind: deed` header is dropped. That file is a Book note.
 
-/// The five note kinds.
+/// The four note kinds.
 ///
 /// Book is the default. A file omits the header for Book.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -15,33 +15,19 @@ pub enum NoteKind {
     Speech,
     /// A screen recording note. The video file sits beside the note.
     Sight,
-    /// A task list. The body is markdown checkboxes.
-    Deed,
     /// A web investigation. Charlotte writes the findings into the note.
     Research,
-}
-
-/// One markdown task line.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskLine {
-    /// `true` when the box is `[x]` or `[X]`.
-    pub checked: bool,
-    /// The line with the box removed, so a preview can draw its own box.
-    pub plain: String,
-    /// The same line with the box flipped.
-    pub toggled: String,
 }
 
 const HEADER_LIMIT: usize = 256;
 
 impl NoteKind {
-    /// File key for Speech, Sight, Deed, and Research. Book has no key.
+    /// File key for Speech, Sight, and Research. Book has no key.
     pub fn key(self) -> Option<&'static str> {
         match self {
             Self::Book => None,
             Self::Speech => Some("speech"),
             Self::Sight => Some("sight"),
-            Self::Deed => Some("deed"),
             Self::Research => Some("research"),
         }
     }
@@ -50,7 +36,6 @@ impl NoteKind {
         match key {
             "speech" => Some(Self::Speech),
             "sight" => Some(Self::Sight),
-            "deed" => Some(Self::Deed),
             "research" => Some(Self::Research),
             _ => None,
         }
@@ -67,8 +52,9 @@ impl NoteKind {
 /// ---
 /// ```
 ///
-/// `kind` is `speech`, `sight`, `deed`, or `research`. Any other file is [`NoteKind::Book`]
-/// and the body is `text`.
+/// `kind` is `speech`, `sight`, or `research`. Any other file is [`NoteKind::Book`].
+/// An old `kind: deed` header is removed from the body. The body is `text` when
+/// the header is missing or unknown.
 pub fn decode_note(text: &str) -> (NoteKind, &str) {
     let scan = byte_prefix(text, HEADER_LIMIT);
     match header_len(scan) {
@@ -114,42 +100,6 @@ pub(crate) fn kind_from_prefix(bytes: &[u8]) -> NoteKind {
     decode_note(text).0
 }
 
-/// Read a task line.
-///
-/// The line may use `-`, `*`, or `+`, and it may have a leading indent.
-/// `[ ]` is open. `[x]` and `[X]` are done.
-pub fn parse_task_line(line: &str) -> Option<TaskLine> {
-    let indent_len = line
-        .find(|ch: char| !ch.is_whitespace())
-        .unwrap_or(line.len());
-    let (indent, rest) = line.split_at(indent_len);
-    let mut chars = rest.chars();
-    let marker = chars.next()?;
-    if !matches!(marker, '-' | '*' | '+') {
-        return None;
-    }
-    let rest = chars.as_str();
-    let rest = rest.strip_prefix(" [")?;
-    let mut state_chars = rest.chars();
-    let state = state_chars.next()?;
-    if !matches!(state, ' ' | 'x' | 'X') {
-        return None;
-    }
-    let rest = state_chars.as_str().strip_prefix(']')?;
-    let checked = state != ' ';
-    let next = if checked { ' ' } else { 'x' };
-    Some(TaskLine {
-        checked,
-        plain: format!("{indent}{marker}{rest}"),
-        toggled: format!("{indent}{marker} [{next}]{rest}"),
-    })
-}
-
-/// Flip one task line. A line that is not a task returns `None`.
-pub fn toggle_task_line(line: &str) -> Option<String> {
-    parse_task_line(line).map(|task| task.toggled)
-}
-
 fn header_len(scan: &str) -> Option<(NoteKind, usize)> {
     let mut lines = scan.split_inclusive('\n');
     let first = lines.next()?;
@@ -158,7 +108,12 @@ fn header_len(scan: &str) -> Option<(NoteKind, usize)> {
     }
     let second = lines.next()?;
     let key = line_text(second).strip_prefix("kind: ")?;
-    let kind = NoteKind::from_key(key)?;
+    // An old deed file has no kind. Drop the header so the next save stores a Book note.
+    let kind = if key == "deed" {
+        NoteKind::Book
+    } else {
+        NoteKind::from_key(key)?
+    };
     if !second.ends_with('\n') {
         return None;
     }
@@ -204,14 +159,9 @@ mod tests {
     }
 
     #[test]
-    fn speech_sight_and_deed_round_trip() {
+    fn speech_sight_and_research_round_trip() {
         let body = "# Talk\n";
-        for kind in [
-            NoteKind::Speech,
-            NoteKind::Sight,
-            NoteKind::Deed,
-            NoteKind::Research,
-        ] {
+        for kind in [NoteKind::Speech, NoteKind::Sight, NoteKind::Research] {
             let file = encode_note(kind, body);
             assert_eq!(decode_note(&file), (kind, body));
             assert_eq!(kind_from_prefix(file.as_bytes()), kind);
@@ -265,32 +215,11 @@ mod tests {
     }
 
     #[test]
-    fn task_line_toggle_covers_open_done_indent_and_a_normal_line() {
-        assert_eq!(
-            toggle_task_line("- [ ] wash"),
-            Some("- [x] wash".to_string())
-        );
-        assert_eq!(
-            toggle_task_line("- [x] wash"),
-            Some("- [ ] wash".to_string())
-        );
-        assert_eq!(
-            toggle_task_line("- [X] wash"),
-            Some("- [ ] wash".to_string())
-        );
-        assert_eq!(
-            toggle_task_line("  * [ ] wash"),
-            Some("  * [x] wash".to_string())
-        );
-        assert_eq!(
-            toggle_task_line("+ [x] wash"),
-            Some("+ [ ] wash".to_string())
-        );
-        assert_eq!(toggle_task_line("# Not a task"), None);
-        let open = parse_task_line("- [ ] wash").unwrap();
-        assert!(!open.checked);
-        assert_eq!(open.plain, "- wash");
-        let done = parse_task_line("- [x] wash").unwrap();
-        assert!(done.checked);
+    fn a_deed_header_is_a_book_note_without_that_header() {
+        let text = "---\nkind: deed\n---\n- [ ] wash\n";
+        assert_eq!(decode_note(text), (NoteKind::Book, "- [ ] wash\n"));
+        assert_eq!(kind_from_prefix(text.as_bytes()), NoteKind::Book);
+        let previous = text;
+        assert_eq!(preserve_kind(previous, "- [x] wash\n"), "- [x] wash\n");
     }
 }

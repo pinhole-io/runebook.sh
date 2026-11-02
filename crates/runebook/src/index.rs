@@ -2,17 +2,25 @@ use std::collections::BTreeMap;
 
 use crate::links::{ResolveResult, WikiTarget};
 use crate::note::NoteId;
+use crate::task::TaskRef;
 
-/// Notes and the wiki targets each note contains.
+/// Links and tasks read from one note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NoteRecord {
+    pub(crate) links: Vec<WikiTarget>,
+    pub(crate) tasks: Vec<TaskRef>,
+}
+
+/// Notes, the wiki targets each note contains, and the tasks in each note.
 ///
 /// The map is rebuilt from disk. It is not stored in the vault.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VaultIndex {
-    notes: BTreeMap<NoteId, Vec<WikiTarget>>,
+    notes: BTreeMap<NoteId, NoteRecord>,
 }
 
 impl VaultIndex {
-    pub(crate) fn from_notes(notes: BTreeMap<NoteId, Vec<WikiTarget>>) -> Self {
+    pub(crate) fn from_notes(notes: BTreeMap<NoteId, NoteRecord>) -> Self {
         Self { notes }
     }
 
@@ -38,7 +46,18 @@ impl VaultIndex {
 
     /// Wiki targets written in `id`. Missing notes return an empty slice.
     pub fn outgoing(&self, id: &NoteId) -> &[WikiTarget] {
-        self.notes.get(id).map(Vec::as_slice).unwrap_or(&[])
+        self.notes
+            .get(id)
+            .map(|record| record.links.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Tasks written in `id`. Missing notes return an empty slice.
+    pub fn tasks(&self, id: &NoteId) -> &[TaskRef] {
+        self.notes
+            .get(id)
+            .map(|record| record.tasks.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Resolve `target` by exact id, then by a unique file stem.

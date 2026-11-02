@@ -1,5 +1,6 @@
 use runebook::{
-    Error, FolderId, NoteId, NoteKind, ResolveResult, TreeEntry, Vault, WikiTarget, encode_note,
+    Error, FolderId, NoteId, NoteKind, ResolveResult, TaskDate, TreeEntry, Vault, WikiTarget,
+    encode_note,
 };
 
 fn note(raw: &str) -> NoteId {
@@ -282,6 +283,40 @@ fn tree_reads_kind_and_the_index_uses_the_body() {
     assert_eq!(
         note_kind(&tree.children, &note("talk")),
         Some(NoteKind::Speech)
+    );
+}
+
+#[test]
+fn index_reads_tasks_from_each_note_and_a_deed_file_is_a_book() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = Vault::create(dir.path(), "Notes").unwrap();
+    vault
+        .create_note(&note("a"), "- [ ] one 📅 2026-11-02\n")
+        .unwrap();
+    vault
+        .create_note(
+            &note("b"),
+            &encode_note(NoteKind::Speech, "- [x] two ✅ 2026-11-01\n"),
+        )
+        .unwrap();
+    vault
+        .create_note(&note("old"), "---\nkind: deed\n---\n- [ ] wash\n")
+        .unwrap();
+
+    let index = vault.notes().unwrap();
+    let first = &index.tasks(&note("a"))[0];
+    assert!(!first.checked);
+    assert_eq!(first.text, "one");
+    assert_eq!(first.due, TaskDate::parse("2026-11-02"));
+    let second = &index.tasks(&note("b"))[0];
+    assert!(second.checked);
+    assert_eq!(second.text, "two");
+    assert_eq!(second.done, TaskDate::parse("2026-11-01"));
+    assert_eq!(index.tasks(&note("old"))[0].text, "wash");
+    let tree = vault.tree().unwrap();
+    assert_eq!(
+        note_kind(&tree.children, &note("old")),
+        Some(NoteKind::Book)
     );
 }
 
