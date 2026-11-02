@@ -188,7 +188,15 @@ pub(super) fn follow(job: SightJob, cx: &mut Context<Root>) {
         let speech_text = if matches!(next, Next::Transcribe) {
             let clip = match audio {
                 HeldAudio::Clip(clip) => clip,
-                _ => return,
+                _ => {
+                    let _ = this.update(cx, |root, cx| {
+                        if let Some(pane) = root.pane.as_mut() {
+                            idle(pane, &notices);
+                        }
+                        cx.notify();
+                    });
+                    return;
+                }
             };
             let key = groq.unwrap_or_default();
             let outcome = cx
