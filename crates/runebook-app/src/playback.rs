@@ -22,6 +22,9 @@ const MAX_JPEG: usize = 8 * 1024 * 1024;
 const MAX_QUEUED: usize = 48_000 * 2;
 /// Most frames kept for one clip. A longer file plays this prefix.
 const FRAME_LIMIT: usize = 600;
+/// Most seconds a Sight review reads. A longer file reviews this prefix.
+pub(crate) const REVIEW_SECONDS: usize = 180;
+const REVIEW_WIDTH: u32 = 640;
 
 /// A video or audio file named by a preview row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,7 +266,7 @@ fn decode_stream(
             senders.push(sender);
         }
         let mut index = 0usize;
-        pull_jpegs(input, stop, |jpeg| {
+        pull_jpegs(input, stop, FRAME_LIMIT, |jpeg| {
             let sent = senders[index % workers].send((index, jpeg)).is_ok();
             index += 1;
             sent
@@ -829,6 +832,83 @@ fn spawn_ffmpeg(args: Vec<OsString>) -> Result<Child, String> {
     }
 }
 
+/// `ffmpeg` arguments that emit one JPEG for each second of `path`.
+///
+/// The process stops after [`REVIEW_SECONDS`] frames. The path is one argument.
+pub(crate) fn sample_args(path: &Path) -> Vec<OsString> {
+    vec![
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-nostdin".into(),
+        "-i".into(),
+        path.as_os_str().to_os_string(),
+        "-an".into(),
+        "-vf".into(),
+        format!("fps=1,{}", scale_filter(REVIEW_WIDTH)).into(),
+        "-frames:v".into(),
+        REVIEW_SECONDS.to_string().into(),
+        "-pix_fmt".into(),
+        "yuvj444p".into(),
+        "-q:v".into(),
+        "5".into(),
+        "-f".into(),
+        "image2pipe".into(),
+        "-vcodec".into(),
+        "mjpeg".into(),
+        "pipe:1".into(),
+    ]
+}
+
+/// One JPEG for each second of `path`, kept in memory.
+///
+/// A missing file or a failed `ffmpeg` returns no frames.
+pub(crate) struct SecondFrames {
+    pub frames: Vec<Vec<u8>>,
+    pub shortened: bool,
+}
+
+/// Read one frame each second, up to [`REVIEW_SECONDS`].
+pub(crate) fn sample_each_second(path: &Path) -> SecondFrames {
+    let duration = probe_timing(path).duration;
+    let frames = read_second_frames(path);
+    SecondFrames {
+        shortened: review_was_shortened(duration, frames.len()),
+        frames,
+    }
+}
+
+/// `true` when the review kept a prefix of a longer clip.
+pub(crate) fn review_was_shortened(duration: Duration, frames: usize) -> bool {
+    duration > Duration::from_secs(REVIEW_SECONDS as u64)
+        || (duration.is_zero() && frames >= REVIEW_SECONDS)
+}
+
+fn read_second_frames(path: &Path) -> Vec<Vec<u8>> {
+    let mut child = match spawn_ffmpeg(sample_args(path)) {
+        Ok(child) => child,
+        Err(_) => return Vec::new(),
+    };
+    let mut stdout = match take_stdout(&mut child) {
+        Ok(stdout) => stdout,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Vec::new();
+        }
+    };
+    let stop = AtomicBool::new(false);
+    let mut frames = Vec::new();
+    pull_jpegs(&mut stdout, &stop, REVIEW_SECONDS, |jpeg| {
+        frames.push(jpeg);
+        frames.len() < REVIEW_SECONDS
+    });
+    drop(stdout);
+    let _ = child.kill();
+    let _ = child.wait();
+    frames
+}
+
 /// The first frame of `path`, or nothing when `ffmpeg` cannot read it.
 pub(crate) fn poster_jpeg(path: &Path, start: Duration, width: u32) -> Option<Vec<u8>> {
     let mut child = spawn_ffmpeg(poster_args(path, start, width)).ok()?;
@@ -863,24 +943,29 @@ fn stop_children(children: &mut [Child]) {
 #[cfg(test)]
 fn collect_jpegs(mut input: impl Read, stop: &AtomicBool) -> Vec<Vec<u8>> {
     let mut frames = Vec::new();
-    pull_jpegs(&mut input, stop, |jpeg| {
+    pull_jpegs(&mut input, stop, FRAME_LIMIT, |jpeg| {
         frames.push(jpeg);
         true
     });
     frames
 }
 
-fn pull_jpegs(input: &mut impl Read, stop: &AtomicBool, mut on_jpeg: impl FnMut(Vec<u8>) -> bool) {
+fn pull_jpegs(
+    input: &mut impl Read,
+    stop: &AtomicBool,
+    limit: usize,
+    mut on_jpeg: impl FnMut(Vec<u8>) -> bool,
+) {
     let mut pending = Vec::new();
     let mut frames = 0usize;
     let mut chunk = [0u8; 64 * 1024];
-    while frames < FRAME_LIMIT && !stop.load(Ordering::Relaxed) {
+    while frames < limit && !stop.load(Ordering::Relaxed) {
         let count = match input.read(&mut chunk) {
             Ok(0) | Err(_) => break,
             Ok(count) => count,
         };
         pending.extend_from_slice(&chunk[..count]);
-        while frames < FRAME_LIMIT
+        while frames < limit
             && let Some(jpeg) = next_jpeg(&mut pending)
         {
             frames += 1;
@@ -1083,11 +1168,32 @@ mod tests {
                 .to_string_lossy()
                 .contains("min(320,iw)")
         );
+        let sample = sample_args(path);
+        assert_eq!(arg_after(&sample, "-i"), path.as_os_str());
+        assert_eq!(arg_after(&sample, "-frames:v"), "180");
+        assert_eq!(arg_after(&sample, "-q:v"), "5");
+        assert!(
+            arg_after(&sample, "-vf")
+                .to_string_lossy()
+                .starts_with("fps=1,")
+        );
+        assert!(sample.iter().any(|arg| arg == "-an"));
+        assert!(!sample.iter().any(|arg| arg == "-re"));
+        assert!(!sample.iter().any(|arg| arg == "sh"));
         assert!(video.iter().any(|arg| arg == "image2pipe"));
         assert!(audio.iter().any(|arg| arg == "s16le"));
         assert!(!poster.iter().any(|arg| arg == "sh"));
         assert!(!video.iter().any(|arg| arg == "sh"));
         assert!(!audio.iter().any(|arg| arg == "sh"));
+    }
+
+    #[test]
+    fn a_long_clip_is_marked_short() {
+        assert!(!review_was_shortened(Duration::from_secs(10), 10));
+        assert!(!review_was_shortened(Duration::from_secs(180), 180));
+        assert!(review_was_shortened(Duration::from_secs(181), 180));
+        assert!(review_was_shortened(Duration::ZERO, 180));
+        assert!(!review_was_shortened(Duration::ZERO, 0));
     }
 
     #[test]

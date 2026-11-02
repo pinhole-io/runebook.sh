@@ -12,6 +12,7 @@ mod record;
 mod research;
 mod rows;
 mod settings;
+mod sight;
 mod tasks;
 mod tree;
 mod view;
@@ -35,7 +36,7 @@ use rows::{
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -60,7 +61,7 @@ use runebook::{
 use crate::Root;
 use crate::capture::{
     ScreenCapture, ScreenTarget, SpeechRequest, VoiceCapture, append_block, list_input_devices,
-    list_record_sources, markdown_link, utc_stamp_now, voice_to_text, window_list_error,
+    list_record_sources, utc_stamp_now, voice_to_text, window_list_error,
 };
 use crate::locale;
 use crate::models::{self, ModelSettings};
@@ -219,12 +220,27 @@ impl ModelInputs {
     }
 }
 
+/// Microphone that runs beside one Sight recording.
+enum SightVoice {
+    Live(VoiceCapture),
+    /// Speech was skipped because the Groq key is unset.
+    NoKey,
+    /// The microphone did not start. The screen capture still runs.
+    Failed,
+}
+
 enum Capture {
     Idle,
     Voice(VoiceCapture),
-    Screen(ScreenCapture),
+    Screen {
+        video: ScreenCapture,
+        voice: SightVoice,
+        path: PathBuf,
+    },
     Transcribing,
     SavingScreen,
+    /// Frames are being read and described.
+    Reviewing,
 }
 
 enum PosterState {

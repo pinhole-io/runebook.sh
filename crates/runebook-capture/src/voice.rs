@@ -105,34 +105,64 @@ impl Drop for VoiceCapture {
     }
 }
 
-/// Stop `capture`, encode a WAV, and transcribe it.
-///
-/// An empty clip returns an error and does not call Groq.
 /// Model name and optional language sent with one transcript request.
 pub struct SpeechRequest {
     pub model: String,
     pub language: Option<String>,
 }
 
+/// A stopped microphone clip, encoded as WAV.
+///
+/// The bytes stay in memory. This type does not write a file.
+pub struct VoiceClip {
+    wav: Vec<u8>,
+    truncated: bool,
+}
+
+/// Stop `capture` and encode a WAV.
+///
+/// An empty clip returns an error and does not keep samples.
+/// This function does not call Groq.
+pub fn end_voice(capture: VoiceCapture) -> Result<VoiceClip, CaptureError> {
+    let audio = capture.stop()?;
+    if audio.samples.is_empty() {
+        return Err(CaptureError::MicEmpty);
+    }
+    Ok(VoiceClip {
+        wav: encode_wav(&audio.samples, audio.sample_rate)?,
+        truncated: audio.truncated,
+    })
+}
+
+/// Transcribe one WAV clip.
+///
+/// An empty key returns an error and does not call Groq.
+pub fn transcribe_clip(
+    clip: VoiceClip,
+    key: String,
+    speech: SpeechRequest,
+) -> Result<VoiceOutcome, CaptureError> {
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err(CaptureError::GroqKey);
+    }
+    let text = transcribe_wav(&clip.wav, &key, &speech)?;
+    Ok(VoiceOutcome {
+        text,
+        truncated: clip.truncated,
+    })
+}
+
+/// Stop `capture`, encode a WAV, and transcribe it.
+///
+/// An empty clip returns an error and does not call Groq.
 pub fn voice_to_text(
     capture: VoiceCapture,
     key: String,
     speech: SpeechRequest,
 ) -> Result<VoiceOutcome, CaptureError> {
-    let audio = capture.stop()?;
-    if audio.samples.is_empty() {
-        return Err(CaptureError::MicEmpty);
-    }
-    let key = key.trim().to_string();
-    if key.is_empty() {
-        return Err(CaptureError::GroqKey);
-    }
-    let wav = encode_wav(&audio.samples, audio.sample_rate)?;
-    let text = transcribe_wav(&wav, &key, &speech)?;
-    Ok(VoiceOutcome {
-        text,
-        truncated: audio.truncated,
-    })
+    let clip = end_voice(capture)?;
+    transcribe_clip(clip, key, speech)
 }
 
 /// Names of the input devices the host can open.

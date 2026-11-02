@@ -9,7 +9,10 @@ mod voice;
 
 pub use error::CaptureError;
 pub use screen::{RecordSource, ScreenCapture, ScreenTarget, list_record_sources};
-pub use voice::{SpeechRequest, VoiceCapture, VoiceOutcome, list_input_devices, voice_to_text};
+pub use voice::{
+    SpeechRequest, VoiceCapture, VoiceClip, VoiceOutcome, end_voice, list_input_devices,
+    transcribe_clip, voice_to_text,
+};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

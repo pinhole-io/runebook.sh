@@ -1,9 +1,9 @@
 //! Map capture failures to window text.
 
 pub(crate) use runebook_capture::{
-    CaptureError, ScreenCapture, ScreenTarget, SpeechRequest, VoiceCapture, VoiceOutcome,
-    append_block, list_input_devices, list_record_sources, markdown_link, utc_stamp_now,
-    voice_to_text,
+    CaptureError, ScreenCapture, ScreenTarget, SpeechRequest, VoiceCapture, VoiceClip,
+    VoiceOutcome, append_block, end_voice, list_input_devices, list_record_sources, markdown_link,
+    transcribe_clip, utc_stamp_now, voice_to_text,
 };
 
 use crate::locale;

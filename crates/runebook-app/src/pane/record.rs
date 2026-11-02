@@ -2,16 +2,18 @@
 
 use gpui_kit::component::input::Escape;
 
+use super::sight;
 use super::*;
 
 impl EditorPane {
     pub(super) fn capture_status(&self) -> Option<&'static str> {
         match self.capture {
             Capture::Idle => None,
-            Capture::Voice(_) | Capture::Screen(_) | Capture::SavingScreen => {
+            Capture::Voice(_) | Capture::Screen { .. } | Capture::SavingScreen => {
                 Some(locale::text("capture.recording"))
             }
             Capture::Transcribing => Some(locale::text("capture.transcribing")),
+            Capture::Reviewing => Some(locale::text("capture.reading")),
         }
     }
 
@@ -20,7 +22,7 @@ impl EditorPane {
     }
 
     pub(super) fn screen_recording(&self) -> bool {
-        matches!(self.capture, Capture::Screen(_))
+        matches!(self.capture, Capture::Screen { .. })
     }
 
     /// The mic control records only into a Speech note.
@@ -88,17 +90,7 @@ impl EditorPane {
         };
         self.capture = Capture::Transcribing;
         let note_id = self.recording_note.clone();
-        let speech = SpeechRequest {
-            model: self.speech_model.api_name().to_string(),
-            language: {
-                let language = self.speech_language.trim();
-                if language.is_empty() {
-                    None
-                } else {
-                    Some(language.to_string())
-                }
-            },
-        };
+        let speech = self.speech_request();
         cx.spawn(async move |this, cx| {
             let outcome = cx
                 .background_executor()
@@ -138,44 +130,69 @@ impl EditorPane {
                 return;
             }
         };
-        match ScreenCapture::start(path, file_name, target) {
-            Ok(capture) => {
+        match ScreenCapture::start(path.clone(), file_name, target) {
+            Ok(video) => {
+                let voice = self.open_sight_voice();
+                self.notice = sight::voice_notice(&voice);
                 self.recording_note = Some(id);
-                self.capture = Capture::Screen(capture);
-                self.notice = None;
+                self.capture = Capture::Screen { video, voice, path };
             }
             Err(err) => self.notice = Some(crate::capture::notice(&err)),
         }
     }
 
+    /// Start the microphone for a Sight recording.
+    ///
+    /// A missing Groq key or a microphone error leaves the screen capture running.
+    fn open_sight_voice(&mut self) -> SightVoice {
+        if !self.groq_ready() {
+            return SightVoice::NoKey;
+        }
+        match VoiceCapture::start(self.microphone.clone()) {
+            Ok(capture) => SightVoice::Live(capture),
+            Err(_) => SightVoice::Failed,
+        }
+    }
+
+    fn speech_request(&self) -> SpeechRequest {
+        let language = self.speech_language.trim();
+        SpeechRequest {
+            model: self.speech_model.api_name().to_string(),
+            language: if language.is_empty() {
+                None
+            } else {
+                Some(language.to_string())
+            },
+        }
+    }
+
     pub(super) fn stop_screen(&mut self, cx: &mut Context<Root>) {
-        let capture = match std::mem::replace(&mut self.capture, Capture::Idle) {
-            Capture::Screen(capture) => capture,
+        let (video, voice, path) = match std::mem::replace(&mut self.capture, Capture::Idle) {
+            Capture::Screen { video, voice, path } => (video, voice, path),
             other => {
                 self.capture = other;
                 return;
             }
         };
-        let file_name = capture.file_name.clone();
+        let file_name = video.file_name.clone();
         self.capture = Capture::SavingScreen;
         let note_id = self.recording_note.clone();
-        cx.spawn(async move |this, cx| {
-            let outcome = cx
-                .background_executor()
-                .spawn(async move { capture.stop() })
-                .await;
-            this.update_in(cx, |root, window, cx| {
-                let dirty = root.pane.as_mut().is_some_and(|pane| {
-                    pane.finish_screen(note_id, file_name, outcome, window, cx)
-                });
-                if dirty {
-                    root.schedule_autosave(cx);
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        let speech = self.speech_request();
+        let groq = self.groq_key();
+        let access = self.archivist_access();
+        sight::follow(
+            sight::SightJob {
+                video,
+                voice,
+                path,
+                file_name,
+                note_id,
+                speech,
+                groq,
+                access,
+            },
+            cx,
+        );
     }
 
     pub(super) fn finish_voice(
@@ -213,34 +230,6 @@ impl EditorPane {
             self.notice = Some(locale::text("notice.recording_short").to_string());
         }
         dirty
-    }
-
-    pub(super) fn finish_screen(
-        &mut self,
-        note_id: Option<NoteId>,
-        file_name: String,
-        outcome: Result<(), crate::capture::CaptureError>,
-        window: &mut Window,
-        cx: &mut Context<Root>,
-    ) -> bool {
-        self.capture = Capture::Idle;
-        self.recording_note = None;
-        if let Err(err) = outcome {
-            self.notice = Some(self.redact_notice(&crate::capture::notice(&err)));
-            return false;
-        }
-        let Some(id) = note_id else {
-            self.notice = Some(locale::text("notice.recording_gone").to_string());
-            return false;
-        };
-        let link = markdown_link("screen recording", &file_name);
-        match self.deliver_block(&id, &link, window, cx) {
-            Ok(dirty) => dirty,
-            Err(err) => {
-                self.notice = Some(err);
-                false
-            }
-        }
     }
 
     /// Put `block` in the editor when `id` is open. Otherwise write that note's file.

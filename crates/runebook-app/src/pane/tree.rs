@@ -19,7 +19,7 @@ use gpui_kit::{
 };
 
 use super::{EditorPane, NameAction, Prompt, TreeSelection};
-use crate::chrome::{FOOTER_PAD_Y, FOOTER_ROW_HEIGHT, composer_field_height, panel_header};
+use crate::chrome::{FOOTER_PAD_Y, FOOTER_ROW_HEIGHT, panel_header};
 use runebook::NoteKind;
 
 use crate::locale;
@@ -370,7 +370,27 @@ fn file_list(
         .overflow_y_scrollbar()
 }
 
-fn search_field(input: &gpui_kit::Entity<InputState>, view: WeakEntity<Root>) -> impl IntoElement {
+fn search_field(
+    input: &gpui_kit::Entity<InputState>,
+    view: WeakEntity<Root>,
+    cx: &App,
+) -> impl IntoElement {
+    // Large padding is 10px. This field uses the footer pad, so the text sits nearer the border.
+    // `Input::h` stores a multiline height and leaves a one-line field alone.
+    // The style height is applied after the size height, so this one wins.
+    let pad_y = FOOTER_PAD_Y;
+    let height = cx.theme().font_size * 1.25 + pad_y + pad_y + px(2.);
+    let field = gpui_kit::Styled::py(
+        gpui_kit::Styled::h(
+            Input::new(input)
+                .large()
+                .cleanable(true)
+                .prefix(IconName::Search)
+                .w_full(),
+            height,
+        ),
+        pad_y,
+    );
     div()
         .id("vault-search")
         .px_2()
@@ -383,13 +403,7 @@ fn search_field(input: &gpui_kit::Entity<InputState>, view: WeakEntity<Root>) ->
             }
             cx.notify();
         }))
-        .child(
-            Input::new(input)
-                .small()
-                .cleanable(true)
-                .prefix(IconName::Search)
-                .w_full(),
-        )
+        .child(field)
 }
 
 fn search_hit(hit: &runebook::SearchHit, view: WeakEntity<Root>, cx: &App) -> impl IntoElement {

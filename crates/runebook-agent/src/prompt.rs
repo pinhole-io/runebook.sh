@@ -93,7 +93,8 @@ pub fn archivist_prompt(rounds: u32) -> String {
         )
         .with_instructions(
             "Speech is a transcript. You do not record audio. \
-             Sight is a markdown link to a video beside the note. You do not record the screen. \
+             Sight is a video link, then any speech, a timeline, and a summary. \
+             You do not record the screen. \
              A task line can sit in any note. It uses `- [ ]` or `- [x]`. \
              A due date uses 📅 YYYY-MM-DD. A done date uses ✅ YYYY-MM-DD. \
              Research belongs to Charlotte. You do not start a Research run. \
@@ -193,6 +194,7 @@ mod tests {
         assert!(prompt.contains("- [ ]"), "{prompt}");
         assert!(prompt.contains("📅"), "{prompt}");
         assert!(prompt.contains("kind: speech"), "{prompt}");
+        assert!(prompt.contains("a timeline"), "{prompt}");
         assert!(prompt.contains("[[target|alias]]"), "{prompt}");
         assert!(prompt.contains("32 KiB"), "{prompt}");
     }

@@ -33,7 +33,7 @@ kind: speech
 - The header must be the first lines, inside the first 256 bytes. Any other header stays in the body, and the note is Book. An old `kind: deed` header is dropped. That file is a Book note. The next save writes the body without the header.
 - The editor shows the body. Save writes the header back from the open note's kind.
 - Speech stores a transcript. The app does not save the audio file.
-- Sight stores a markdown link. The mp4 sits beside that note.
+- Sight stores a markdown link. The mp4 sits beside that note. After the recording stops, the note also stores any microphone transcript, a one-line timeline, and one summary. The review covers the first 3 minutes of a longer clip.
 - A task is a checklist line in any note. `- [ ]` is open. `- [x]` is done. `📅 YYYY-MM-DD` is the due date. `✅ YYYY-MM-DD` is the done date. A line inside a fenced code block is not a task.
 - Research stores a question. Charlotte writes a plan, gathers any missing context, then investigates. The note keeps the plan and the findings. The report stays on screen. The source switch stays hidden.
 - A preview checkbox toggles that task line and writes the done date. The Tasks row in the sidebar lists tasks from the vault. `insert_task` defaults to `ctrl-shift-t`. It inserts a task into the open note, or edits the task on the current line. The due date uses a calendar. A cleared date leaves the task undated.
