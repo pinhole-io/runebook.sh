@@ -6953,7 +6953,7 @@ dependencies = [
 
 [[package]]
 name = "runebook"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "tempfile",
@@ -6963,7 +6963,7 @@ dependencies = [
 
 [[package]]
 name = "runebook-agent"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "runebook",
@@ -6973,7 +6973,7 @@ dependencies = [
 
 [[package]]
 name = "runebook-app"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "cpal",
@@ -6995,7 +6995,7 @@ dependencies = [
 
 [[package]]
 name = "runebook-capture"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cpal",
  "hound",
@@ -7007,7 +7007,7 @@ dependencies = [
 
 [[package]]
 name = "runebook-preview"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "emojis",
  "runebook",
@@ -7015,7 +7015,7 @@ dependencies = [
 
 [[package]]
 name = "runebook-research"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "charlotte",
  "runebook",

@@ -3,6 +3,7 @@ name = "runebook"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 description = "Local markdown vault: notes, folders, and wiki links"

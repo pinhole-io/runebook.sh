@@ -3,6 +3,7 @@ name = "runebook-preview"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 description = "Preview text for a Runebook note: HTML rewrite, rows, emoji, and link anchors"
