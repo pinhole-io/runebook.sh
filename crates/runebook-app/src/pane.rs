@@ -139,6 +139,11 @@ pub(super) struct EditorPane {
     start_muted: bool,
     speech_model: SpeechModel,
     speech_language: String,
+    hidock_model: String,
+    /// A HiDock import is in progress.
+    pub(super) hidock_syncing: bool,
+    /// Recording name shown while that import reads a file.
+    pub(super) hidock_file: String,
     reopen_last_note: bool,
     remembered_note: Option<String>,
     models: ModelSettings,
@@ -193,6 +198,7 @@ pub(super) struct ModelInputs {
     pub(super) openai_model: Entity<InputState>,
     pub(super) archivist_model: Entity<InputState>,
     pub(super) speech_language: Entity<InputState>,
+    pub(super) hidock_model: Entity<InputState>,
 }
 
 #[derive(Clone, Copy)]
@@ -204,6 +210,7 @@ enum ModelField {
     OpenAiModel,
     ArchivistModel,
     SpeechLanguage,
+    HidockModel,
 }
 
 impl ModelInputs {
@@ -216,6 +223,7 @@ impl ModelInputs {
             ModelField::OpenAiModel => &self.openai_model,
             ModelField::ArchivistModel => &self.archivist_model,
             ModelField::SpeechLanguage => &self.speech_language,
+            ModelField::HidockModel => &self.hidock_model,
         }
     }
 }
@@ -338,6 +346,13 @@ impl EditorPane {
                 locale::text("capture.speech_placeholder"),
                 false,
             ),
+            hidock_model: model_input(
+                window,
+                cx,
+                &prefs.hidock_model,
+                locale::text("settings.hidock_model.placeholder"),
+                false,
+            ),
         };
         let model_watch = vec![
             watch_model(&model_inputs.tool_rounds, ModelField::ToolRounds, cx),
@@ -355,6 +370,7 @@ impl EditorPane {
                 ModelField::SpeechLanguage,
                 cx,
             ),
+            watch_model(&model_inputs.hidock_model, ModelField::HidockModel, cx),
         ];
         let preview_focus = cx.focus_handle();
         let open_note = starting_note(&index, &prefs);
@@ -430,6 +446,9 @@ impl EditorPane {
             start_muted: prefs.media_muted,
             speech_model: prefs.speech_model,
             speech_language: prefs.speech_language,
+            hidock_model: prefs.hidock_model,
+            hidock_syncing: false,
+            hidock_file: String::new(),
             reopen_last_note: prefs.reopen_last_note,
             remembered_note: prefs.last_note.clone(),
             models,
@@ -472,6 +491,20 @@ impl EditorPane {
 
     pub(super) fn root(&self) -> &Path {
         self.vault.root()
+    }
+
+    /// Parakeet directory. Empty leaves HiDock lines without words.
+    pub(super) fn hidock_model(&self) -> String {
+        self.hidock_model.clone()
+    }
+
+    /// Show `text` when no other notice is up.
+    pub(super) fn offer_notice(&mut self, text: &str) -> bool {
+        if self.notice.is_some() {
+            return false;
+        }
+        self.notice = Some(text.to_string());
+        true
     }
 
     pub(super) fn picture(&self, href: &str) -> Option<Arc<Image>> {

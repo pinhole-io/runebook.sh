@@ -5,6 +5,7 @@ members = [
     "crates/runebook-agent",
     "crates/runebook-app",
     "crates/runebook-capture",
+    "crates/runebook-hidock",
     "crates/runebook-preview",
     "crates/runebook-research",
 ]

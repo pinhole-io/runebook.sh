@@ -7,6 +7,7 @@ mod capture;
 mod chrome;
 mod dock;
 mod finder;
+mod hidock;
 mod http;
 mod icon;
 mod keys;
@@ -22,6 +23,7 @@ mod theme;
 mod vscode_theme;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
@@ -124,6 +126,29 @@ pub(crate) fn on_root<E: 'static>(
     }
 }
 
+fn hidock_notice(report: &runebook_hidock::Report, manual: bool) -> Option<String> {
+    if report.permission {
+        return Some(locale::text("hidock.permission").to_string());
+    }
+    if let Some(message) = &report.message {
+        return Some(message.clone());
+    }
+    if !manual {
+        return None;
+    }
+    if !report.connected {
+        return Some(locale::text("hidock.missing").to_string());
+    }
+    match report.notes.len() {
+        0 => Some(locale::text("hidock.none").to_string()),
+        1 => Some(locale::text("hidock.imported_one").to_string()),
+        count => Some(locale::format(
+            "hidock.imported",
+            &[("count", &count.to_string())],
+        )),
+    }
+}
+
 fn welcome_id() -> NoteId {
     NoteId::parse("welcome").expect("welcome is one safe path segment")
 }
@@ -136,6 +161,9 @@ struct Root {
     autosave_gen: u64,
     dock_save_gen: u64,
     tree_watch: u64,
+    hidock_watch: u64,
+    hidock_jobs: u32,
+    hidock_gate: Arc<hidock::Gate>,
     pending_open: Option<(PathBuf, bool)>,
 }
 
@@ -160,6 +188,9 @@ impl Root {
             autosave_gen: 0,
             dock_save_gen: 0,
             tree_watch: 0,
+            hidock_watch: 0,
+            hidock_jobs: 0,
+            hidock_gate: hidock::Gate::new(),
             pending_open: None,
         };
         if let Some(path) = last {
@@ -444,6 +475,11 @@ impl Root {
                 let saved = remember_vault(pane.root());
                 self.banner = None;
                 self.pane = Some(pane);
+                if self.hidock_jobs > 0
+                    && let Some(pane) = self.pane.as_mut()
+                {
+                    pane.hidock_syncing = true;
+                }
                 self.arm_tree_watch(window, cx);
                 if let Err(err) = saved {
                     self.set_notice(locale::format(
@@ -465,6 +501,7 @@ impl Root {
     ///
     /// A scan that started before the latest local edit is dropped.
     fn arm_tree_watch(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.arm_hidock_watch(window, cx);
         self.tree_watch = self.tree_watch.wrapping_add(1);
         let generation = self.tree_watch;
         let Some(root) = self.pane.as_ref().map(|pane| pane.root().to_path_buf()) else {
@@ -517,6 +554,150 @@ impl Root {
                     break;
                 }
             }
+        })
+        .detach();
+    }
+
+    /// Look for a HiDock while this vault is open.
+    ///
+    /// One import runs at a time. A missing recorder ends the tick.
+    /// A permission failure shows one notice.
+    fn arm_hidock_watch(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.hidock_watch = self.hidock_watch.wrapping_add(1);
+        let generation = self.hidock_watch;
+        let gate = Arc::clone(&self.hidock_gate);
+        self.arm_hidock_progress(generation, window, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let mut shown: Option<String> = None;
+            cx.background_executor().timer(Duration::from_secs(2)).await;
+            while let Some((root, model)) = this
+                .update(cx, |this, _| {
+                    if this.hidock_watch != generation {
+                        return None;
+                    }
+                    this.pane
+                        .as_ref()
+                        .map(|pane| (pane.root().to_path_buf(), pane.hidock_model()))
+                })
+                .ok()
+                .flatten()
+            {
+                let gate = Arc::clone(&gate);
+                this.update(cx, |this, cx| this.hidock_begin(cx)).ok();
+                let sync = cx
+                    .background_executor()
+                    .spawn(async move { gate.run(root, model) })
+                    .await;
+                this.update(cx, |this, cx| this.hidock_end(cx)).ok();
+                let hidock::Sync::Done(report) = sync else {
+                    cx.background_executor()
+                        .timer(Duration::from_secs(30))
+                        .await;
+                    continue;
+                };
+                let text = hidock_notice(&report, false);
+                this.update(cx, |this, cx| {
+                    let Some(text) = text else {
+                        shown = None;
+                        return;
+                    };
+                    if shown.as_deref() == Some(text.as_str()) {
+                        return;
+                    }
+                    let Some(pane) = this.pane.as_mut() else {
+                        return;
+                    };
+                    if pane.offer_notice(&text) {
+                        shown = Some(text);
+                        cx.notify();
+                    }
+                })
+                .ok();
+                cx.background_executor()
+                    .timer(Duration::from_secs(30))
+                    .await;
+            }
+        })
+        .detach();
+    }
+
+    fn arm_hidock_progress(&self, generation: u64, window: &Window, cx: &mut Context<Self>) {
+        let gate = Arc::clone(&self.hidock_gate);
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let name = gate.current_file();
+                let keep = this
+                    .update(cx, |this, cx| {
+                        if this.hidock_watch != generation {
+                            return false;
+                        }
+                        let Some(pane) = this.pane.as_mut() else {
+                            return false;
+                        };
+                        if pane.hidock_file != name {
+                            pane.hidock_file = name;
+                            cx.notify();
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn hidock_begin(&mut self, cx: &mut Context<Self>) {
+        self.hidock_jobs = self.hidock_jobs.saturating_add(1);
+        self.show_hidock_spinner(cx);
+    }
+
+    fn hidock_end(&mut self, cx: &mut Context<Self>) {
+        self.hidock_jobs = self.hidock_jobs.saturating_sub(1);
+        self.show_hidock_spinner(cx);
+    }
+
+    fn show_hidock_spinner(&mut self, cx: &mut Context<Self>) {
+        let busy = self.hidock_jobs > 0;
+        let Some(pane) = self.pane.as_mut() else {
+            return;
+        };
+        if pane.hidock_syncing == busy {
+            return;
+        }
+        pane.hidock_syncing = busy;
+        cx.notify();
+    }
+
+    /// Import from the connected HiDock once.
+    pub(crate) fn sync_hidock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.pane.as_ref() else {
+            return;
+        };
+        let root = pane.root().to_path_buf();
+        let model = pane.hidock_model();
+        let gate = Arc::clone(&self.hidock_gate);
+        self.hidock_begin(cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let sync = cx
+                .background_executor()
+                .spawn(async move { gate.run(root, model) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.hidock_end(cx);
+                let Some(text) = (match sync {
+                    hidock::Sync::Busy => None,
+                    hidock::Sync::Done(report) => hidock_notice(&report, true),
+                }) else {
+                    return;
+                };
+                this.set_notice(text);
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
     }

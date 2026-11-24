@@ -558,6 +558,15 @@ impl EditorPane {
                 self.apply_speech_language(text);
                 return;
             }
+            ModelField::HidockModel => {
+                if text == self.hidock_model {
+                    return;
+                }
+                self.hidock_model = text.to_string();
+                let saved = self.hidock_model.clone();
+                self.store_setting(move |config| config.hidock_model = saved);
+                return;
+            }
         }
         self.store_models();
         if self.settings_open && matches!(field, ModelField::OpenAiKey | ModelField::OpenAiBase) {

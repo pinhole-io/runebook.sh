@@ -24,6 +24,7 @@ reqwest = { version = "0.12", features = ["blocking", "json"] }
 runebook = { path = "../runebook" }
 runebook-agent = { path = "../runebook-agent" }
 runebook-capture = { path = "../runebook-capture" }
+runebook-hidock = { path = "../runebook-hidock" }
 runebook-preview = { path = "../runebook-preview" }
 runebook-research = { path = "../runebook-research" }
 serde_json = "1"

@@ -62,6 +62,9 @@ pub struct AppConfig {
     /// Spoken language hint. Empty lets Groq detect the language.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub speech_language: String,
+    /// Parakeet directory for HiDock words. Empty leaves speaker times only.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hidock_model: String,
     /// Theme name. `dark` and `light` select the built-in themes.
     #[serde(default = "default_theme")]
     pub theme: String,
@@ -124,6 +127,7 @@ impl Default for AppConfig {
             microphone: None,
             speech_model: SpeechModel::default(),
             speech_language: String::new(),
+            hidock_model: String::new(),
             theme: default_theme(),
             locale: default_locale(),
             text_size: TextSize::default(),
@@ -388,6 +392,7 @@ mod tests {
         assert!(config.soft_wrap);
         assert!(!config.media_muted);
         assert!(config.speech_language.is_empty());
+        assert!(config.hidock_model.is_empty());
         assert_eq!(config.locale, super::DEFAULT_LOCALE);
         assert_eq!(config.text_size, super::TextSize::Medium);
         assert_eq!(config.autosave, super::AutosavePace::Normal);

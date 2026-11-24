@@ -7,7 +7,8 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Editor, EditorState};
 #[cfg(target_os = "macos")]
 use gpui_kit::component::menu::ContextMenuExt;
-use gpui_kit::component::{ActiveTheme, ThemeStyled};
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::{ActiveTheme, Sizable, ThemeStyled};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, ClickEvent, Image, ImageFormat, KeyUpEvent, MouseButton, MouseDownEvent, MouseUpEvent,
@@ -215,6 +216,13 @@ pub(crate) fn vault_mark() -> Arc<Image> {
     .clone()
 }
 
+fn hidock_status(pane: &EditorPane) -> String {
+    if pane.hidock_file.is_empty() {
+        return locale::text("hidock.syncing").to_string();
+    }
+    locale::format("hidock.syncing_file", &[("name", &pane.hidock_file)])
+}
+
 pub(crate) fn status_bar(pane: &EditorPane, cx: &App) -> impl IntoElement {
     let note = pane
         .open_note
@@ -245,9 +253,22 @@ pub(crate) fn status_bar(pane: &EditorPane, cx: &App) -> impl IntoElement {
     div()
         .px_2()
         .py_1()
+        .flex()
+        .items_center()
+        .gap_2()
         .text_sm()
         .text_color(muted)
         .border_t_1()
         .border_color(border)
         .child(text)
+        .when(pane.hidock_syncing, |row| {
+            row.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(Spinner::new().xsmall().color(muted))
+                    .child(hidock_status(pane)),
+            )
+        })
 }

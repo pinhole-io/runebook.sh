@@ -9,6 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputContentType, InputState};
 use gpui_kit::component::radio::{Radio, RadioGroup};
 use gpui_kit::component::select::{SearchableVec, Select, SelectState};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Sizable};
@@ -275,6 +276,36 @@ fn capture(
                 locale::text("settings.speech_language.tip"),
                 muted,
                 text_setting(&pane.model_inputs.speech_language),
+            ))
+            .child(stacked_setting(
+                "hidock-model-label",
+                locale::text("settings.hidock_model"),
+                locale::text("settings.hidock_model.desc"),
+                locale::text("settings.hidock_model.tip"),
+                muted,
+                text_setting(&pane.model_inputs.hidock_model),
+            ))
+            .child(short_setting(
+                "hidock-sync-label",
+                locale::text("settings.hidock_sync"),
+                locale::text("settings.hidock_sync.desc"),
+                locale::text("settings.hidock_sync.tip"),
+                muted,
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .when(pane.hidock_syncing, |row| row.child(Spinner::new().small()))
+                    .child(
+                        Button::new("hidock-sync")
+                            .outline()
+                            .small()
+                            .cursor_pointer()
+                            .label(locale::text("settings.hidock_sync.button"))
+                            .on_click(on_root(&view, |this, _: &ClickEvent, window, cx| {
+                                this.sync_hidock(window, cx);
+                            })),
+                    ),
             ))
             .child(toggle_row(
                 SwitchCopy {
