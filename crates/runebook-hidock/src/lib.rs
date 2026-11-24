@@ -10,7 +10,7 @@ mod note;
 use std::path::Path;
 use std::thread;
 
-use highdock_rs::{Device, Speech, decode_recording, separate_speakers};
+use highdock_rs::{Device, Speech, TranscriptEngine, decode_recording, separate_speakers};
 
 /// `decode_recording` refuses a larger buffer.
 const DECODE_INPUT_LIMIT: u64 = 256 * 1024 * 1024;
@@ -148,10 +148,10 @@ where
     let mut message = None;
     let mut cursor = 0usize;
     let width = model_dir.map(|_| highdock_rs::transcription_width(recordings.len()));
-    if let Some(dir) = model_dir {
-        if let Err(err) = session.engine(dir) {
-            return Report::failed(err);
-        }
+    if let Some(dir) = model_dir
+        && let Err(err) = session.engine(dir)
+    {
+        return Report::failed(err);
     }
     let mut batch = take_files(
         &mut device,
@@ -213,10 +213,7 @@ where
                 }
             }
         } else {
-            Ok(speeches
-                .iter()
-                .map(|speech| separate_speakers(speech))
-                .collect())
+            Ok(speeches.iter().map(separate_speakers).collect::<Vec<_>>())
         };
         let transcribed = match transcribed {
             Ok(lines) => lines,
