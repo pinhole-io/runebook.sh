@@ -233,6 +233,8 @@
   "hidock.imported_one": "Imported 1 recording.",
   "hidock.missing": "No HiDock is connected.",
   "hidock.none": "The HiDock has no new recordings.",
+  "hidock.cleaned_one": "Cleaned 1 quick note.",
+  "hidock.cleaned": "Cleaned {count} quick notes.",
   "hidock.permission": "Runebook cannot open the HiDock. The USB device is not readable.",
   "settings.hidock_sync": "HiDock sync",
   "settings.hidock_sync.button": "Sync now",

@@ -8,13 +8,26 @@
 mod note;
 
 use std::path::Path;
+use std::thread;
 
-use highdock_rs::{Device, SpokenLine, TranscriptEngine, decode_recording, separate_speakers};
+use highdock_rs::{Device, Speech, decode_recording, separate_speakers};
 
 /// `decode_recording` refuses a larger buffer.
 const DECODE_INPUT_LIMIT: u64 = 256 * 1024 * 1024;
 
-pub use note::{body_needs_words, identity_line, note_id, should_import, speech_markdown};
+pub use note::{
+    body_needs_words, identity_in, identity_line, is_quick_file, is_quick_id, note_id,
+    quick_pieces, quick_speech, should_import, speech_markdown,
+};
+
+/// Writes one speech note. The import awaits this before it reads the next file.
+pub trait NoteStore {
+    /// `Ok(true)` when the note was saved.
+    fn store(
+        &mut self,
+        note: SpeechNote,
+    ) -> impl std::future::Future<Output = Result<bool, String>>;
+}
 
 /// One speech note ready to create.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,21 +115,21 @@ impl Default for Session {
 ///
 /// `known` receives the note id and the identity line. Return true to skip
 /// that file. `progress` receives the file name before that file is read.
-/// `store` writes one note as soon as its words are ready. Return `Ok(true)`
-/// when the note was saved. `model_dir` fills words and keeps speaker ids on
+/// `store` writes one note as soon as its words are ready. `Ok(true)` means
+/// the note was saved. `model_dir` fills words and keeps speaker ids on
 /// `session`. An empty `model_dir` writes times and a per-file speaker id.
 /// No connected recorder returns an empty report.
-pub async fn pull<F, P, W>(
+pub async fn pull<F, P, S>(
     session: &mut Session,
     model_dir: Option<&Path>,
     mut known: F,
     mut progress: P,
-    mut store: W,
+    mut store: S,
 ) -> Report
 where
     F: FnMut(&runebook::NoteId, &str) -> bool,
     P: FnMut(&str),
-    W: FnMut(&SpeechNote) -> Result<bool, String>,
+    S: NoteStore,
 {
     let mut device = match Device::open_first().await {
         Ok(device) => device,
@@ -133,17 +146,177 @@ where
     };
     let mut notes = Vec::new();
     let mut message = None;
-    for recording in &recordings {
-        let id = match note_id(&serial, &recording.name) {
-            Ok(id) => id,
+    let mut cursor = 0usize;
+    let width = model_dir.map(|_| highdock_rs::transcription_width(recordings.len()));
+    if let Some(dir) = model_dir {
+        if let Err(err) = session.engine(dir) {
+            return Report::failed(err);
+        }
+    }
+    let mut batch = take_files(
+        &mut device,
+        &recordings,
+        &serial,
+        &mut cursor,
+        width.unwrap_or(1),
+        &mut known,
+        &mut progress,
+    )
+    .await;
+    while !batch.files.is_empty() {
+        let files = std::mem::take(&mut batch.files);
+        let stop = batch.stop;
+        if batch.message.is_some() {
+            message = batch.message.take();
+        }
+        let names: Vec<String> = files.iter().map(|file| file.name.clone()).collect();
+        let speeches: Vec<Speech> = files.into_iter().map(|file| file.speech).collect();
+        let transcribed = if model_dir.is_some() {
+            let engine = session.engine.take();
+            let worker = thread::spawn(move || {
+                let Some(mut engine) = engine else {
+                    return (
+                        None,
+                        Err(highdock_rs::Error::Transcript(
+                            "the speech model did not stay loaded".into(),
+                        )),
+                    );
+                };
+                let lines = engine.transcribe_batch(&speeches);
+                (Some(engine), lines)
+            });
+            if !stop {
+                batch = take_files(
+                    &mut device,
+                    &recordings,
+                    &serial,
+                    &mut cursor,
+                    width.unwrap_or(1),
+                    &mut known,
+                    &mut progress,
+                )
+                .await;
+            }
+            match worker.join() {
+                Ok((engine, lines)) => {
+                    session.engine = engine;
+                    if session.engine.is_none() {
+                        session.model = None;
+                    }
+                    lines
+                }
+                Err(_) => {
+                    session.engine = None;
+                    session.model = None;
+                    message = Some("the transcription stopped".to_string());
+                    break;
+                }
+            }
+        } else {
+            Ok(speeches
+                .iter()
+                .map(|speech| separate_speakers(speech))
+                .collect())
+        };
+        let transcribed = match transcribed {
+            Ok(lines) => lines,
             Err(err) => {
                 message = Some(err.to_string());
+                break;
+            }
+        };
+        for (name, lines) in names.into_iter().zip(transcribed) {
+            let lines = match lines {
+                Ok(lines) => lines,
+                Err(err) => {
+                    message = Some(err.to_string());
+                    continue;
+                }
+            };
+            match note::speech_note(&serial, &name, &lines) {
+                Ok(note) => match store.store(note.clone()).await {
+                    Ok(true) => notes.push(note),
+                    Ok(false) => {}
+                    Err(err) => message = Some(err),
+                },
+                Err(err) => message = Some(err.to_string()),
+            }
+        }
+        if stop {
+            break;
+        }
+        if model_dir.is_none() {
+            batch = take_files(
+                &mut device,
+                &recordings,
+                &serial,
+                &mut cursor,
+                1,
+                &mut known,
+                &mut progress,
+            )
+            .await;
+        }
+    }
+    if message.is_none() {
+        message = batch.message;
+    }
+    Report {
+        notes,
+        permission: message.as_deref().is_some_and(is_permission),
+        message,
+        connected: true,
+    }
+}
+
+fn is_permission(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("permission denied") || message.contains("access denied")
+}
+
+struct Decoded {
+    name: String,
+    speech: Speech,
+}
+
+struct Taken {
+    files: Vec<Decoded>,
+    message: Option<String>,
+    stop: bool,
+}
+
+async fn take_files<T, F, P>(
+    device: &mut Device<T>,
+    recordings: &[highdock_rs::Recording],
+    serial: &str,
+    cursor: &mut usize,
+    limit: usize,
+    known: &mut F,
+    progress: &mut P,
+) -> Taken
+where
+    T: highdock_rs::Transport,
+    F: FnMut(&runebook::NoteId, &str) -> bool,
+    P: FnMut(&str),
+{
+    let mut taken = Taken {
+        files: Vec::new(),
+        message: None,
+        stop: false,
+    };
+    while taken.files.len() < limit && *cursor < recordings.len() {
+        let recording = &recordings[*cursor];
+        *cursor += 1;
+        let id = match note_id(serial, &recording.name) {
+            Ok(id) => id,
+            Err(err) => {
+                taken.message = Some(err.to_string());
                 continue;
             }
         };
-        let line = identity_line(&serial, &recording.name);
+        let line = identity_line(serial, &recording.name);
         let seen = recording.bytes > 0 && known(&id, &line);
-        if !should_import(recording.bytes, seen, false) {
+        if !note::should_import(recording.bytes, seen, false) {
             continue;
         }
         progress(&recording.name);
@@ -163,56 +336,20 @@ where
             .await
         {
             let too_large = matches!(err, highdock_rs::Error::RecordingTooLarge { .. });
-            message = Some(err.to_string());
+            taken.message = Some(err.to_string());
             if too_large {
                 continue;
             }
+            taken.stop = true;
             break;
         }
-        let speech = match decode_recording(&bytes) {
-            Ok(speech) => speech,
-            Err(err) => {
-                message = Some(err.to_string());
-                continue;
-            }
-        };
-        drop(bytes);
-        let lines = match lines_for(session, model_dir, &speech) {
-            Ok(lines) => lines,
-            Err(err) => {
-                message = Some(err.to_string());
-                break;
-            }
-        };
-        match note::speech_note(&serial, &recording.name, &lines) {
-            Ok(note) => match store(&note) {
-                Ok(true) => notes.push(note),
-                Ok(false) => {}
-                Err(err) => message = Some(err),
-            },
-            Err(err) => message = Some(err.to_string()),
+        match decode_recording(&bytes) {
+            Ok(speech) => taken.files.push(Decoded {
+                name: recording.name.clone(),
+                speech,
+            }),
+            Err(err) => taken.message = Some(err.to_string()),
         }
     }
-    Report {
-        notes,
-        permission: message.as_deref().is_some_and(is_permission),
-        message,
-        connected: true,
-    }
-}
-
-fn lines_for(
-    session: &mut Session,
-    model_dir: Option<&Path>,
-    speech: &highdock_rs::Speech,
-) -> Result<Vec<SpokenLine>, highdock_rs::Error> {
-    match model_dir {
-        Some(dir) => session.engine(dir)?.transcribe(speech),
-        None => separate_speakers(speech),
-    }
-}
-
-fn is_permission(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    message.contains("permission denied") || message.contains("access denied")
+    taken
 }

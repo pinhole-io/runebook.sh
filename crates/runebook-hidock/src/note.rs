@@ -17,8 +17,11 @@ pub fn body_needs_words(body: &str) -> bool {
     let mut saw_turn = false;
     for line in body.lines() {
         let line = line.trim().trim_start_matches("- ").trim();
-        if line.is_empty() || line.starts_with("hidock-id:") {
+        if line.is_empty() || line.starts_with("hidock-id:") || line.starts_with("<!--") {
             continue;
+        }
+        if !speaker_label(line) {
+            return false;
         }
         saw_turn = true;
         if let Some((_, rest)) = line.split_once(' ')
@@ -29,6 +32,96 @@ pub fn body_needs_words(body: &str) -> bool {
         }
     }
     saw_turn
+}
+
+/// True when the file name is a HiDock quick note (`Wip` or `Wip01`).
+pub fn is_quick_file(file_name: &str) -> bool {
+    let name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    let stem = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name);
+    stem.split('-').any(is_wip_part)
+}
+
+/// True when the note id is a HiDock quick note.
+pub fn is_quick_id(id: &str) -> bool {
+    is_quick_file(id)
+}
+
+/// Spoken words from a raw quick-note body, one piece per line.
+///
+/// A body that is already prose returns `None`.
+pub fn quick_pieces(body: &str) -> Option<String> {
+    let mut pieces = Vec::new();
+    let mut saw = false;
+    for line in body.lines() {
+        let line = line.trim().trim_start_matches("- ").trim();
+        if line.is_empty() || line.starts_with("hidock-id:") || line.starts_with("<!--") {
+            continue;
+        }
+        if !speaker_label(line) {
+            return None;
+        }
+        saw = true;
+        let Some((_, rest)) = line.split_once(' ') else {
+            continue;
+        };
+        let Some((_, words)) = rest.split_once(' ') else {
+            continue;
+        };
+        let words = words.trim();
+        if !words.is_empty() {
+            pieces.push(words.to_string());
+        }
+    }
+    if !saw || pieces.is_empty() {
+        return None;
+    }
+    Some(pieces.join("\n"))
+}
+
+/// The `hidock-id:` line, including one stored in an HTML comment.
+pub fn identity_in(body: &str) -> Option<&str> {
+    for line in body.lines() {
+        let line = line.trim();
+        if let Some(inner) = comment_text(line)
+            && inner.starts_with("hidock-id:")
+        {
+            return Some(inner);
+        }
+        if line.starts_with("hidock-id:") {
+            return Some(line);
+        }
+    }
+    None
+}
+
+/// Speech markdown whose visible text is `prose`.
+///
+/// The identity line sits in an HTML comment so a later sync can find it.
+pub fn quick_speech(identity: &str, prose: &str) -> String {
+    let prose = prose.trim();
+    let body = format!("{prose}\n\n<!-- {identity} -->\n");
+    encode_note(NoteKind::Speech, &body)
+}
+
+fn speaker_label(line: &str) -> bool {
+    let label = line.split_once(' ').map(|(label, _)| label).unwrap_or(line);
+    label.starts_with("SPEAKER_") || label.starts_with("UNLINKED_")
+}
+
+fn is_wip_part(part: &str) -> bool {
+    let Some(rest) = part.get(3..) else {
+        return false;
+    };
+    part[..3].eq_ignore_ascii_case("wip") && rest.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn comment_text(line: &str) -> Option<&str> {
+    Some(
+        line.trim()
+            .strip_prefix("<!--")?
+            .strip_suffix("-->")?
+            .trim(),
+    )
 }
 
 /// `hidock-id:<serial>:<file name>` on one line.
@@ -159,6 +252,26 @@ mod tests {
         assert!(body.starts_with("hidock-id:SER:Rec.hda\n"));
         assert!(body.contains("- SPEAKER_00 0.00-1.25 hello\n"));
         assert_eq!(identity_line("SER", "Rec.hda"), "hidock-id:SER:Rec.hda");
+    }
+
+    #[test]
+    fn a_quick_note_shows_the_spoken_text() {
+        assert!(is_quick_file("2026Nov20-170149-Wip01.hda"));
+        assert!(is_quick_id("hidock/HDPE/2026Nov20-170149-Wip01"));
+        assert!(!is_quick_file("2026Nov20-183223-Rec03.hda"));
+        let raw = "hidock-id:SER:Wip01.hda\n\n\
+            - SPEAKER_02 0.00-1.85 So mm this is a\n\
+            - SPEAKER_02 2.48-4.45 of our public broadcasting\n";
+        let pieces = quick_pieces(raw).unwrap();
+        assert_eq!(pieces, "So mm this is a\nof our public broadcasting");
+        let markdown = quick_speech(identity_in(raw).unwrap(), "So this is a public broadcast.");
+        let (kind, body) = decode_note(&markdown);
+        assert_eq!(kind, NoteKind::Speech);
+        assert!(body.starts_with("So this is a public broadcast.\n"));
+        assert!(body.contains("<!-- hidock-id:SER:Wip01.hda -->"));
+        assert!(!body.contains("SPEAKER_"));
+        assert!(quick_pieces(body).is_none());
+        assert!(!body_needs_words(body));
     }
 
     #[test]

@@ -253,6 +253,10 @@ fn details_code(code: &markdown_ast::Code) -> Option<MarkdownNode> {
 }
 
 fn html_block(html: &str) -> Option<MarkdownNode> {
+    let trimmed = html.trim();
+    if trimmed.starts_with("<!--") && trimmed.ends_with("-->") {
+        return Some(MarkdownNode::new("md-skip", ()).text(""));
+    }
     if let Some(items) = runebook_preview::def_list(html) {
         let text = items
             .iter()

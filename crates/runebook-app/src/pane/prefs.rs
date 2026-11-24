@@ -482,7 +482,7 @@ impl EditorPane {
         ))
     }
 
-    pub(super) fn archivist_access(&self) -> Option<crate::archivist::ModelAccess> {
+    pub(crate) fn archivist_access(&self) -> Option<crate::archivist::ModelAccess> {
         let model = models::resolve_archivist_model(&self.models.archivist_model);
         let groq_key = self.groq_key().unwrap_or_default();
         let openai_key =

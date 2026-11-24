@@ -126,7 +126,7 @@ pub(crate) fn on_root<E: 'static>(
     }
 }
 
-fn hidock_notice(report: &runebook_hidock::Report, manual: bool) -> Option<String> {
+fn hidock_notice(report: &runebook_hidock::Report, cleaned: usize, manual: bool) -> Option<String> {
     if report.permission {
         return Some(locale::text("hidock.permission").to_string());
     }
@@ -138,6 +138,13 @@ fn hidock_notice(report: &runebook_hidock::Report, manual: bool) -> Option<Strin
     }
     if !report.connected {
         return Some(locale::text("hidock.missing").to_string());
+    }
+    if report.notes.is_empty() && cleaned > 0 {
+        return Some(if cleaned == 1 {
+            locale::text("hidock.cleaned_one").to_string()
+        } else {
+            locale::format("hidock.cleaned", &[("count", &cleaned.to_string())])
+        });
     }
     match report.notes.len() {
         0 => Some(locale::text("hidock.none").to_string()),
@@ -570,14 +577,18 @@ impl Root {
         cx.spawn_in(window, async move |this, cx| {
             let mut shown: Option<String> = None;
             cx.background_executor().timer(Duration::from_secs(2)).await;
-            while let Some((root, model)) = this
+            while let Some((root, model, access)) = this
                 .update(cx, |this, _| {
                     if this.hidock_watch != generation {
                         return None;
                     }
-                    this.pane
-                        .as_ref()
-                        .map(|pane| (pane.root().to_path_buf(), pane.hidock_model()))
+                    this.pane.as_ref().map(|pane| {
+                        (
+                            pane.root().to_path_buf(),
+                            pane.hidock_model(),
+                            pane.archivist_access(),
+                        )
+                    })
                 })
                 .ok()
                 .flatten()
@@ -586,16 +597,16 @@ impl Root {
                 this.update(cx, |this, cx| this.hidock_begin(cx)).ok();
                 let sync = cx
                     .background_executor()
-                    .spawn(async move { gate.run(root, model) })
+                    .spawn(async move { gate.run(root, model, access) })
                     .await;
                 this.update(cx, |this, cx| this.hidock_end(cx)).ok();
-                let hidock::Sync::Done(report) = sync else {
+                let hidock::Sync::Done(outcome) = sync else {
                     cx.background_executor()
                         .timer(Duration::from_secs(30))
                         .await;
                     continue;
                 };
-                let text = hidock_notice(&report, false);
+                let text = hidock_notice(&outcome.report, outcome.cleaned, false);
                 this.update(cx, |this, cx| {
                     let Some(text) = text else {
                         shown = None;
@@ -679,18 +690,21 @@ impl Root {
         };
         let root = pane.root().to_path_buf();
         let model = pane.hidock_model();
+        let access = pane.archivist_access();
         let gate = Arc::clone(&self.hidock_gate);
         self.hidock_begin(cx);
         cx.spawn_in(window, async move |this, cx| {
             let sync = cx
                 .background_executor()
-                .spawn(async move { gate.run(root, model) })
+                .spawn(async move { gate.run(root, model, access) })
                 .await;
             this.update(cx, |this, cx| {
                 this.hidock_end(cx);
                 let Some(text) = (match sync {
                     hidock::Sync::Busy => None,
-                    hidock::Sync::Done(report) => hidock_notice(&report, true),
+                    hidock::Sync::Done(outcome) => {
+                        hidock_notice(&outcome.report, outcome.cleaned, true)
+                    }
                 }) else {
                     return;
                 };
