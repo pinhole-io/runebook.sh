@@ -1005,6 +1005,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "htmd",
+ "jig",
  "notepad",
  "playwright-rs",
  "regex",
@@ -4499,6 +4500,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
 dependencies = [
  "jiff-tzdb",
+]
+
+[[package]]
+name = "jig"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "jiff",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "superglue",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -9247,6 +9264,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",
