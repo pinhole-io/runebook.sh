@@ -28,5 +28,5 @@ runebook-hidock = { path = "../runebook-hidock" }
 runebook-preview = { path = "../runebook-preview" }
 runebook-research = { path = "../runebook-research" }
 serde_json = "1"
-superglue = { path = "../../../superglue", default-features = false }
+superglue.workspace = true
 tokio = { version = "1", features = ["net", "rt-multi-thread", "sync", "time"] }

@@ -12,5 +12,5 @@ description = "Research note text and the Charlotte investigation run"
 charlotte = { path = "../../../charlotte", default-features = false, features = ["notepad"] }
 thiserror.workspace = true
 runebook = { path = "../runebook" }
-superglue = { path = "../../../superglue", default-features = false }
+superglue.workspace = true
 tokio = { version = "1", features = ["net", "rt-multi-thread", "sync", "time"] }

@@ -57,7 +57,6 @@ jobs:
           }
           # These commits match the path crates in Cargo.lock.
           fetch charlotte 987f5e7aa5dbfc35f52c61c8fa426f8372738430
-          fetch superglue 517c59c8b61d87f66156f4d761057684b30ec93a
           fetch notepad e035b29107c183432a48ea2fb2bd7748c4ba9549
 
       - name: Install the Rust toolchain

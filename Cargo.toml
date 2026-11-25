@@ -20,5 +20,6 @@ publish = false
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
+superglue = { git = "https://github.com/pinhole-io/superglue", branch = "main", default-features = false }
 thiserror = "2"
 toml = "0.9"

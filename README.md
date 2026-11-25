@@ -42,7 +42,7 @@ Release `1.0.0`. Every crate uses `[workspace.package].version` in [Cargo.toml](
 
 - Rust 1.96 or newer. GPUI Kit calls `std::hint::cold_path`. Rust 1.94 rejects that call.
 - [just](https://github.com/casey/just), or use the `cargo` commands below.
-- Sibling checkouts of [superglue](https://github.com/pinhole-io/superglue), [charlotte](https://github.com/pinhole-io/charlotte), and [notepad](https://github.com/pinhole-io/notepad). The path dependencies resolve next to this repository.
+- Sibling checkouts of [charlotte](https://github.com/pinhole-io/charlotte), [jig](https://github.com/pinhole-io/jig), [notepad](https://github.com/pinhole-io/notepad), and [highdock-rs](https://github.com/pinhole-io/highdock-rs). The path dependencies resolve next to this repository. Cargo fetches [superglue](https://github.com/pinhole-io/superglue) from git.
 - `ffmpeg` for playback and screen recording.
 - `GROQ_API_KEY` for voice transcription.
 - An OpenAI-compatible key for the Archivist and for Research.
@@ -56,9 +56,10 @@ Keep this directory name. The path dependencies use it.
 ```bash
 mkdir -p ~/src && cd ~/src
 git clone https://github.com/pinhole-io/runebook.sh.git
-git clone https://github.com/pinhole-io/superglue.git
 git clone https://github.com/pinhole-io/charlotte.git
+git clone https://github.com/pinhole-io/jig.git
 git clone https://github.com/pinhole-io/notepad.git
+git clone https://github.com/pinhole-io/highdock-rs.git
 ```
 
 You need this layout:
@@ -66,9 +67,10 @@ You need this layout:
 ```text
 ~/src/
   runebook.sh/
-  superglue/
   charlotte/
+  jig/
   notepad/
+  highdock-rs/
 ```
 
 Research uses Charlotte's Playwright driver. Install Chromium for that driver:
@@ -220,7 +222,8 @@ The file tree, the note, and the Archivist column sit side by side. The two side
 
 | What you see | What to do |
 | --- | --- |
-| `can't find crate superglue` or `charlotte` | Clone the sibling repositories in [Install from source](#install-from-source). Keep the directory name `runebook.sh`. |
+| `can't find crate charlotte`, `jig`, `notepad`, or `highdock-rs` | Clone the sibling repositories in [Install from source](#install-from-source). Keep the directory name `runebook.sh`. |
+| `can't find crate superglue` or git fetch fails | Allow Cargo to reach `https://github.com/pinhole-io/superglue`, then run `cargo fetch`. |
 | The window does not open on Linux | Install the packages in [Linux packages](#linux-packages). Use a Wayland or X11 session. |
 | Playback or screen recording fails | Install `ffmpeg`. |
 | Voice does not transcribe | Export `GROQ_API_KEY`, or set the Groq key in Settings. |
